@@ -1186,7 +1186,7 @@ cmd_which() {
 # ---------------------------------------------------------------------------
 
 usage() {
-  cat << EOF
+  printf '%b\n' "$(cat << EOF
 ${BOLD}ai-env${RESET} v${VERSION} — Skill Profile Manager for AI Coding Agents
 
 ${BOLD}USAGE${RESET}
@@ -1241,6 +1241,7 @@ ${BOLD}DIRECTORIES${RESET}
   ${DIM}~/.config/ai-env/sources.yaml${RESET}  Plugin source registry
 
 EOF
+)"
 }
 
 # ---------------------------------------------------------------------------
