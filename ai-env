@@ -478,6 +478,29 @@ print(count)
     fi
   fi
 
+  # 0c. Sweep new skills from agent dirs into store
+  #     (catches skills installed by npx skills add -g)
+  local swept=0
+  for agent_dir in "$AGENT_SKILLS" "$CLAUDE_SKILLS"; do
+    [[ ! -d "$agent_dir" ]] && continue
+    for item in "$agent_dir"/*/; do
+      [[ ! -d "$item" ]] && continue
+      # Skip symlinks (managed by ai-env)
+      [[ -L "${item%/}" ]] && continue
+      local name
+      name=$(basename "$item")
+      local store_target="$SKILL_STORE/${name}"
+      if [[ ! -d "$store_target" && ! -L "$store_target" ]]; then
+        mv "${item%/}" "$store_target"
+        [[ "$verbose" == true ]] && echo -e "  ${GREEN}+${RESET} swept: ${name} -> store"
+        (( swept++ )) || true
+      fi
+    done
+  done
+  if [[ $swept -gt 0 ]]; then
+    info "Swept ${swept} new skill(s) from agent dirs into store"
+  fi
+
   local total_synced=0
   local total_skipped=0
 
