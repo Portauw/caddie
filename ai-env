@@ -672,16 +672,18 @@ for dirname in sorted(matched):
 cmd_activate() {
   local name=""
   local dry_run=false
+  local agent=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run|-n) dry_run=true; shift ;;
+      --agent|-a) agent="$2"; shift 2 ;;
       -*) die "Unknown flag: $1" ;;
       *)  name="$1"; shift ;;
     esac
   done
 
-  [[ -z "$name" ]] && die "Usage: ai-env activate <name> [--dry-run]"
+  [[ -z "$name" ]] && die "Usage: ai-env activate <name> [--agent <agent>] [--dry-run]"
   env_exists "$name" || die "Environment '${name}' not found. Run 'ai-env list' to see available environments."
 
   local file
@@ -764,8 +766,10 @@ print(', '.join(parts))
     echo -e "  Environment: ${BOLD}${display_name:-$name}${RESET}"
     [[ -n "$directory" ]] && echo -e "  Directory:   ${directory}"
     echo -e "  Skills:      ${skill_count} (${prefix_summary})"
+    [[ -n "$agent" ]] && echo -e "  Agent:       ${agent}"
     echo ""
     echo -e "  ${DIM}Would rebuild ~/.claude/skills/ with ${skill_count} symlinks${RESET}"
+    [[ -n "$agent" ]] && echo -e "  ${DIM}Would launch: ${agent}${RESET}"
     echo ""
     echo -e "  Matched skills:"
     echo "$matched_skills" | while IFS= read -r s; do
@@ -801,30 +805,72 @@ print(', '.join(parts))
   # Step 5: Write active marker
   echo "$name" > "$ACTIVE_FILE"
 
-  # Step 6: Read agent config for display
-  local model permission_mode
-  model=$(yaml_nested_get "$file" "agents.claude.model")
-  permission_mode=$(yaml_nested_get "$file" "agents.claude.permission_mode")
+  # Step 6: Build agent command (if --agent specified)
+  local agent_cmd=()
+  local agent_display=""
+
+  if [[ -n "$agent" ]]; then
+    local agent_command
+    agent_command=$(yaml_nested_get "$file" "agents.${agent}.command")
+    agent_command="${agent_command:-$agent}"
+
+    case "$agent" in
+      claude)
+        agent_cmd=("$agent_command")
+        local model permission_mode
+        model=$(yaml_nested_get "$file" "agents.claude.model")
+        permission_mode=$(yaml_nested_get "$file" "agents.claude.permission_mode")
+        [[ -n "$model" ]] && agent_cmd+=("--model" "$model")
+        [[ -n "$permission_mode" ]] && agent_cmd+=("--permission-mode" "$permission_mode")
+        agent_display="claude"
+        [[ -n "$model" ]] && agent_display="${agent_display} (${model}"
+        [[ -n "$permission_mode" ]] && agent_display="${agent_display}, ${permission_mode} mode"
+        [[ -n "$model" || -n "$permission_mode" ]] && agent_display="${agent_display})"
+        ;;
+      opencode)
+        agent_cmd=("$agent_command")
+        local model
+        model=$(yaml_nested_get "$file" "agents.opencode.model")
+        [[ -n "$model" ]] && agent_cmd+=("--model" "$model")
+        agent_display="opencode"
+        [[ -n "$model" ]] && agent_display="${agent_display} (${model})"
+        ;;
+      *)
+        # Generic agent — just use command + model if available
+        agent_cmd=("$agent_command")
+        local model
+        model=$(yaml_nested_get "$file" "agents.${agent}.model")
+        [[ -n "$model" ]] && agent_cmd+=("--model" "$model")
+        agent_display="${agent}"
+        [[ -n "$model" ]] && agent_display="${agent_display} (${model})"
+        ;;
+    esac
+  fi
 
   # Step 7: Print summary
   echo ""
   echo -e "${GREEN}✓${RESET} ${BOLD}Activated: ${display_name:-$name}${RESET}"
   [[ -n "$directory" ]] && echo -e "  Directory: ${directory}"
   echo -e "  Skills: ${linked} active (${prefix_summary})"
-  if [[ -n "$model" || -n "$permission_mode" ]]; then
-    local agent_info="claude"
-    [[ -n "$model" ]] && agent_info="${agent_info} (${model}"
-    [[ -n "$permission_mode" ]] && agent_info="${agent_info}, ${permission_mode} mode"
-    [[ -n "$model" || -n "$permission_mode" ]] && agent_info="${agent_info})"
-    echo -e "  Agent: ${agent_info}"
-  fi
+  [[ -n "$agent_display" ]] && echo -e "  Agent: ${agent_display}"
   echo ""
-  if [[ -n "$directory" ]]; then
-    echo -e "  ${DIM}cd ${directory} && claude${RESET}"
+
+  # Step 8: Launch agent or print hint
+  if [[ ${#agent_cmd[@]} -gt 0 ]]; then
+    if [[ -n "$directory" ]]; then
+      echo -e "  ${DIM}Launching: ${agent_cmd[*]}${RESET}"
+      echo -e "${DIM}────────────────────────────────────────────────────${RESET}"
+      cd "$directory"
+    fi
+    exec "${agent_cmd[@]}"
   else
-    echo -e "  ${DIM}claude${RESET}"
+    if [[ -n "$directory" ]]; then
+      echo -e "  ${DIM}cd ${directory} && claude${RESET}"
+    else
+      echo -e "  ${DIM}claude${RESET}"
+    fi
+    echo ""
   fi
-  echo ""
 }
 
 # ---------------------------------------------------------------------------
@@ -1207,12 +1253,13 @@ ${BOLD}ENVIRONMENTS${RESET}
   ${CYAN}list${RESET}    (ls)                 List all environments
   ${CYAN}show${RESET}    <name>               Show config + resolved skills
   ${CYAN}edit${RESET}    <name>               Open environment config in \$EDITOR
-  ${CYAN}activate${RESET} <name> [-n]         Scan + rebuild symlinks + print summary
+  ${CYAN}activate${RESET} <name> [-a agent]   Scan + rebuild symlinks [+ launch agent]
   ${CYAN}clone${RESET}   <src> <dest>         Clone an environment config
   ${CYAN}delete${RESET}  <name>               Delete an environment
   ${CYAN}which${RESET}                        Show currently active environment
 
 ${BOLD}FLAGS${RESET}
+  -a, --agent <name>        Launch agent after activation (claude, opencode, ...)
   -n, --dry-run             Show what would happen without executing
   -v, --verbose             Show detailed output
   -h, --help                Show this help message
@@ -1229,6 +1276,8 @@ ${BOLD}EXAMPLES${RESET}
   ai-env init                              # First-time setup
   ai-env create my-project                 # Create environment
   ai-env activate my-project               # Activate (sets up symlinks)
+  ai-env activate my-project -a claude     # Activate + launch Claude Code
+  ai-env activate my-project -a opencode   # Activate + launch OpenCode
   ai-env activate my-project --dry-run     # Preview what would change
   ai-env source add sp superpowers-dev superpowers  # Register source
   ai-env inventory                         # See all available skills
