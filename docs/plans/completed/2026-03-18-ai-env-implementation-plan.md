@@ -1,6 +1,6 @@
 # ai-env Skill Profile Manager Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **Status:** COMPLETED (2026-03-18)
 
 **Goal:** Rewrite ai-env from a Claude Code launcher into an agent-agnostic skill profile manager that discovers skills from multiple sources, manages a canonical store at `~/.agents/skills/`, and rebuilds `~/.claude/skills/` with filtered symlinks based on environment configs.
 
