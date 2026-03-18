@@ -521,8 +521,23 @@ print(count)
     info "Swept ${swept} new skill(s) from agent dirs into store"
   fi
 
+  # 0d. Remove broken symlinks from store
+  local broken_removed=0
+  for item in "$SKILL_STORE"/*/; do
+    [[ ! -L "${item%/}" ]] && continue
+    if [[ ! -e "${item%/}" ]]; then
+      rm "${item%/}"
+      [[ "$verbose" == true ]] && echo -e "  ${DIM}removed broken: $(basename "$item")${RESET}"
+      (( broken_removed++ )) || true
+    fi
+  done
+  if [[ $broken_removed -gt 0 ]]; then
+    info "Removed ${broken_removed} broken symlink(s) from store"
+  fi
+
   local total_synced=0
   local total_skipped=0
+  local stale_sources=()
 
   # 1. Scan registered plugin sources
   if [[ -f "$SOURCES_FILE" ]]; then
@@ -531,7 +546,8 @@ print(count)
       local cache_path="$HOME/.claude/plugins/cache/${src_marketplace}/${src_plugin}"
 
       if [[ ! -d "$cache_path" ]]; then
-        warn "Source '${src_name}': cache not found at ${cache_path}"
+        warn "Source '${src_name}': plugin uninstalled, removing source"
+        stale_sources+=("$src_name")
         continue
       fi
 
@@ -575,6 +591,11 @@ print(count)
       info "Source '${src_name}': ${src_count} skills from ${version_dir##*/}"
 
     done < <(parse_sources)
+
+    # Remove stale sources
+    for stale in "${stale_sources[@]}"; do
+      cmd_source_remove "$stale" > /dev/null 2>&1 || true
+    done
   fi
 
   # 2. Count local skills (direct dirs in canonical store, not symlinks)
