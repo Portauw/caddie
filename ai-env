@@ -615,6 +615,92 @@ print(count)
   touch "$scan_cache"
 
   success "Scan complete: ${BOLD}${total}${RESET} skills in canonical store (${local_count} local, ${total_synced} from plugins)"
+
+  # 4. Check environment configs for orphaned skill patterns
+  if [[ -d "$ENV_DIR" ]]; then
+    local has_warnings=false
+    for env_file in "$ENV_DIR"/*.yaml; do
+      [[ ! -f "$env_file" ]] && continue
+      local env_name
+      env_name=$(basename "$env_file" .yaml)
+
+      # Get patterns and check each one
+      local in_skills=false
+      while IFS= read -r line; do
+        line="${line%%#*}"  # strip comments
+        if [[ "$line" =~ ^skills: ]]; then
+          in_skills=true
+          continue
+        fi
+        if [[ "$in_skills" == true && "$line" =~ ^[[:space:]]*-[[:space:]]*(.*) ]]; then
+          local pattern="${BASH_REMATCH[1]}"
+          pattern="${pattern//\"/}"
+          pattern="${pattern//\'/}"
+          pattern="${pattern## }"
+          pattern="${pattern%% }"
+          [[ -z "$pattern" ]] && continue
+
+          # Check if pattern matches any skill
+          local match_count
+          match_count=$(python3 -c "
+import os, fnmatch
+from pathlib import Path
+
+store = Path(os.path.expanduser('$SKILL_STORE'))
+sources_file = os.path.expanduser('$SOURCES_FILE')
+
+source_map = {}
+if os.path.exists(sources_file):
+    current = {}
+    in_sources = False
+    for line in open(sources_file):
+        line = line.rstrip()
+        if line.startswith('sources:'):
+            in_sources = True
+            continue
+        if not in_sources: continue
+        if line.startswith('  - '):
+            if current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            current = {}
+            rest = line[4:].strip()
+            if rest.startswith('name:'): current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
+        elif line.startswith('    ') and ':' in line:
+            k, v = line.strip().split(':', 1)
+            current[k.strip()] = v.strip().strip('\"').strip(\"'\")
+    if current.get('name') and current.get('marketplace') and current.get('plugin'):
+        source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+
+count = 0
+for item in store.iterdir():
+    if not item.is_dir(): continue
+    if item.is_symlink():
+        target = str(item.resolve())
+        prefix = 'plugin'
+        for pk, sn in source_map.items():
+            if pk in target: prefix = sn; break
+        sid = f'{prefix}:{item.name}'
+    elif '-' in item.name:
+        sid = f'{item.name.split(\"-\",1)[0]}:{item.name.split(\"-\",1)[1]}'
+    else:
+        sid = f'local:{item.name}'
+    if fnmatch.fnmatch(sid, '$pattern'): count += 1
+print(count)
+" 2>/dev/null || echo 0)
+
+          if [[ "$match_count" -eq 0 ]]; then
+            if [[ "$has_warnings" == false ]]; then
+              echo ""
+              has_warnings=true
+            fi
+            warn "Environment ${BOLD}${env_name}${RESET}: pattern ${CYAN}\"${pattern}\"${RESET} matches 0 skills — source may have been removed"
+          fi
+        elif [[ "$in_skills" == true && "$line" =~ ^[^[:space:]] ]]; then
+          in_skills=false
+        fi
+      done < "$env_file"
+    done
+  fi
 }
 
 # ---------------------------------------------------------------------------
