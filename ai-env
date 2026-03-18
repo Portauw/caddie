@@ -377,9 +377,29 @@ with open('$SOURCES_FILE', 'w') as f:
 
 cmd_scan() {
   local verbose=false
-  [[ "${1:-}" == "-v" || "${1:-}" == "--verbose" ]] && verbose=true
+  local force=false
+  for arg in "$@"; do
+    case "$arg" in
+      -v|--verbose) verbose=true ;;
+      -f|--force) force=true ;;
+    esac
+  done
 
   [[ ! -d "$SKILL_STORE" ]] && mkdir -p "$SKILL_STORE"
+
+  # Skip scan if nothing changed (unless forced)
+  local scan_cache="$CONFIG_DIR/.last-scan"
+  if [[ "$force" == false && -f "$scan_cache" ]]; then
+    local cache_mtime now cache_age
+    cache_mtime=$(stat -f %m "$scan_cache" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    cache_age=$(( now - cache_mtime ))
+    # Skip if last scan was less than 60 seconds ago
+    if [[ "$cache_age" -lt 60 ]]; then
+      [[ "$verbose" == true ]] && info "Scan cached (${cache_age}s ago, use --force to rescan)"
+      return 0
+    fi
+  fi
 
   info "Scanning skill sources..."
 
@@ -570,6 +590,9 @@ print(count)
   done
 
   echo ""
+  # Update scan cache
+  touch "$scan_cache"
+
   success "Scan complete: ${BOLD}${total}${RESET} skills in canonical store (${local_count} local, ${total_synced} from plugins)"
 }
 
@@ -817,21 +840,16 @@ cmd_activate() {
   info "Scanning sources..."
   cmd_scan > /dev/null 2>&1 || true
 
-  # Step 2: Resolve skills
-  local matched_skills
-  matched_skills=$(resolve_skills "$file")
-  local skill_count
-  skill_count=$(echo "$matched_skills" | grep -c . || echo 0)
-
-  # Step 3: Count by prefix for summary
-  local prefix_summary
-  prefix_summary=$(echo "$matched_skills" | python3 -c "
-import os, sys
+  # Step 2: Resolve skills + count by prefix (single python call)
+  local resolve_output
+  resolve_output=$(python3 -c "
+import os, fnmatch
 from pathlib import Path
 from collections import Counter
 
 store = Path(os.path.expanduser('$SKILL_STORE'))
 sources_file = os.path.expanduser('$SOURCES_FILE')
+env_file = '$file'
 
 # Build source mapping
 source_map = {}
@@ -858,27 +876,71 @@ if os.path.exists(sources_file):
     if current.get('name') and current.get('marketplace') and current.get('plugin'):
         source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
 
-counts = Counter()
-for line in sys.stdin:
-    dirname = line.strip()
-    if not dirname:
-        continue
-    item = store / dirname
+def get_prefix(item):
     if item.is_symlink():
         target = str(item.resolve())
-        prefix = 'plugin'
         for path_key, src_name in source_map.items():
             if path_key in target:
-                prefix = src_name
-                break
-    elif '-' in dirname:
-        prefix = dirname.split('-', 1)[0]
+                return src_name, item.name
+        return 'plugin', item.name
     else:
-        prefix = 'local'
-    counts[prefix] += 1
-parts = [f'{prefix}: {count}' for prefix, count in sorted(counts.items())]
-print(', '.join(parts))
+        name = item.name
+        if '-' in name:
+            return name.split('-', 1)[0], name.split('-', 1)[1]
+        return 'local', name
+
+# Read patterns
+patterns = []
+in_skills = False
+for line in open(env_file):
+    line = line.rstrip()
+    if line.startswith('skills:'):
+        in_skills = True
+        continue
+    if in_skills and line.startswith('  - '):
+        patterns.append(line[4:].strip().strip('\"').strip(\"'\"))
+    elif in_skills and line and not line.startswith(' ') and not line.startswith('#'):
+        break
+
+if not patterns:
+    print('SUMMARY:')
+    exit(0)
+
+# Build skill map and match
+skill_map = {}
+prefix_map = {}
+for item in sorted(store.iterdir()):
+    if not item.is_dir():
+        continue
+    prefix, remainder = get_prefix(item)
+    skill_id = f'{prefix}:{remainder}'
+    skill_map[skill_id] = item.name
+    prefix_map[item.name] = prefix
+
+matched = set()
+for pattern in patterns:
+    for skill_id, dirname in skill_map.items():
+        if fnmatch.fnmatch(skill_id, pattern):
+            matched.add(dirname)
+
+# Output matched skills
+for dirname in sorted(matched):
+    print(dirname)
+
+# Output summary line (prefixed with SUMMARY:)
+counts = Counter()
+for dirname in matched:
+    counts[prefix_map.get(dirname, 'unknown')] += 1
+parts = [f'{p}: {c}' for p, c in sorted(counts.items())]
+summary = ', '.join(parts)
+print(f'SUMMARY:{summary}')
 ")
+
+  # Parse output: skill lines + last line is SUMMARY:
+  local matched_skills prefix_summary skill_count
+  prefix_summary=$(echo "$resolve_output" | grep '^SUMMARY:' | sed 's/^SUMMARY://')
+  matched_skills=$(echo "$resolve_output" | grep -v '^SUMMARY:')
+  skill_count=$(echo "$matched_skills" | grep -c . || echo 0)
 
   if [[ "$dry_run" == true ]]; then
     echo -e "\n${YELLOW}Dry run — would activate:${RESET}\n"
@@ -897,33 +959,48 @@ print(', '.join(parts))
     return
   fi
 
-  # Step 4: Rebuild agent skill directories
-  # Both ~/.claude/skills/ and ~/.agents/skills/ are filtered views
+  # Step 4: Rebuild agent skill directories (skip if unchanged)
   local linked=0
-  for agent_dir in "$CLAUDE_SKILLS" "$AGENT_SKILLS"; do
-    mkdir -p "$agent_dir"
+  local current_active
+  current_active=$(get_active)
 
-    # Remove all existing symlinks
-    for item in "$agent_dir"/*; do
-      if [[ -L "$item" ]]; then
-        rm "$item"
-      fi
+  # Check if we can skip rebuild (same env, symlinks already correct)
+  local needs_rebuild=true
+  if [[ "$current_active" == "$name" ]]; then
+    # Quick check: count symlinks in claude dir matches skill count
+    local existing_count=0
+    for item in "$CLAUDE_SKILLS"/*; do
+      [[ -L "$item" ]] && (( existing_count++ )) || true
     done
+    [[ "$existing_count" -eq "$skill_count" ]] && needs_rebuild=false
+  fi
 
-    # Create new symlinks for matched skills
-    while IFS= read -r skill_dir; do
-      [[ -z "$skill_dir" ]] && continue
-      local source_path="$SKILL_STORE/${skill_dir}"
-      local target_path="$agent_dir/${skill_dir}"
+  if [[ "$needs_rebuild" == true ]]; then
+    for agent_dir in "$CLAUDE_SKILLS" "$AGENT_SKILLS"; do
+      mkdir -p "$agent_dir"
 
-      if [[ -d "$source_path" || -L "$source_path" ]]; then
-        ln -s "$source_path" "$target_path"
-        [[ "$agent_dir" == "$CLAUDE_SKILLS" ]] && (( linked++ )) || true
-      else
-        warn "Skill directory not found: ${source_path}"
-      fi
-    done <<< "$matched_skills"
-  done
+      # Remove all existing symlinks
+      for item in "$agent_dir"/*; do
+        [[ -L "$item" ]] && rm "$item"
+      done
+
+      # Create new symlinks for matched skills
+      while IFS= read -r skill_dir; do
+        [[ -z "$skill_dir" ]] && continue
+        local source_path="$SKILL_STORE/${skill_dir}"
+        local target_path="$agent_dir/${skill_dir}"
+
+        if [[ -d "$source_path" || -L "$source_path" ]]; then
+          ln -s "$source_path" "$target_path"
+          [[ "$agent_dir" == "$CLAUDE_SKILLS" ]] && (( linked++ )) || true
+        else
+          warn "Skill directory not found: ${source_path}"
+        fi
+      done <<< "$matched_skills"
+    done
+  else
+    linked=$skill_count
+  fi
 
   # Step 5: Write active marker
   echo "$name" > "$ACTIVE_FILE"
