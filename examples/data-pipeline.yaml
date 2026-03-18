@@ -1,0 +1,29 @@
+# ============================================================================
+# AI Environment: Data Pipeline
+# ============================================================================
+
+name: "Data Pipeline"
+description: "Airflow DAGs and dbt transformations"
+directory: "~/projects/data-platform"
+
+model: "claude-sonnet-4-6"
+
+extra_dirs:
+  - "../dbt-models"
+  - "../shared-schemas"
+
+mcp_servers:
+  - name: bigquery
+    transport: stdio
+    command: npx
+    args: "-y @modelcontextprotocol/server-bigquery --project my-gcp-project"
+
+env:
+  GOOGLE_APPLICATION_CREDENTIALS: ~/.config/gcloud/application_default_credentials.json
+  DBT_PROFILES_DIR: ~/.dbt
+  AIRFLOW_HOME: ~/airflow
+
+hooks:
+  pre_activate:
+    - "source .venv/bin/activate"
+    - "dbt deps"

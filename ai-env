@@ -1,0 +1,1273 @@
+#!/usr/bin/env bash
+# ============================================================================
+# ai-env — Skill Profile Manager for AI Coding Agents
+# ============================================================================
+# Discovers skills from multiple plugin sources, manages a canonical store
+# at ~/.agents/skills/, and rebuilds ~/.claude/skills/ with filtered symlinks
+# based on environment configs.
+#
+# Usage:  ai-env <command> [options]
+# Config: ~/.config/ai-env/
+# ============================================================================
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Constants & defaults
+# ---------------------------------------------------------------------------
+VERSION="2.0.0"
+CONFIG_DIR="${AI_ENV_DIR:-$HOME/.config/ai-env}"
+ENV_DIR="$CONFIG_DIR/environments"
+SOURCES_FILE="$CONFIG_DIR/sources.yaml"
+ACTIVE_FILE="$CONFIG_DIR/.active"
+CANONICAL_STORE="$HOME/.agents/skills"
+CLAUDE_SKILLS="$HOME/.claude/skills"
+EDITOR="${EDITOR:-vim}"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+info()    { echo -e "${BLUE}ℹ${RESET}  $*"; }
+success() { echo -e "${GREEN}✓${RESET}  $*"; }
+warn()    { echo -e "${YELLOW}⚠${RESET}  $*"; }
+error()   { echo -e "${RED}✗${RESET}  $*" >&2; }
+die()     { error "$@"; exit 1; }
+
+# Check for required dependencies
+require_cmd() {
+  command -v "$1" &>/dev/null || die "Required command '$1' not found. Please install it."
+}
+
+# Read a YAML value using basic parsing (no external deps)
+# Supports simple key: value pairs and nested keys via dot notation
+yaml_get() {
+  local file="$1" key="$2"
+  # Handle simple top-level keys
+  if [[ "$key" != *.* ]]; then
+    grep -E "^${key}:" "$file" 2>/dev/null | head -1 | sed "s/^${key}:[[:space:]]*//" | sed 's/^["'"'"']\(.*\)["'"'"']$/\1/' | sed 's/[[:space:]]*$//' || true
+  else
+    # Handle nested keys (one level: parent.child)
+    local parent="${key%%.*}"
+    local child="${key#*.}"
+    awk -v parent="$parent" -v child="$child" '
+      BEGIN { in_section=0 }
+      /^[^ #]/ { in_section=0 }
+      $0 ~ "^"parent":" { in_section=1; next }
+      in_section && $0 ~ "^[[:space:]]+"child":" {
+        sub(/^[[:space:]]+/,"",$0)
+        sub(/^[^:]+:[[:space:]]*/,"",$0)
+        gsub(/^["'"'"'"'"'"']|["'"'"'"'"'"']$/,"",$0)
+        print $0
+        exit
+      }
+    ' "$file"
+  fi
+}
+
+# Read a YAML list (lines starting with "  - ")
+yaml_list() {
+  local file="$1" key="$2"
+  awk -v key="$key" '
+    BEGIN { in_section=0 }
+    /^[^ #]/ { if (in_section) exit; in_section=0 }
+    $0 ~ "^"key":" { in_section=1; next }
+    in_section && /^[[:space:]]+-[[:space:]]/ {
+      sub(/^[[:space:]]+-[[:space:]]*/,"",$0)
+      gsub(/^["'"'"'"'"'"']|["'"'"'"'"'"']$/,"",$0)
+      gsub(/[[:space:]]*$/,"",$0)
+      print $0
+    }
+  ' "$file"
+}
+
+# Read a YAML map (key: value pairs under a section)
+yaml_map() {
+  local file="$1" section="$2"
+  awk -v section="$section" '
+    BEGIN { in_section=0 }
+    /^[^ #]/ { if (in_section) exit; in_section=0 }
+    $0 ~ "^"section":" { in_section=1; next }
+    in_section && /^[[:space:]]+[^-]/ && /:[[:space:]]/ {
+      sub(/^[[:space:]]+/,"",$0)
+      print $0
+    }
+  ' "$file"
+}
+
+# Read a deeply nested YAML value (up to 3 levels: a.b.c)
+yaml_nested_get() {
+  local file="$1" key="$2"
+  local -a parts
+  IFS='.' read -ra parts <<< "$key"
+  local depth=${#parts[@]}
+
+  if [[ $depth -eq 1 ]]; then
+    yaml_get "$file" "${parts[0]}"
+  elif [[ $depth -eq 2 ]]; then
+    yaml_get "$file" "${parts[0]}.${parts[1]}"
+  elif [[ $depth -eq 3 ]]; then
+    # Three-level nesting: agents.claude.model
+    python3 -c "
+import sys
+lines = open('$file').readlines()
+level = 0
+found = [False, False, False]
+keys = ('${parts[0]}', '${parts[1]}', '${parts[2]}')
+for line in lines:
+    stripped = line.rstrip()
+    if not stripped or stripped.startswith('#'):
+        continue
+    indent = len(line) - len(line.lstrip())
+    content = stripped.lstrip()
+    if indent == 0 and content.startswith(keys[0] + ':'):
+        found[0] = True
+        continue
+    if found[0] and indent == 2 and content.startswith(keys[1] + ':'):
+        found[1] = True
+        continue
+    if found[1] and indent == 4 and content.startswith(keys[2] + ':'):
+        val = content.split(':', 1)[1].strip().strip('\"').strip(\"'\")
+        print(val)
+        sys.exit(0)
+    if found[1] and indent <= 2:
+        break
+    if found[0] and indent == 0:
+        break
+"
+  fi
+}
+
+env_file() {
+  echo "$ENV_DIR/${1}.yaml"
+}
+
+env_exists() {
+  [[ -f "$(env_file "$1")" ]]
+}
+
+list_envs() {
+  find "$ENV_DIR" -maxdepth 1 -name '*.yaml' -exec basename {} .yaml \; 2>/dev/null | sort
+}
+
+get_active() {
+  [[ -f "$ACTIVE_FILE" ]] && cat "$ACTIVE_FILE" || echo ""
+}
+
+# ---------------------------------------------------------------------------
+# Plugin Version Resolution
+# ---------------------------------------------------------------------------
+
+# resolve_latest_version <cache_path>
+# Prints the path to the latest version directory
+resolve_latest_version() {
+  local cache_path="$1"
+  [[ ! -d "$cache_path" ]] && return 1
+
+  python3 -c "
+import os, re, sys
+from pathlib import Path
+
+cache = Path('$cache_path')
+versions = [d for d in cache.iterdir() if d.is_dir()]
+if not versions:
+    sys.exit(1)
+
+# Check if versions look like semver
+semver_re = re.compile(r'^\d+\.\d+\.\d+$')
+semver_versions = [v for v in versions if semver_re.match(v.name)]
+
+if semver_versions:
+    # Sort by semver (major, minor, patch)
+    def semver_key(v):
+        parts = v.name.split('.')
+        return tuple(int(p) for p in parts)
+    latest = max(semver_versions, key=semver_key)
+else:
+    # Hash-based: use modification time
+    latest = max(versions, key=lambda v: v.stat().st_mtime)
+
+print(latest)
+"
+}
+
+# find_skills_in_version <version_dir>
+# Prints skill directory paths, one per line
+find_skills_in_version() {
+  local version_dir="$1"
+
+  # Check skills/ first (primary location)
+  if [[ -d "${version_dir}/skills" ]]; then
+    for skill_dir in "${version_dir}/skills"/*/; do
+      [[ -d "$skill_dir" ]] && echo "$skill_dir"
+    done
+  fi
+
+  # Also check .claude/skills/ (some plugins put skills here)
+  if [[ -d "${version_dir}/.claude/skills" ]]; then
+    for skill_dir in "${version_dir}/.claude/skills"/*/; do
+      [[ -d "$skill_dir" ]] && echo "$skill_dir"
+    done
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Source Management
+# ---------------------------------------------------------------------------
+
+# parse_sources - reads sources.yaml and outputs name|marketplace|plugin lines
+parse_sources() {
+  [[ ! -f "$SOURCES_FILE" ]] && return
+  python3 -c "
+in_sources = False
+current = {}
+for line in open('$SOURCES_FILE'):
+    line = line.rstrip()
+    if line.startswith('sources:'):
+        in_sources = True
+        continue
+    if not in_sources:
+        continue
+    if line.startswith('  - '):
+        if current.get('name'):
+            print(f\"{current['name']}|{current.get('marketplace','')}|{current.get('plugin','')}\")
+        current = {}
+        rest = line[4:].strip()
+        if rest.startswith('name:'):
+            current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
+    elif line.startswith('    ') and ':' in line:
+        k, v = line.strip().split(':', 1)
+        current[k.strip()] = v.strip().strip('\"').strip(\"'\")
+    elif line and not line.startswith(' ') and not line.startswith('#'):
+        break
+if current.get('name'):
+    print(f\"{current['name']}|{current.get('marketplace','')}|{current.get('plugin','')}\")
+"
+}
+
+cmd_source() {
+  local subcmd="${1:-}"
+  shift || true
+  case "$subcmd" in
+    list|ls)   cmd_source_list "$@" ;;
+    add)       cmd_source_add "$@" ;;
+    remove|rm) cmd_source_remove "$@" ;;
+    "")        die "Usage: ai-env source <list|add|remove>" ;;
+    *)         die "Unknown source command: $subcmd" ;;
+  esac
+}
+
+cmd_source_list() {
+  if [[ ! -f "$SOURCES_FILE" ]]; then
+    warn "No sources registered. Run ${CYAN}ai-env init${RESET} or ${CYAN}ai-env source add${RESET}."
+    return
+  fi
+  echo -e "${BOLD}Registered plugin sources:${RESET}\n"
+  echo -e "  ${DIM}(~/.agents/skills/ is always scanned implicitly)${RESET}\n"
+
+  # Parse sources from YAML
+  python3 -c "
+import sys
+in_sources = False
+current = {}
+for line in open('$SOURCES_FILE'):
+    line = line.rstrip()
+    if line.startswith('sources:'):
+        in_sources = True
+        continue
+    if in_sources and line.startswith('  - '):
+        if current:
+            print(f\"  {current.get('name','?'):20s} {current.get('marketplace','?')}/{current.get('plugin','?')}\")
+        current = {}
+        rest = line[4:].strip()
+        if rest.startswith('name:'):
+            current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
+    elif in_sources and line.startswith('    '):
+        parts = line.strip().split(':', 1)
+        if len(parts) == 2:
+            k = parts[0].strip()
+            v = parts[1].strip().strip('\"').strip(\"'\")
+            current[k] = v
+    elif in_sources and not line.strip().startswith('#') and not line.strip() == '' and not line.startswith(' '):
+        break
+if current:
+    print(f\"  {current.get('name','?'):20s} {current.get('marketplace','?')}/{current.get('plugin','?')}\")
+"
+}
+
+cmd_source_add() {
+  local name="${1:-}" marketplace="${2:-}" plugin="${3:-}"
+  [[ -z "$name" || -z "$marketplace" || -z "$plugin" ]] && \
+    die "Usage: ai-env source add <name> <marketplace> <plugin>\n  Example: ai-env source add superpowers superpowers-dev superpowers"
+
+  # Validate plugin cache exists
+  local cache_path="$HOME/.claude/plugins/cache/${marketplace}/${plugin}"
+  if [[ ! -d "$cache_path" ]]; then
+    die "Plugin cache not found: ${cache_path}\n  Available marketplaces: $(ls ~/.claude/plugins/cache/ 2>/dev/null | tr '\n' ' ')"
+  fi
+
+  # Ensure sources file exists with header
+  if [[ ! -f "$SOURCES_FILE" ]]; then
+    mkdir -p "$(dirname "$SOURCES_FILE")"
+    echo "sources:" > "$SOURCES_FILE"
+  fi
+
+  # Check for duplicate name
+  if grep -q "name: ${name}" "$SOURCES_FILE" 2>/dev/null; then
+    die "Source '${name}' already registered. Remove it first with: ai-env source remove ${name}"
+  fi
+
+  # Append
+  cat >> "$SOURCES_FILE" << EOF
+  - name: "${name}"
+    marketplace: "${marketplace}"
+    plugin: "${plugin}"
+EOF
+
+  success "Registered source: ${BOLD}${name}${RESET} (${marketplace}/${plugin})"
+}
+
+cmd_source_remove() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "Usage: ai-env source remove <name>"
+
+  if ! grep -q "name: .*${name}" "$SOURCES_FILE" 2>/dev/null; then
+    die "Source '${name}' not found."
+  fi
+
+  # Use python to remove the block
+  python3 -c "
+import re
+with open('$SOURCES_FILE') as f:
+    content = f.read()
+
+# Remove the block starting with '  - name: \"$name\"' until next '  - ' or end of sources
+lines = content.split('\n')
+result = []
+skip = False
+for line in lines:
+    if '  - name:' in line and '$name' in line:
+        skip = True
+        continue
+    if skip and (line.startswith('  - ') or (line and not line.startswith('    ') and not line.startswith('  - '))):
+        skip = False
+    if skip and line.startswith('    '):
+        continue
+    result.append(line)
+
+with open('$SOURCES_FILE', 'w') as f:
+    f.write('\n'.join(result))
+"
+  success "Removed source: ${BOLD}${name}${RESET}"
+}
+
+# ---------------------------------------------------------------------------
+# Scan Command
+# ---------------------------------------------------------------------------
+
+cmd_scan() {
+  local verbose=false
+  [[ "${1:-}" == "-v" || "${1:-}" == "--verbose" ]] && verbose=true
+
+  [[ ! -d "$CANONICAL_STORE" ]] && mkdir -p "$CANONICAL_STORE"
+
+  info "Scanning skill sources..."
+
+  local total_synced=0
+  local total_skipped=0
+
+  # 1. Scan registered plugin sources
+  if [[ -f "$SOURCES_FILE" ]]; then
+    # Parse sources and scan each
+    while IFS='|' read -r src_name src_marketplace src_plugin; do
+      local cache_path="$HOME/.claude/plugins/cache/${src_marketplace}/${src_plugin}"
+
+      if [[ ! -d "$cache_path" ]]; then
+        warn "Source '${src_name}': cache not found at ${cache_path}"
+        continue
+      fi
+
+      local version_dir
+      version_dir=$(resolve_latest_version "$cache_path") || {
+        warn "Source '${src_name}': no versions found"
+        continue
+      }
+
+      local src_count=0
+      while IFS= read -r skill_path; do
+        [[ -z "$skill_path" ]] && continue
+        local skill_name
+        skill_name=$(basename "$skill_path")
+        local target="$CANONICAL_STORE/${skill_name}"
+
+        if [[ -d "$target" && ! -L "$target" ]]; then
+          # Local skill takes precedence -- don't overwrite
+          [[ "$verbose" == true ]] && echo -e "  ${DIM}skip: ${skill_name} (local override)${RESET}"
+          (( total_skipped++ )) || true
+        elif [[ -L "$target" ]]; then
+          # Already a symlink -- update if pointing elsewhere
+          local current_target
+          current_target=$(readlink "$target")
+          local new_target="${skill_path%/}"
+          if [[ "$current_target" != "$new_target" ]]; then
+            rm "$target"
+            ln -s "$new_target" "$target"
+            [[ "$verbose" == true ]] && echo -e "  ${DIM}update: ${skill_name} -> ${new_target}${RESET}"
+          fi
+          (( src_count++ )) || true
+        else
+          # New skill -- create symlink
+          ln -s "${skill_path%/}" "$target"
+          [[ "$verbose" == true ]] && echo -e "  ${GREEN}+${RESET} ${skill_name} -> ${skill_path%/}"
+          (( src_count++ )) || true
+        fi
+      done < <(find_skills_in_version "$version_dir")
+
+      (( total_synced += src_count )) || true
+      info "Source '${src_name}': ${src_count} skills from ${version_dir##*/}"
+
+    done < <(parse_sources)
+  fi
+
+  # 2. Count local skills (direct dirs in canonical store, not symlinks)
+  local local_count=0
+  for item in "$CANONICAL_STORE"/*/; do
+    [[ -d "$item" && ! -L "$item" ]] && (( local_count++ )) || true
+  done
+
+  # 3. Count total
+  local total=0
+  for item in "$CANONICAL_STORE"/*/; do
+    [[ -d "$item" ]] && (( total++ )) || true
+  done
+
+  echo ""
+  success "Scan complete: ${BOLD}${total}${RESET} skills in canonical store (${local_count} local, ${total_synced} from plugins)"
+}
+
+# ---------------------------------------------------------------------------
+# Skill ID Derivation
+# ---------------------------------------------------------------------------
+
+# derive_skill_id <dirname>
+# For canonical store items: prefix = first segment before '-', name = rest
+# No dash = local:<dirname>
+derive_skill_id() {
+  local dirname="$1"
+  if [[ "$dirname" == *-* ]]; then
+    local prefix="${dirname%%-*}"
+    local name="${dirname#*-}"
+    echo "${prefix}:${name}"
+  else
+    echo "local:${dirname}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Inventory Command
+# ---------------------------------------------------------------------------
+
+cmd_inventory() {
+  local filter="${1:-}"
+
+  if [[ ! -d "$CANONICAL_STORE" ]]; then
+    die "Canonical store not found. Run ${CYAN}ai-env init${RESET} first."
+  fi
+
+  echo -e "${BOLD}Skill Inventory${RESET} (${DIM}~/.agents/skills/${RESET})\n"
+
+  # Build inventory using python for clean sorting/grouping
+  python3 -c "
+import os
+from pathlib import Path
+from collections import defaultdict
+
+store = Path(os.path.expanduser('~/.agents/skills'))
+sources_file = os.path.expanduser('$SOURCES_FILE')
+
+# Build source mapping: marketplace/plugin -> source_name
+source_map = {}  # partial path -> source name
+if os.path.exists(sources_file):
+    current = {}
+    in_sources = False
+    for line in open(sources_file):
+        line = line.rstrip()
+        if line.startswith('sources:'):
+            in_sources = True
+            continue
+        if not in_sources:
+            continue
+        if line.startswith('  - '):
+            if current.get('name') and current.get('marketplace') and current.get('plugin'):
+                key = f\"{current['marketplace']}/{current['plugin']}\"
+                source_map[key] = current['name']
+            current = {}
+            rest = line[4:].strip()
+            if rest.startswith('name:'):
+                current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
+        elif line.startswith('    ') and ':' in line:
+            k, v = line.strip().split(':', 1)
+            current[k.strip()] = v.strip().strip('\"').strip(\"'\")
+    if current.get('name') and current.get('marketplace') and current.get('plugin'):
+        source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+
+def get_prefix(item):
+    \"\"\"Determine skill prefix from symlink target or dirname.\"\"\"
+    if item.is_symlink():
+        target = str(item.resolve())
+        # Match against registered sources
+        for path_key, src_name in source_map.items():
+            if path_key in target:
+                return src_name, item.name
+        # Fallback: unknown plugin
+        return 'plugin', item.name
+    else:
+        # Local skill: use first segment before dash, or 'local'
+        name = item.name
+        if '-' in name:
+            return name.split('-', 1)[0], name.split('-', 1)[1]
+        return 'local', name
+
+skills = []
+for item in sorted(store.iterdir()):
+    if not item.is_dir():
+        continue
+    prefix, remainder = get_prefix(item)
+    source_type = 'symlink' if item.is_symlink() else 'local'
+    skills.append((prefix, remainder, item.name, source_type))
+
+# Group by prefix
+groups = defaultdict(list)
+for prefix, remainder, dirname, stype in skills:
+    groups[prefix].append((remainder, dirname, stype))
+
+filter_pattern = '$filter'
+
+for prefix in sorted(groups.keys()):
+    items = groups[prefix]
+    print(f'  \033[1m{prefix}\033[0m ({len(items)} skills)')
+    for remainder, dirname, stype in items:
+        skill_id = f'{prefix}:{remainder}'
+        if filter_pattern and filter_pattern not in skill_id:
+            continue
+        marker = '  \033[2m(plugin)\033[0m' if stype == 'symlink' else ''
+        print(f'    {skill_id}{marker}')
+    print()
+
+total = len(skills)
+print(f'Total: {total} skills')
+"
+}
+
+# ---------------------------------------------------------------------------
+# Skill Pattern Matching
+# ---------------------------------------------------------------------------
+
+# resolve_skills <env_file>
+# Reads skill patterns from environment YAML, matches against canonical store
+# Prints matching skill directory names (one per line)
+resolve_skills() {
+  local env_file="$1"
+
+  python3 -c "
+import os, fnmatch
+from pathlib import Path
+
+store = Path(os.path.expanduser('~/.agents/skills'))
+sources_file = os.path.expanduser('$SOURCES_FILE')
+
+# Build source mapping: marketplace/plugin -> source_name
+source_map = {}
+if os.path.exists(sources_file):
+    current = {}
+    in_sources = False
+    for line in open(sources_file):
+        line = line.rstrip()
+        if line.startswith('sources:'):
+            in_sources = True
+            continue
+        if not in_sources:
+            continue
+        if line.startswith('  - '):
+            if current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            current = {}
+            rest = line[4:].strip()
+            if rest.startswith('name:'):
+                current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
+        elif line.startswith('    ') and ':' in line:
+            k, v = line.strip().split(':', 1)
+            current[k.strip()] = v.strip().strip('\"').strip(\"'\")
+    if current.get('name') and current.get('marketplace') and current.get('plugin'):
+        source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+
+def get_prefix(item):
+    if item.is_symlink():
+        target = str(item.resolve())
+        for path_key, src_name in source_map.items():
+            if path_key in target:
+                return src_name, item.name
+        return 'plugin', item.name
+    else:
+        name = item.name
+        if '-' in name:
+            return name.split('-', 1)[0], name.split('-', 1)[1]
+        return 'local', name
+
+# Read skill patterns from env file
+patterns = []
+in_skills = False
+for line in open('$env_file'):
+    line = line.rstrip()
+    if line.startswith('skills:'):
+        in_skills = True
+        continue
+    if in_skills and line.startswith('  - '):
+        pattern = line[4:].strip().strip('\"').strip(\"'\")
+        patterns.append(pattern)
+    elif in_skills and line and not line.startswith(' ') and not line.startswith('#'):
+        break
+
+if not patterns:
+    exit(0)
+
+# Build skill ID -> dirname mapping
+skill_map = {}
+for item in sorted(store.iterdir()):
+    if not item.is_dir():
+        continue
+    prefix, remainder = get_prefix(item)
+    skill_id = f'{prefix}:{remainder}'
+    skill_map[skill_id] = item.name
+
+# Match patterns against skill IDs
+matched = set()
+for pattern in patterns:
+    for skill_id, dirname in skill_map.items():
+        if fnmatch.fnmatch(skill_id, pattern):
+            matched.add(dirname)
+
+for dirname in sorted(matched):
+    print(dirname)
+"
+}
+
+# ---------------------------------------------------------------------------
+# Stub Command Functions (Tasks 8-12)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Task 8: Activate Command
+# ---------------------------------------------------------------------------
+
+cmd_activate() {
+  local name=""
+  local dry_run=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run|-n) dry_run=true; shift ;;
+      -*) die "Unknown flag: $1" ;;
+      *)  name="$1"; shift ;;
+    esac
+  done
+
+  [[ -z "$name" ]] && die "Usage: ai-env activate <name> [--dry-run]"
+  env_exists "$name" || die "Environment '${name}' not found. Run 'ai-env list' to see available environments."
+
+  local file
+  file="$(env_file "$name")"
+  local display_name
+  display_name=$(yaml_get "$file" "name")
+  local directory
+  directory=$(yaml_get "$file" "directory")
+  [[ -n "$directory" ]] && directory="${directory/#\~/$HOME}"
+
+  # Step 1: Scan sources (silent unless verbose)
+  info "Scanning sources..."
+  cmd_scan > /dev/null 2>&1 || true
+
+  # Step 2: Resolve skills
+  local matched_skills
+  matched_skills=$(resolve_skills "$file")
+  local skill_count
+  skill_count=$(echo "$matched_skills" | grep -c . || echo 0)
+
+  # Step 3: Count by prefix for summary
+  local prefix_summary
+  prefix_summary=$(echo "$matched_skills" | python3 -c "
+import os, sys
+from pathlib import Path
+from collections import Counter
+
+store = Path(os.path.expanduser('~/.agents/skills'))
+sources_file = os.path.expanduser('$SOURCES_FILE')
+
+# Build source mapping
+source_map = {}
+if os.path.exists(sources_file):
+    current = {}
+    in_sources = False
+    for line in open(sources_file):
+        line = line.rstrip()
+        if line.startswith('sources:'):
+            in_sources = True
+            continue
+        if not in_sources:
+            continue
+        if line.startswith('  - '):
+            if current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            current = {}
+            rest = line[4:].strip()
+            if rest.startswith('name:'):
+                current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
+        elif line.startswith('    ') and ':' in line:
+            k, v = line.strip().split(':', 1)
+            current[k.strip()] = v.strip().strip('\"').strip(\"'\")
+    if current.get('name') and current.get('marketplace') and current.get('plugin'):
+        source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+
+counts = Counter()
+for line in sys.stdin:
+    dirname = line.strip()
+    if not dirname:
+        continue
+    item = store / dirname
+    if item.is_symlink():
+        target = str(item.resolve())
+        prefix = 'plugin'
+        for path_key, src_name in source_map.items():
+            if path_key in target:
+                prefix = src_name
+                break
+    elif '-' in dirname:
+        prefix = dirname.split('-', 1)[0]
+    else:
+        prefix = 'local'
+    counts[prefix] += 1
+parts = [f'{prefix}: {count}' for prefix, count in sorted(counts.items())]
+print(', '.join(parts))
+")
+
+  if [[ "$dry_run" == true ]]; then
+    echo -e "\n${YELLOW}Dry run — would activate:${RESET}\n"
+    echo -e "  Environment: ${BOLD}${display_name:-$name}${RESET}"
+    [[ -n "$directory" ]] && echo -e "  Directory:   ${directory}"
+    echo -e "  Skills:      ${skill_count} (${prefix_summary})"
+    echo ""
+    echo -e "  ${DIM}Would rebuild ~/.claude/skills/ with ${skill_count} symlinks${RESET}"
+    echo ""
+    echo -e "  Matched skills:"
+    echo "$matched_skills" | while IFS= read -r s; do
+      [[ -n "$s" ]] && echo -e "    ${s}"
+    done
+    return
+  fi
+
+  # Step 4: Rebuild ~/.claude/skills/
+  # Remove all existing symlinks (but NOT bare files/dirs -- those should have been migrated by init)
+  for item in "$CLAUDE_SKILLS"/*; do
+    if [[ -L "$item" ]]; then
+      rm "$item"
+    fi
+  done
+
+  # Create new symlinks for matched skills
+  local linked=0
+  while IFS= read -r skill_dir; do
+    [[ -z "$skill_dir" ]] && continue
+    local source_path="$CANONICAL_STORE/${skill_dir}"
+    local target_path="$CLAUDE_SKILLS/${skill_dir}"
+
+    if [[ -d "$source_path" || -L "$source_path" ]]; then
+      # Use relative symlink for cleanliness
+      ln -s "../../.agents/skills/${skill_dir}" "$target_path"
+      (( linked++ )) || true
+    else
+      warn "Skill directory not found: ${source_path}"
+    fi
+  done <<< "$matched_skills"
+
+  # Step 5: Write active marker
+  echo "$name" > "$ACTIVE_FILE"
+
+  # Step 6: Read agent config for display
+  local model permission_mode
+  model=$(yaml_nested_get "$file" "agents.claude.model")
+  permission_mode=$(yaml_nested_get "$file" "agents.claude.permission_mode")
+
+  # Step 7: Print summary
+  echo ""
+  echo -e "${GREEN}✓${RESET} ${BOLD}Activated: ${display_name:-$name}${RESET}"
+  [[ -n "$directory" ]] && echo -e "  Directory: ${directory}"
+  echo -e "  Skills: ${linked} active (${prefix_summary})"
+  if [[ -n "$model" || -n "$permission_mode" ]]; then
+    local agent_info="claude"
+    [[ -n "$model" ]] && agent_info="${agent_info} (${model}"
+    [[ -n "$permission_mode" ]] && agent_info="${agent_info}, ${permission_mode} mode"
+    [[ -n "$model" || -n "$permission_mode" ]] && agent_info="${agent_info})"
+    echo -e "  Agent: ${agent_info}"
+  fi
+  echo ""
+  if [[ -n "$directory" ]]; then
+    echo -e "  ${DIM}cd ${directory} && claude${RESET}"
+  else
+    echo -e "  ${DIM}claude${RESET}"
+  fi
+  echo ""
+}
+
+# ---------------------------------------------------------------------------
+# Task 9: Init Command
+# ---------------------------------------------------------------------------
+
+cmd_init() {
+  echo -e "${BOLD}Initializing ai-env skill profile manager...${RESET}\n"
+
+  # 1. Create config directories
+  mkdir -p "$CONFIG_DIR"
+  mkdir -p "$ENV_DIR"
+  mkdir -p "$CANONICAL_STORE"
+  success "Config directory: ${CONFIG_DIR}"
+  success "Environments: ${ENV_DIR}"
+  success "Canonical store: ${CANONICAL_STORE}"
+
+  # 2. Backup ~/.claude/skills/ if it exists and has content
+  if [[ -d "$CLAUDE_SKILLS" ]] && [[ -n "$(ls -A "$CLAUDE_SKILLS" 2>/dev/null)" ]]; then
+    local backup="$HOME/.claude/skills.bak.$(date +%Y-%m-%d)"
+    if [[ ! -d "$backup" ]]; then
+      cp -a "$CLAUDE_SKILLS" "$backup"
+      success "Backed up ~/.claude/skills/ to ${backup}"
+    else
+      info "Backup already exists: ${backup}"
+    fi
+  fi
+
+  # 3. Migrate bare files/dirs from ~/.claude/skills/ to ~/.agents/skills/
+  local migrated=0
+  if [[ -d "$CLAUDE_SKILLS" ]]; then
+    for item in "$CLAUDE_SKILLS"/*; do
+      [[ ! -e "$item" ]] && continue
+
+      local basename
+      basename=$(basename "$item")
+
+      # Skip if it's already a symlink (already managed)
+      [[ -L "$item" ]] && continue
+
+      local target="$CANONICAL_STORE/${basename}"
+
+      if [[ -f "$item" && "$item" == *.md ]]; then
+        # Bare .md file -- wrap in a directory with SKILL.md naming
+        local skill_name="${basename%.md}"
+        local skill_dir="$CANONICAL_STORE/${skill_name}"
+        if [[ ! -d "$skill_dir" ]]; then
+          mkdir -p "$skill_dir"
+          mv "$item" "$skill_dir/SKILL.md"
+          # Replace original with symlink
+          ln -s "../../.agents/skills/${skill_name}" "$CLAUDE_SKILLS/${skill_name}"
+          info "Migrated file: ${basename} -> ${skill_name}/SKILL.md"
+          (( migrated++ )) || true
+        else
+          warn "Skill '${skill_name}' already exists in canonical store, skipping ${basename}"
+        fi
+      elif [[ -d "$item" ]]; then
+        # Bare directory -- move to canonical store, replace with symlink
+        if [[ ! -d "$target" ]]; then
+          mv "$item" "$target"
+          ln -s "../../.agents/skills/${basename}" "$item"
+          info "Migrated dir: ${basename}"
+          (( migrated++ )) || true
+        else
+          warn "Skill '${basename}' already exists in canonical store, skipping"
+        fi
+      fi
+    done
+
+    if [[ $migrated -gt 0 ]]; then
+      success "Migrated ${migrated} items to canonical store"
+    else
+      info "No bare files/dirs to migrate"
+    fi
+  fi
+
+  # 4. Auto-detect plugin sources
+  if [[ ! -f "$SOURCES_FILE" ]]; then
+    echo "sources:" > "$SOURCES_FILE"
+
+    local detected=0
+    if [[ -d "$HOME/.claude/plugins/cache" ]]; then
+      for marketplace_dir in "$HOME/.claude/plugins/cache"/*/; do
+        local marketplace
+        marketplace=$(basename "$marketplace_dir")
+        for plugin_dir in "$marketplace_dir"/*/; do
+          local plugin
+          plugin=$(basename "$plugin_dir")
+
+          # Check if any version has a skills/ directory
+          local has_skills=false
+          for version_dir in "$plugin_dir"/*/; do
+            if [[ -d "${version_dir}skills" || -d "${version_dir}.claude/skills" ]]; then
+              has_skills=true
+              break
+            fi
+          done
+
+          if [[ "$has_skills" == true ]]; then
+            # Derive a short name: use plugin name, simplified
+            local source_name="${plugin}"
+            # Shorten common patterns
+            source_name="${source_name/itp-engineering-/itp-eng-}"
+
+            cat >> "$SOURCES_FILE" << EOF
+  - name: "${source_name}"
+    marketplace: "${marketplace}"
+    plugin: "${plugin}"
+EOF
+            (( detected++ )) || true
+            info "Detected source: ${source_name} (${marketplace}/${plugin})"
+          fi
+        done
+      done
+    fi
+
+    if [[ $detected -gt 0 ]]; then
+      success "Auto-registered ${detected} plugin sources"
+    fi
+    info "Edit sources with: ${CYAN}ai-env source list${RESET} / ${CYAN}ai-env source add${RESET}"
+  else
+    info "Sources file already exists: ${SOURCES_FILE}"
+  fi
+
+  # 5. Create example environment if none exist
+  if [[ -z "$(ls -A "$ENV_DIR" 2>/dev/null)" ]]; then
+    cat > "$ENV_DIR/example.yaml" << 'YAML'
+name: "Example"
+description: "An example environment -- edit or delete me"
+directory: "~/projects/example"
+
+skills:
+  - "*"
+
+# agents:
+#   claude:
+#     model: "claude-sonnet-4-6"
+#     permission_mode: "plan"
+YAML
+    info "Created example environment: ${CYAN}ai-env show example${RESET}"
+  fi
+
+  # 6. Run initial scan
+  echo ""
+  cmd_scan
+
+  echo ""
+  info "Next steps:"
+  echo -e "  ${CYAN}ai-env source list${RESET}           Review detected sources"
+  echo -e "  ${CYAN}ai-env inventory${RESET}             See all discovered skills"
+  echo -e "  ${CYAN}ai-env create my-project${RESET}     Create your first environment"
+  echo -e "  ${CYAN}ai-env activate my-project${RESET}   Activate it"
+}
+
+# ---------------------------------------------------------------------------
+# Task 10: Create Command
+# ---------------------------------------------------------------------------
+
+cmd_create() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "Usage: ai-env create <name>"
+
+  env_exists "$name" && die "Environment '${name}' already exists. Use 'ai-env edit ${name}' to modify it."
+
+  local file
+  file="$(env_file "$name")"
+
+  echo -e "${BOLD}Creating environment: ${CYAN}${name}${RESET}\n"
+
+  read -rp "Display name [${name}]: " display_name
+  display_name="${display_name:-$name}"
+
+  read -rp "Description: " description
+
+  read -rp "Working directory [~/Dev/${name}]: " directory
+  directory="${directory:-~/Dev/${name}}"
+
+  echo ""
+  echo "Skill patterns (enter one per line, empty line to finish):"
+  echo "  Examples: \"gws:*\", \"superpowers:*\", \"local:*\", \"*\" (all)"
+  local skill_patterns=()
+  while true; do
+    read -rp "  - " pattern
+    [[ -z "$pattern" ]] && break
+    skill_patterns+=("$pattern")
+  done
+
+  # Default to all if none specified
+  if [[ ${#skill_patterns[@]} -eq 0 ]]; then
+    skill_patterns=("*")
+    info "Defaulting to all skills (\"*\")"
+  fi
+
+  cat > "$file" << YAML
+name: "${display_name}"
+description: "${description}"
+directory: "${directory}"
+
+skills:
+YAML
+
+  for pattern in "${skill_patterns[@]}"; do
+    echo "  - \"${pattern}\"" >> "$file"
+  done
+
+  cat >> "$file" << 'YAML'
+
+# agents:
+#   claude:
+#     model: "claude-sonnet-4-6"
+#     permission_mode: "plan"
+#     system_prompt_file: "./CLAUDE.md"
+YAML
+
+  echo ""
+  success "Created environment: ${BOLD}${name}${RESET}"
+  info "Config: ${DIM}${file}${RESET}"
+  echo -e "  Edit:     ${CYAN}ai-env edit ${name}${RESET}"
+  echo -e "  Preview:  ${CYAN}ai-env activate ${name} --dry-run${RESET}"
+  echo -e "  Activate: ${CYAN}ai-env activate ${name}${RESET}"
+}
+
+# ---------------------------------------------------------------------------
+# Task 11: List, Show, Clone, Delete, Edit, Which Commands
+# ---------------------------------------------------------------------------
+
+cmd_list() {
+  local envs active
+  envs=$(list_envs)
+  active=$(get_active)
+
+  if [[ -z "$envs" ]]; then
+    warn "No environments found."
+    info "Run ${CYAN}ai-env create <name>${RESET} to get started."
+    return
+  fi
+
+  echo -e "${BOLD}Environments:${RESET}\n"
+
+  while IFS= read -r env_name; do
+    local file
+    file="$(env_file "$env_name")"
+    local display_name description skill_count
+    display_name=$(yaml_get "$file" "name")
+    description=$(yaml_get "$file" "description")
+
+    # Count skill patterns
+    skill_count=$(yaml_list "$file" "skills" | wc -l | xargs)
+
+    local marker=""
+    [[ "$env_name" == "$active" ]] && marker=" ${GREEN}● active${RESET}"
+
+    echo -e "  ${BOLD}${CYAN}${env_name}${RESET}${marker}"
+    [[ -n "$display_name" && "$display_name" != "$env_name" ]] && echo -e "    ${display_name}" || true
+    [[ -n "$description" ]] && echo -e "    ${DIM}${description}${RESET}" || true
+    [[ "$skill_count" -gt 0 ]] && echo -e "    ${DIM}${skill_count} skill pattern(s)${RESET}" || true
+    echo ""
+  done <<< "$envs"
+}
+
+cmd_show() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "Usage: ai-env show <name>"
+  env_exists "$name" || die "Environment '${name}' not found."
+
+  local file
+  file="$(env_file "$name")"
+  local display_name directory
+  display_name=$(yaml_get "$file" "name")
+  directory=$(yaml_get "$file" "directory")
+
+  echo -e "${BOLD}Environment: ${CYAN}${display_name:-$name}${RESET}\n"
+
+  # Show config
+  cat "$file"
+
+  # Show resolved skills
+  echo ""
+  echo -e "${BOLD}Resolved skills:${RESET}"
+  local resolved
+  resolved=$(resolve_skills "$file")
+  local count
+  count=$(echo "$resolved" | grep -c . || echo 0)
+  echo -e "  ${count} skills matched\n"
+
+  echo "$resolved" | while IFS= read -r s; do
+    [[ -n "$s" ]] && echo -e "  $(derive_skill_id "$s")"
+  done
+}
+
+cmd_edit() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "Usage: ai-env edit <name>"
+  env_exists "$name" || die "Environment '${name}' not found."
+
+  local file
+  file="$(env_file "$name")"
+  $EDITOR "$file"
+
+  success "Updated: ${name}"
+}
+
+cmd_clone() {
+  local src="${1:-}" dest="${2:-}"
+  [[ -z "$src" || -z "$dest" ]] && die "Usage: ai-env clone <source> <destination>"
+
+  env_exists "$src" || die "Source environment '${src}' not found."
+  env_exists "$dest" && die "Destination environment '${dest}' already exists."
+
+  local src_file dest_file
+  src_file="$(env_file "$src")"
+  dest_file="$(env_file "$dest")"
+
+  cp "$src_file" "$dest_file"
+  success "Cloned: ${src} -> ${dest}"
+  info "Edit with: ${CYAN}ai-env edit ${dest}${RESET}"
+}
+
+cmd_delete() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "Usage: ai-env delete <name>"
+  env_exists "$name" || die "Environment '${name}' not found."
+
+  local active
+  active=$(get_active)
+
+  read -rp "Are you sure you want to delete '${name}'? [y/N] " -n 1 confirm
+  echo ""
+  [[ "$confirm" != "y" && "$confirm" != "Y" ]] && return
+
+  local file
+  file="$(env_file "$name")"
+  rm "$file"
+
+  # Clear active if it was the deleted environment
+  if [[ "$active" == "$name" ]]; then
+    rm -f "$ACTIVE_FILE"
+    warn "Cleared active environment marker"
+  fi
+
+  success "Deleted: ${name}"
+}
+
+cmd_which() {
+  local active
+  active=$(get_active)
+
+  if [[ -z "$active" ]]; then
+    warn "No active environment."
+    info "Run ${CYAN}ai-env activate <name>${RESET} to set one."
+    return
+  fi
+
+  echo "$active"
+}
+
+# ---------------------------------------------------------------------------
+# Usage / help
+# ---------------------------------------------------------------------------
+
+usage() {
+  cat << EOF
+${BOLD}ai-env${RESET} v${VERSION} — Skill Profile Manager for AI Coding Agents
+
+${BOLD}USAGE${RESET}
+  ai-env <command> [arguments] [flags]
+
+${BOLD}SETUP${RESET}
+  ${CYAN}init${RESET}                        Initialize: migrate skills, detect sources, first scan
+  ${CYAN}source${RESET} list                  Show registered plugin sources
+  ${CYAN}source${RESET} add <name> <mkt> <p>  Register a plugin source
+  ${CYAN}source${RESET} remove <name>         Unregister a plugin source
+
+${BOLD}DISCOVERY${RESET}
+  ${CYAN}scan${RESET}    [-v]                 Scan sources, sync to ~/.agents/skills/
+  ${CYAN}inventory${RESET}                    List all skills with prefix grouping
+
+${BOLD}ENVIRONMENTS${RESET}
+  ${CYAN}create${RESET}  <name>               Create a new environment interactively
+  ${CYAN}list${RESET}    (ls)                 List all environments
+  ${CYAN}show${RESET}    <name>               Show config + resolved skills
+  ${CYAN}edit${RESET}    <name>               Open environment config in \$EDITOR
+  ${CYAN}activate${RESET} <name> [-n]         Scan + rebuild symlinks + print summary
+  ${CYAN}clone${RESET}   <src> <dest>         Clone an environment config
+  ${CYAN}delete${RESET}  <name>               Delete an environment
+  ${CYAN}which${RESET}                        Show currently active environment
+
+${BOLD}FLAGS${RESET}
+  -n, --dry-run             Show what would happen without executing
+  -v, --verbose             Show detailed output
+  -h, --help                Show this help message
+
+${BOLD}SKILL PATTERNS${RESET}
+  Patterns use prefix:name format with glob wildcards:
+    "gws:*"            all gws skills
+    "gws:gmail*"       gws-gmail, gws-gmail-send, etc.
+    "local:*"          all hand-written skills (no prefix dash)
+    "superpowers:*"    all superpowers plugin skills
+    "*"                everything
+
+${BOLD}EXAMPLES${RESET}
+  ai-env init                              # First-time setup
+  ai-env create my-project                 # Create environment
+  ai-env activate my-project               # Activate (sets up symlinks)
+  ai-env activate my-project --dry-run     # Preview what would change
+  ai-env source add sp superpowers-dev superpowers  # Register source
+  ai-env inventory                         # See all available skills
+
+${BOLD}DIRECTORIES${RESET}
+  ${DIM}~/.agents/skills/${RESET}              Canonical skill store
+  ${DIM}~/.claude/skills/${RESET}              Agent view (managed symlinks)
+  ${DIM}~/.config/ai-env/${RESET}              Configuration
+  ${DIM}~/.config/ai-env/environments/${RESET} Environment YAML files
+  ${DIM}~/.config/ai-env/sources.yaml${RESET}  Plugin source registry
+
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
+
+main() {
+  local command="${1:-}"
+
+  case "$command" in
+    init)                    shift || true; cmd_init "$@" ;;
+    scan)                    shift || true; cmd_scan "$@" ;;
+    inventory)               shift || true; cmd_inventory "$@" ;;
+    create|new)              shift || true; cmd_create "$@" ;;
+    list|ls)                 shift || true; cmd_list "$@" ;;
+    show|info)               shift || true; cmd_show "$@" ;;
+    edit)                    shift || true; cmd_edit "$@" ;;
+    activate|use)            shift || true; cmd_activate "$@" ;;
+    clone|cp)                shift || true; cmd_clone "$@" ;;
+    delete|rm)               shift || true; cmd_delete "$@" ;;
+    which|active)            shift || true; cmd_which "$@" ;;
+    source)                  shift || true; cmd_source "$@" ;;
+    -h|--help|help)          usage ;;
+    -v|--version)            echo "ai-env v${VERSION}" ;;
+    "")                      usage ;;
+    *)                       die "Unknown command: ${command}\nRun 'ai-env --help' for usage." ;;
+  esac
+}
+
+main "$@"

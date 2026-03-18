@@ -1,0 +1,33 @@
+# ============================================================================
+# AI Environment: Backend API
+# ============================================================================
+
+name: "Backend API"
+description: "Python FastAPI service with database and monitoring"
+directory: "~/projects/my-app-api"
+
+model: "claude-opus-4-6"
+permission_mode: "autofix"
+
+system_prompt_file: "./CLAUDE.md"
+
+mcp_servers:
+  - name: postgres
+    transport: stdio
+    command: npx
+    args: "-y @modelcontextprotocol/server-postgres postgresql://localhost:5432/myapp"
+  - name: github
+    transport: http
+    url: https://mcp.github.com
+
+env:
+  PYTHONPATH: src
+  DATABASE_URL: postgresql://localhost:5432/myapp
+  REDIS_URL: redis://localhost:6379
+  LOG_LEVEL: debug
+
+hooks:
+  pre_activate:
+    - "source .venv/bin/activate"
+    - "docker compose up -d"
+    - "alembic upgrade head"

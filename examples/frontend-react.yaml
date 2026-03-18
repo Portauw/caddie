@@ -1,0 +1,39 @@
+# ============================================================================
+# AI Environment: React Frontend
+# ============================================================================
+
+name: "React Frontend"
+description: "Next.js app with Figma integration and design system"
+directory: "~/projects/my-app-frontend"
+
+model: "claude-sonnet-4-6"
+permission_mode: "plan"
+
+system_prompt_file: "./prompts/frontend-context.md"
+
+extra_dirs:
+  - "../shared-ui-components"
+  - "../design-tokens"
+
+mcp_servers:
+  - name: figma
+    transport: http
+    url: https://mcp.figma.com
+  - name: github
+    transport: http
+    url: https://mcp.github.com
+
+plugins:
+  - "design-to-code@official"
+
+env:
+  NODE_ENV: development
+  NEXT_PUBLIC_API_URL: http://localhost:4000/api
+  STORYBOOK_PORT: "6006"
+
+hooks:
+  pre_activate:
+    - "npm install"
+    - "docker compose up -d postgres redis"
+
+extra_flags: "--max-turns 20"
