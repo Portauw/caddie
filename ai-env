@@ -383,6 +383,101 @@ cmd_scan() {
 
   info "Scanning skill sources..."
 
+  # 0a. Auto-detect unregistered plugin sources
+  if [[ -d "$HOME/.claude/plugins/cache" ]]; then
+    # Ensure sources file exists
+    if [[ ! -f "$SOURCES_FILE" ]]; then
+      mkdir -p "$(dirname "$SOURCES_FILE")"
+      echo "sources:" > "$SOURCES_FILE"
+    fi
+
+    for marketplace_dir in "$HOME/.claude/plugins/cache"/*/; do
+      [[ ! -d "$marketplace_dir" ]] && continue
+      local marketplace
+      marketplace=$(basename "$marketplace_dir")
+      for plugin_dir in "$marketplace_dir"/*/; do
+        [[ ! -d "$plugin_dir" ]] && continue
+        local plugin
+        plugin=$(basename "$plugin_dir")
+
+        # Check if any version has skills
+        local has_skills=false
+        for version_dir in "$plugin_dir"/*/; do
+          if [[ -d "${version_dir}skills" || -d "${version_dir}.claude/skills" ]]; then
+            has_skills=true
+            break
+          fi
+        done
+        [[ "$has_skills" == false ]] && continue
+
+        # Check if already registered
+        if ! grep -q "marketplace: \"${marketplace}\"" "$SOURCES_FILE" 2>/dev/null || \
+           ! grep -q "plugin: \"${plugin}\"" "$SOURCES_FILE" 2>/dev/null; then
+          # Not registered — check more carefully with python
+          local already_registered
+          already_registered=$(python3 -c "
+found = False
+current = {}
+in_sources = False
+for line in open('$SOURCES_FILE'):
+    line = line.rstrip()
+    if line.startswith('sources:'):
+        in_sources = True
+        continue
+    if not in_sources:
+        continue
+    if line.startswith('  - '):
+        if current.get('marketplace') == '$marketplace' and current.get('plugin') == '$plugin':
+            found = True
+            break
+        current = {}
+    elif line.startswith('    ') and ':' in line:
+        k, v = line.strip().split(':', 1)
+        current[k.strip()] = v.strip().strip('\"').strip(\"'\")
+if current.get('marketplace') == '$marketplace' and current.get('plugin') == '$plugin':
+    found = True
+print('yes' if found else 'no')
+")
+          if [[ "$already_registered" == "no" ]]; then
+            local source_name="${plugin}"
+            source_name="${source_name/itp-engineering-/itp-eng-}"
+            cat >> "$SOURCES_FILE" << EOF
+  - name: "${source_name}"
+    marketplace: "${marketplace}"
+    plugin: "${plugin}"
+EOF
+            info "Auto-registered new source: ${BOLD}${source_name}${RESET} (${marketplace}/${plugin})"
+          fi
+        fi
+      done
+    done
+  fi
+
+  # 0b. Disable enabled plugins in settings.json (ai-env manages skills)
+  local settings_file="$HOME/.claude/settings.json"
+  if [[ -f "$settings_file" ]]; then
+    local disabled_count
+    disabled_count=$(python3 -c "
+import json
+with open('$settings_file') as f:
+    data = json.load(f)
+plugins = data.get('enabledPlugins', {})
+count = 0
+for key in plugins:
+    if plugins[key]:
+        plugins[key] = False
+        count += 1
+if count > 0:
+    with open('$settings_file', 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\n')
+print(count)
+")
+    if [[ "$disabled_count" -gt 0 ]]; then
+      info "Disabled ${disabled_count} plugin(s) in settings.json (ai-env manages skills)"
+    fi
+  fi
+
   local total_synced=0
   local total_skipped=0
 
