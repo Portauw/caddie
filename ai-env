@@ -2,9 +2,9 @@
 # ============================================================================
 # ai-env — Skill Profile Manager for AI Coding Agents
 # ============================================================================
-# Discovers skills from multiple plugin sources, manages a canonical store
-# at ~/.agents/skills/, and rebuilds ~/.claude/skills/ with filtered symlinks
-# based on environment configs.
+# Discovers skills from multiple plugin sources, manages a local store
+# at ~/.config/ai-env/skills/, and rebuilds agent skill directories with
+# filtered symlinks based on environment configs.
 #
 # Usage:  ai-env <command> [options]
 # Config: ~/.config/ai-env/
@@ -20,7 +20,8 @@ CONFIG_DIR="${AI_ENV_DIR:-$HOME/.config/ai-env}"
 ENV_DIR="$CONFIG_DIR/environments"
 SOURCES_FILE="$CONFIG_DIR/sources.yaml"
 ACTIVE_FILE="$CONFIG_DIR/.active"
-CANONICAL_STORE="$HOME/.agents/skills"
+SKILL_STORE="$CONFIG_DIR/skills"
+AGENT_SKILLS="$HOME/.agents/skills"
 CLAUDE_SKILLS="$HOME/.claude/skills"
 EDITOR="${EDITOR:-vim}"
 
@@ -272,7 +273,7 @@ cmd_source_list() {
     return
   fi
   echo -e "${BOLD}Registered plugin sources:${RESET}\n"
-  echo -e "  ${DIM}(~/.agents/skills/ is always scanned implicitly)${RESET}\n"
+  echo -e "  ${DIM}(~/.config/ai-env/skills/ is always scanned implicitly)${RESET}\n"
 
   # Parse sources from YAML
   python3 -c "
@@ -378,7 +379,7 @@ cmd_scan() {
   local verbose=false
   [[ "${1:-}" == "-v" || "${1:-}" == "--verbose" ]] && verbose=true
 
-  [[ ! -d "$CANONICAL_STORE" ]] && mkdir -p "$CANONICAL_STORE"
+  [[ ! -d "$SKILL_STORE" ]] && mkdir -p "$SKILL_STORE"
 
   info "Scanning skill sources..."
 
@@ -407,7 +408,7 @@ cmd_scan() {
         [[ -z "$skill_path" ]] && continue
         local skill_name
         skill_name=$(basename "$skill_path")
-        local target="$CANONICAL_STORE/${skill_name}"
+        local target="$SKILL_STORE/${skill_name}"
 
         if [[ -d "$target" && ! -L "$target" ]]; then
           # Local skill takes precedence -- don't overwrite
@@ -440,13 +441,13 @@ cmd_scan() {
 
   # 2. Count local skills (direct dirs in canonical store, not symlinks)
   local local_count=0
-  for item in "$CANONICAL_STORE"/*/; do
+  for item in "$SKILL_STORE"/*/; do
     [[ -d "$item" && ! -L "$item" ]] && (( local_count++ )) || true
   done
 
   # 3. Count total
   local total=0
-  for item in "$CANONICAL_STORE"/*/; do
+  for item in "$SKILL_STORE"/*/; do
     [[ -d "$item" ]] && (( total++ )) || true
   done
 
@@ -479,11 +480,11 @@ derive_skill_id() {
 cmd_inventory() {
   local filter="${1:-}"
 
-  if [[ ! -d "$CANONICAL_STORE" ]]; then
+  if [[ ! -d "$SKILL_STORE" ]]; then
     die "Canonical store not found. Run ${CYAN}ai-env init${RESET} first."
   fi
 
-  echo -e "${BOLD}Skill Inventory${RESET} (${DIM}~/.agents/skills/${RESET})\n"
+  echo -e "${BOLD}Skill Inventory${RESET} (${DIM}${SKILL_STORE}${RESET})\n"
 
   # Build inventory using python for clean sorting/grouping
   python3 -c "
@@ -491,7 +492,7 @@ import os
 from pathlib import Path
 from collections import defaultdict
 
-store = Path(os.path.expanduser('~/.agents/skills'))
+store = Path(os.path.expanduser('$SKILL_STORE'))
 sources_file = os.path.expanduser('$SOURCES_FILE')
 
 # Build source mapping: marketplace/plugin -> source_name
@@ -582,7 +583,7 @@ resolve_skills() {
 import os, fnmatch
 from pathlib import Path
 
-store = Path(os.path.expanduser('~/.agents/skills'))
+store = Path(os.path.expanduser('$SKILL_STORE'))
 sources_file = os.path.expanduser('$SOURCES_FILE')
 
 # Build source mapping: marketplace/plugin -> source_name
@@ -711,7 +712,7 @@ import os, sys
 from pathlib import Path
 from collections import Counter
 
-store = Path(os.path.expanduser('~/.agents/skills'))
+store = Path(os.path.expanduser('$SKILL_STORE'))
 sources_file = os.path.expanduser('$SOURCES_FILE')
 
 # Build source mapping
@@ -778,29 +779,33 @@ print(', '.join(parts))
     return
   fi
 
-  # Step 4: Rebuild ~/.claude/skills/
-  # Remove all existing symlinks (but NOT bare files/dirs -- those should have been migrated by init)
-  for item in "$CLAUDE_SKILLS"/*; do
-    if [[ -L "$item" ]]; then
-      rm "$item"
-    fi
-  done
-
-  # Create new symlinks for matched skills
+  # Step 4: Rebuild agent skill directories
+  # Both ~/.claude/skills/ and ~/.agents/skills/ are filtered views
   local linked=0
-  while IFS= read -r skill_dir; do
-    [[ -z "$skill_dir" ]] && continue
-    local source_path="$CANONICAL_STORE/${skill_dir}"
-    local target_path="$CLAUDE_SKILLS/${skill_dir}"
+  for agent_dir in "$CLAUDE_SKILLS" "$AGENT_SKILLS"; do
+    mkdir -p "$agent_dir"
 
-    if [[ -d "$source_path" || -L "$source_path" ]]; then
-      # Use relative symlink for cleanliness
-      ln -s "../../.agents/skills/${skill_dir}" "$target_path"
-      (( linked++ )) || true
-    else
-      warn "Skill directory not found: ${source_path}"
-    fi
-  done <<< "$matched_skills"
+    # Remove all existing symlinks
+    for item in "$agent_dir"/*; do
+      if [[ -L "$item" ]]; then
+        rm "$item"
+      fi
+    done
+
+    # Create new symlinks for matched skills
+    while IFS= read -r skill_dir; do
+      [[ -z "$skill_dir" ]] && continue
+      local source_path="$SKILL_STORE/${skill_dir}"
+      local target_path="$agent_dir/${skill_dir}"
+
+      if [[ -d "$source_path" || -L "$source_path" ]]; then
+        ln -s "$source_path" "$target_path"
+        [[ "$agent_dir" == "$CLAUDE_SKILLS" ]] && (( linked++ )) || true
+      else
+        warn "Skill directory not found: ${source_path}"
+      fi
+    done <<< "$matched_skills"
+  done
 
   # Step 5: Write active marker
   echo "$name" > "$ACTIVE_FILE"
@@ -883,68 +888,66 @@ cmd_init() {
   # 1. Create config directories
   mkdir -p "$CONFIG_DIR"
   mkdir -p "$ENV_DIR"
-  mkdir -p "$CANONICAL_STORE"
+  mkdir -p "$SKILL_STORE"
   success "Config directory: ${CONFIG_DIR}"
   success "Environments: ${ENV_DIR}"
-  success "Canonical store: ${CANONICAL_STORE}"
+  success "Skill store: ${SKILL_STORE}"
 
-  # 2. Backup ~/.claude/skills/ if it exists and has content
-  if [[ -d "$CLAUDE_SKILLS" ]] && [[ -n "$(ls -A "$CLAUDE_SKILLS" 2>/dev/null)" ]]; then
-    local backup="$HOME/.claude/skills.bak.$(date +%Y-%m-%d)"
-    if [[ ! -d "$backup" ]]; then
-      cp -a "$CLAUDE_SKILLS" "$backup"
-      success "Backed up ~/.claude/skills/ to ${backup}"
-    else
-      info "Backup already exists: ${backup}"
+  # 2. Backup existing skill directories
+  for dir_to_backup in "$CLAUDE_SKILLS" "$AGENT_SKILLS"; do
+    if [[ -d "$dir_to_backup" ]] && [[ -n "$(ls -A "$dir_to_backup" 2>/dev/null)" ]]; then
+      local backup="${dir_to_backup}.bak.$(date +%Y-%m-%d)"
+      if [[ ! -d "$backup" ]]; then
+        cp -a "$dir_to_backup" "$backup"
+        success "Backed up ${dir_to_backup} to ${backup}"
+      else
+        info "Backup already exists: ${backup}"
+      fi
     fi
-  fi
+  done
 
-  # 3. Migrate bare files/dirs from ~/.claude/skills/ to ~/.agents/skills/
+  # 3. Migrate local skills from ~/.claude/skills/ and ~/.agents/skills/ to store
   local migrated=0
-  if [[ -d "$CLAUDE_SKILLS" ]]; then
-    for item in "$CLAUDE_SKILLS"/*; do
+  for source_dir in "$CLAUDE_SKILLS" "$AGENT_SKILLS"; do
+    [[ ! -d "$source_dir" ]] && continue
+
+    for item in "$source_dir"/*; do
       [[ ! -e "$item" ]] && continue
 
       local basename
       basename=$(basename "$item")
 
-      # Skip if it's already a symlink (already managed)
+      # Skip symlinks (already managed or will be recreated)
       [[ -L "$item" ]] && continue
 
-      local target="$CANONICAL_STORE/${basename}"
+      local target="$SKILL_STORE/${basename}"
 
       if [[ -f "$item" && "$item" == *.md ]]; then
-        # Bare .md file -- wrap in a directory with SKILL.md naming
+        # Bare .md file — wrap in a directory with SKILL.md naming
         local skill_name="${basename%.md}"
-        local skill_dir="$CANONICAL_STORE/${skill_name}"
+        local skill_dir="$SKILL_STORE/${skill_name}"
         if [[ ! -d "$skill_dir" ]]; then
           mkdir -p "$skill_dir"
-          mv "$item" "$skill_dir/SKILL.md"
-          # Replace original with symlink
-          ln -s "../../.agents/skills/${skill_name}" "$CLAUDE_SKILLS/${skill_name}"
-          info "Migrated file: ${basename} -> ${skill_name}/SKILL.md"
+          cp "$item" "$skill_dir/SKILL.md"
+          rm "$item"
+          info "Migrated file: ${basename} -> ${skill_name}/SKILL.md (from ${source_dir})"
           (( migrated++ )) || true
-        else
-          warn "Skill '${skill_name}' already exists in canonical store, skipping ${basename}"
         fi
       elif [[ -d "$item" ]]; then
-        # Bare directory -- move to canonical store, replace with symlink
+        # Bare directory — move to store
         if [[ ! -d "$target" ]]; then
           mv "$item" "$target"
-          ln -s "../../.agents/skills/${basename}" "$item"
-          info "Migrated dir: ${basename}"
+          info "Migrated dir: ${basename} (from ${source_dir})"
           (( migrated++ )) || true
-        else
-          warn "Skill '${basename}' already exists in canonical store, skipping"
         fi
       fi
     done
+  done
 
-    if [[ $migrated -gt 0 ]]; then
-      success "Migrated ${migrated} items to canonical store"
-    else
-      info "No bare files/dirs to migrate"
-    fi
+  if [[ $migrated -gt 0 ]]; then
+    success "Migrated ${migrated} items to skill store"
+  else
+    info "No bare files/dirs to migrate"
   fi
 
   # 4. Auto-detect plugin sources
@@ -1245,7 +1248,7 @@ ${BOLD}SETUP${RESET}
   ${CYAN}source${RESET} remove <name>         Unregister a plugin source
 
 ${BOLD}DISCOVERY${RESET}
-  ${CYAN}scan${RESET}    [-v]                 Scan sources, sync to ~/.agents/skills/
+  ${CYAN}scan${RESET}    [-v]                 Scan sources, sync to skill store
   ${CYAN}inventory${RESET}                    List all skills with prefix grouping
 
 ${BOLD}ENVIRONMENTS${RESET}
@@ -1283,7 +1286,8 @@ ${BOLD}EXAMPLES${RESET}
   ai-env inventory                         # See all available skills
 
 ${BOLD}DIRECTORIES${RESET}
-  ${DIM}~/.agents/skills/${RESET}              Canonical skill store
+  ${DIM}~/.config/ai-env/skills/${RESET}       Skill store (source of truth)
+  ${DIM}~/.agents/skills/${RESET}              Filtered view (symlinks)
   ${DIM}~/.claude/skills/${RESET}              Agent view (managed symlinks)
   ${DIM}~/.config/ai-env/${RESET}              Configuration
   ${DIM}~/.config/ai-env/environments/${RESET} Environment YAML files
