@@ -538,6 +538,7 @@ print(count)
   local total_synced=0
   local total_skipped=0
   local stale_sources=()
+  local shadowed_skills=()
 
   # 1. Scan registered plugin sources
   if [[ -f "$SOURCES_FILE" ]]; then
@@ -567,6 +568,7 @@ print(count)
         if [[ -d "$target" && ! -L "$target" ]]; then
           # Local skill takes precedence -- don't overwrite
           [[ "$verbose" == true ]] && echo -e "  ${DIM}skip: ${skill_name} (local override)${RESET}"
+          shadowed_skills+=("${skill_name}|${src_name}")
           (( total_skipped++ )) || true
         elif [[ -L "$target" ]]; then
           # Already a symlink -- update if pointing elsewhere
@@ -615,6 +617,19 @@ print(count)
   touch "$scan_cache"
 
   success "Scan complete: ${BOLD}${total}${RESET} skills in canonical store (${local_count} local, ${total_synced} from plugins)"
+
+  # 3b. Warn about local skills that shadow plugin versions
+  if [[ ${#shadowed_skills[@]} -gt 0 ]]; then
+    echo ""
+    warn "Local skills shadowing plugin versions:"
+    for entry in "${shadowed_skills[@]}"; do
+      local s_name="${entry%%|*}"
+      local s_source="${entry##*|}"
+      echo -e "  ${YELLOW}•${RESET} ${BOLD}${s_name}${RESET} shadows plugin '${s_source}'"
+    done
+    echo -e "  ${DIM}To use the plugin version, remove the local copy:${RESET}"
+    echo -e "  ${DIM}  rm -rf ${SKILL_STORE}/<skill-name> && ai-env scan --force${RESET}"
+  fi
 
   # 4. Check environment configs for orphaned skill patterns
   if [[ -d "$ENV_DIR" ]]; then
