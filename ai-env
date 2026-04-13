@@ -1037,7 +1037,10 @@ if os.path.exists(sources_file):
     for line in open(sources_file):
         line = line.rstrip()
         if line.startswith('sources:'): section = 'sources'; continue
-        if line.startswith('repos:'): section = 'repos'; continue
+        if line.startswith('repos:'):
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            current = {}; section = 'repos'; continue
         if line.startswith('  - '):
             if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
                 source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
@@ -1126,6 +1129,9 @@ if os.path.exists(sources_file):
             section = 'sources'
             continue
         if line.startswith('repos:'):
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            current = {}
             section = 'repos'
             continue
         if line.startswith('  - '):
@@ -1216,6 +1222,9 @@ if os.path.exists(sources_file):
             section = 'sources'
             continue
         if line.startswith('repos:'):
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            current = {}
             section = 'repos'
             continue
         if line.startswith('  - '):
@@ -1323,6 +1332,9 @@ if os.path.exists(sources_file):
             section = 'sources'
             continue
         if line.startswith('repos:'):
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            current = {}
             section = 'repos'
             continue
         if line.startswith('  - '):
