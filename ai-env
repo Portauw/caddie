@@ -166,6 +166,77 @@ get_active() {
 }
 
 # ---------------------------------------------------------------------------
+# Shared Python: source/repo map builder + get_prefix
+# ---------------------------------------------------------------------------
+# Emits Python code that builds source_map, repo_map, and defines get_prefix().
+# Usage in inline python: exec(open(...)) or paste the output.
+# We use a heredoc-safe variable so callers can embed it via $PY_PREFIX_HELPER.
+
+PY_PREFIX_HELPER='
+import os
+from pathlib import Path
+
+def _build_maps(sources_file):
+    source_map = {}
+    repo_map = {}
+    if not os.path.exists(sources_file):
+        return source_map, repo_map
+    current = {}
+    section = None
+    for line in open(sources_file):
+        line = line.rstrip()
+        if line.startswith("sources:"):
+            section = "sources"
+            continue
+        if line.startswith("repos:"):
+            if section == "sources" and current.get("name") and current.get("marketplace") and current.get("plugin"):
+                source_map[current["marketplace"] + "/" + current["plugin"]] = current["name"]
+            current = {}
+            section = "repos"
+            continue
+        if line.startswith("  - "):
+            if section == "sources" and current.get("name") and current.get("marketplace") and current.get("plugin"):
+                source_map[current["marketplace"] + "/" + current["plugin"]] = current["name"]
+            elif section == "repos" and current.get("name"):
+                repo_map["repos/" + current["name"]] = current["name"]
+            current = {}
+            rest = line[4:].strip()
+            if rest.startswith("name:"):
+                current["name"] = rest.split(":",1)[1].strip().strip("\"").strip("'\''")
+        elif line.startswith("    ") and ":" in line:
+            k, v = line.strip().split(":", 1)
+            current[k.strip()] = v.strip().strip("\"").strip("'\''")
+        elif line and not line.startswith(" ") and not line.startswith("#"):
+            if section == "sources" and current.get("name") and current.get("marketplace") and current.get("plugin"):
+                source_map[current["marketplace"] + "/" + current["plugin"]] = current["name"]
+            elif section == "repos" and current.get("name"):
+                repo_map["repos/" + current["name"]] = current["name"]
+            current = {}
+            section = None
+    if section == "sources" and current.get("name") and current.get("marketplace") and current.get("plugin"):
+        source_map[current["marketplace"] + "/" + current["plugin"]] = current["name"]
+    elif section == "repos" and current.get("name"):
+        repo_map["repos/" + current["name"]] = current["name"]
+    return source_map, repo_map
+
+def _get_prefix(item, source_map, repo_map):
+    if item.is_symlink():
+        target = str(item.resolve())
+        for path_key, src_name in source_map.items():
+            if path_key in target:
+                return src_name, item.name
+        for path_key, rname in repo_map.items():
+            if path_key in target:
+                return rname, item.name
+        return "plugin", item.name
+    else:
+        name = item.name
+        if "-" in name:
+            return name.split("-", 1)[0], name.split("-", 1)[1]
+        return "local", name
+'
+
+# ---------------------------------------------------------------------------
 # Plugin Version Resolution
 # ---------------------------------------------------------------------------
 
@@ -1023,62 +1094,15 @@ print(count)
           # Check if pattern matches any skill
           local match_count
           match_count=$(python3 -c "
-import os, fnmatch
-from pathlib import Path
-
+$PY_PREFIX_HELPER
+import fnmatch
 store = Path(os.path.expanduser('$SKILL_STORE'))
-sources_file = os.path.expanduser('$SOURCES_FILE')
-
-source_map = {}
-repo_map = {}
-if os.path.exists(sources_file):
-    current = {}
-    section = None
-    for line in open(sources_file):
-        line = line.rstrip()
-        if line.startswith('sources:'): section = 'sources'; continue
-        if line.startswith('repos:'):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            current = {}; section = 'repos'; continue
-        if line.startswith('  - '):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            elif section == 'repos' and current.get('name'):
-                repo_map[f'repos/{current[\"name\"]}'] = current['name']
-            current = {}
-            rest = line[4:].strip()
-            if rest.startswith('name:'): current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
-        elif line.startswith('    ') and ':' in line:
-            k, v = line.strip().split(':', 1)
-            current[k.strip()] = v.strip().strip('\"').strip(\"'\")
-        elif line and not line.startswith(' ') and not line.startswith('#'):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            elif section == 'repos' and current.get('name'):
-                repo_map[f'repos/{current[\"name\"]}'] = current['name']
-            current = {}; section = None
-    if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-        source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-    elif section == 'repos' and current.get('name'):
-        repo_map[f'repos/{current[\"name\"]}'] = current['name']
-
+source_map, repo_map = _build_maps(os.path.expanduser('$SOURCES_FILE'))
 count = 0
 for item in store.iterdir():
     if not item.is_dir(): continue
-    if item.is_symlink():
-        target = str(item.resolve())
-        prefix = 'plugin'
-        for pk, sn in source_map.items():
-            if pk in target: prefix = sn; break
-        else:
-            for pk, rn in repo_map.items():
-                if pk in target: prefix = rn; break
-        sid = f'{prefix}:{item.name}'
-    elif '-' in item.name:
-        sid = f'{item.name.split(\"-\",1)[0]}:{item.name.split(\"-\",1)[1]}'
-    else:
-        sid = f'local:{item.name}'
+    prefix, _ = _get_prefix(item, source_map, repo_map)
+    sid = f'{prefix}:{item.name}'
     if fnmatch.fnmatch(sid, '$pattern'): count += 1
 print(count)
 " 2>/dev/null || echo 0)
@@ -1109,82 +1133,18 @@ print(count)
 # Accepts newline-separated dirnames on stdin, outputs prefix:dirname lines.
 derive_skill_ids() {
   python3 -c "
-import os, sys
-from pathlib import Path
-
+$PY_PREFIX_HELPER
+import sys
 store = Path(os.path.expanduser('$SKILL_STORE'))
-sources_file = os.path.expanduser('$SOURCES_FILE')
-repos_dir = os.path.expanduser('$REPOS_DIR')
-
-# Build source mapping: marketplace/plugin -> source_name
-source_map = {}
-# Build repo mapping: repos/<name> -> repo_name
-repo_map = {}
-if os.path.exists(sources_file):
-    current = {}
-    section = None
-    for line in open(sources_file):
-        line = line.rstrip()
-        if line.startswith('sources:'):
-            section = 'sources'
-            continue
-        if line.startswith('repos:'):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            current = {}
-            section = 'repos'
-            continue
-        if line.startswith('  - '):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                key = f\"{current['marketplace']}/{current['plugin']}\"
-                source_map[key] = current['name']
-            elif section == 'repos' and current.get('name'):
-                repo_map[f'repos/{current[\"name\"]}'] = current['name']
-            current = {}
-            rest = line[4:].strip()
-            if rest.startswith('name:'):
-                current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
-        elif line.startswith('    ') and ':' in line:
-            k, v = line.strip().split(':', 1)
-            current[k.strip()] = v.strip().strip('\"').strip(\"'\")
-        elif line and not line.startswith(' ') and not line.startswith('#'):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            elif section == 'repos' and current.get('name'):
-                repo_map[f'repos/{current[\"name\"]}'] = current['name']
-            current = {}
-            section = None
-    # Flush last entry
-    if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-        source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-    elif section == 'repos' and current.get('name'):
-        repo_map[f'repos/{current[\"name\"]}'] = current['name']
+source_map, repo_map = _build_maps(os.path.expanduser('$SOURCES_FILE'))
 
 for dirname in sys.stdin:
     dirname = dirname.strip()
     if not dirname:
         continue
     item = store / dirname
-    if item.is_symlink():
-        target = str(item.resolve())
-        matched = False
-        # Check plugin sources
-        for path_key, src_name in source_map.items():
-            if path_key in target:
-                print(f'{src_name}:{dirname}')
-                matched = True
-                break
-        if not matched:
-            # Check repo sources
-            for path_key, repo_name in repo_map.items():
-                if path_key in target:
-                    print(f'{repo_name}:{dirname}')
-                    matched = True
-                    break
-        if not matched:
-            print(f'plugin:{dirname}')
-    else:
-        print(f'local:{dirname}')
+    prefix, _ = _get_prefix(item, source_map, repo_map)
+    print(f'{prefix}:{dirname}')
 "
 }
 
@@ -1203,79 +1163,28 @@ cmd_inventory() {
 
   # Build inventory using python for clean sorting/grouping
   python3 -c "
-import os
-from pathlib import Path
+$PY_PREFIX_HELPER
 from collections import defaultdict
 
 store = Path(os.path.expanduser('$SKILL_STORE'))
-sources_file = os.path.expanduser('$SOURCES_FILE')
+source_map, repo_map = _build_maps(os.path.expanduser('$SOURCES_FILE'))
 
-# Build source mapping and repo mapping
-source_map = {}
-repo_map = {}
-if os.path.exists(sources_file):
-    current = {}
-    section = None
-    for line in open(sources_file):
-        line = line.rstrip()
-        if line.startswith('sources:'):
-            section = 'sources'
-            continue
-        if line.startswith('repos:'):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            current = {}
-            section = 'repos'
-            continue
-        if line.startswith('  - '):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            elif section == 'repos' and current.get('name'):
-                repo_map[f'repos/{current[\"name\"]}'] = current['name']
-            current = {}
-            rest = line[4:].strip()
-            if rest.startswith('name:'):
-                current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
-        elif line.startswith('    ') and ':' in line:
-            k, v = line.strip().split(':', 1)
-            current[k.strip()] = v.strip().strip('\"').strip(\"'\")
-        elif line and not line.startswith(' ') and not line.startswith('#'):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            elif section == 'repos' and current.get('name'):
-                repo_map[f'repos/{current[\"name\"]}'] = current['name']
-            current = {}
-            section = None
-    if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-        source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-    elif section == 'repos' and current.get('name'):
-        repo_map[f'repos/{current[\"name\"]}'] = current['name']
-
-def get_prefix(item):
-    \"\"\"Determine skill prefix from symlink target or dirname.\"\"\"
-    if item.is_symlink():
-        target = str(item.resolve())
-        for path_key, src_name in source_map.items():
-            if path_key in target:
-                return src_name, item.name, 'plugin'
-        for path_key, rname in repo_map.items():
-            if path_key in target:
-                return rname, item.name, 'repo'
-        return 'plugin', item.name, 'plugin'
-    else:
-        name = item.name
-        if '-' in name:
-            return name.split('-', 1)[0], name.split('-', 1)[1], 'local'
-        return 'local', name, 'local'
+def get_source_type(item):
+    if not item.is_symlink():
+        return 'local'
+    target = str(item.resolve())
+    for pk in repo_map:
+        if pk in target:
+            return 'repo'
+    return 'plugin'
 
 skills = []
 for item in sorted(store.iterdir()):
     if not item.is_dir():
         continue
-    prefix, remainder, source_type = get_prefix(item)
-    skills.append((prefix, remainder, item.name, source_type))
+    prefix, remainder = _get_prefix(item, source_map, repo_map)
+    skills.append((prefix, remainder, item.name, get_source_type(item)))
 
-# Group by prefix
 groups = defaultdict(list)
 for prefix, remainder, dirname, stype in skills:
     groups[prefix].append((remainder, dirname, stype))
@@ -1314,68 +1223,11 @@ resolve_skills() {
   local env_file="$1"
 
   python3 -c "
-import os, fnmatch
-from pathlib import Path
+$PY_PREFIX_HELPER
+import fnmatch
 
 store = Path(os.path.expanduser('$SKILL_STORE'))
-sources_file = os.path.expanduser('$SOURCES_FILE')
-
-# Build source and repo mappings
-source_map = {}
-repo_map = {}
-if os.path.exists(sources_file):
-    current = {}
-    section = None
-    for line in open(sources_file):
-        line = line.rstrip()
-        if line.startswith('sources:'):
-            section = 'sources'
-            continue
-        if line.startswith('repos:'):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            current = {}
-            section = 'repos'
-            continue
-        if line.startswith('  - '):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            elif section == 'repos' and current.get('name'):
-                repo_map[f'repos/{current[\"name\"]}'] = current['name']
-            current = {}
-            rest = line[4:].strip()
-            if rest.startswith('name:'):
-                current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
-        elif line.startswith('    ') and ':' in line:
-            k, v = line.strip().split(':', 1)
-            current[k.strip()] = v.strip().strip('\"').strip(\"'\")
-        elif line and not line.startswith(' ') and not line.startswith('#'):
-            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            elif section == 'repos' and current.get('name'):
-                repo_map[f'repos/{current[\"name\"]}'] = current['name']
-            current = {}
-            section = None
-    if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
-        source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-    elif section == 'repos' and current.get('name'):
-        repo_map[f'repos/{current[\"name\"]}'] = current['name']
-
-def get_prefix(item):
-    if item.is_symlink():
-        target = str(item.resolve())
-        for path_key, src_name in source_map.items():
-            if path_key in target:
-                return src_name, item.name
-        for path_key, rname in repo_map.items():
-            if path_key in target:
-                return rname, item.name
-        return 'plugin', item.name
-    else:
-        name = item.name
-        if '-' in name:
-            return name.split('-', 1)[0], name.split('-', 1)[1]
-        return 'local', name
+source_map, repo_map = _build_maps(os.path.expanduser('$SOURCES_FILE'))
 
 # Read skill patterns from env file
 patterns = []
@@ -1399,7 +1251,7 @@ skill_map = {}
 for item in sorted(store.iterdir()):
     if not item.is_dir():
         continue
-    prefix, remainder = get_prefix(item)
+    prefix, remainder = _get_prefix(item, source_map, repo_map)
     skill_id = f'{prefix}:{remainder}'
     skill_map[skill_id] = item.name
 
@@ -1455,51 +1307,13 @@ cmd_activate() {
   # Step 2: Resolve skills + count by prefix (single python call)
   local resolve_output
   resolve_output=$(python3 -c "
-import os, fnmatch
-from pathlib import Path
+$PY_PREFIX_HELPER
+import fnmatch
 from collections import Counter
 
 store = Path(os.path.expanduser('$SKILL_STORE'))
-sources_file = os.path.expanduser('$SOURCES_FILE')
+source_map, repo_map = _build_maps(os.path.expanduser('$SOURCES_FILE'))
 env_file = '$file'
-
-# Build source mapping
-source_map = {}
-if os.path.exists(sources_file):
-    current = {}
-    in_sources = False
-    for line in open(sources_file):
-        line = line.rstrip()
-        if line.startswith('sources:'):
-            in_sources = True
-            continue
-        if not in_sources:
-            continue
-        if line.startswith('  - '):
-            if current.get('name') and current.get('marketplace') and current.get('plugin'):
-                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-            current = {}
-            rest = line[4:].strip()
-            if rest.startswith('name:'):
-                current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
-        elif line.startswith('    ') and ':' in line:
-            k, v = line.strip().split(':', 1)
-            current[k.strip()] = v.strip().strip('\"').strip(\"'\")
-    if current.get('name') and current.get('marketplace') and current.get('plugin'):
-        source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
-
-def get_prefix(item):
-    if item.is_symlink():
-        target = str(item.resolve())
-        for path_key, src_name in source_map.items():
-            if path_key in target:
-                return src_name, item.name
-        return 'plugin', item.name
-    else:
-        name = item.name
-        if '-' in name:
-            return name.split('-', 1)[0], name.split('-', 1)[1]
-        return 'local', name
 
 # Read patterns
 patterns = []
@@ -1524,7 +1338,7 @@ prefix_map = {}
 for item in sorted(store.iterdir()):
     if not item.is_dir():
         continue
-    prefix, remainder = get_prefix(item)
+    prefix, remainder = _get_prefix(item, source_map, repo_map)
     skill_id = f'{prefix}:{remainder}'
     skill_map[skill_id] = item.name
     prefix_map[item.name] = prefix
