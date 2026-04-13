@@ -21,6 +21,7 @@ ENV_DIR="$CONFIG_DIR/environments"
 SOURCES_FILE="$CONFIG_DIR/sources.yaml"
 ACTIVE_FILE="$CONFIG_DIR/.active"
 SKILL_STORE="$CONFIG_DIR/skills"
+REPOS_DIR="$CONFIG_DIR/repos"
 AGENT_SKILLS="$HOME/.agents/skills"
 CLAUDE_SKILLS="$HOME/.claude/skills"
 EDITOR="${EDITOR:-vim}"
@@ -372,6 +373,275 @@ with open('$SOURCES_FILE', 'w') as f:
 }
 
 # ---------------------------------------------------------------------------
+# Git Repo Management
+# ---------------------------------------------------------------------------
+
+# parse_repos - reads repos: section from sources.yaml
+# Outputs: name|url|skills_path lines
+parse_repos() {
+  [[ ! -f "$SOURCES_FILE" ]] && return
+  python3 -c "
+in_repos = False
+current = {}
+for line in open('$SOURCES_FILE'):
+    line = line.rstrip()
+    if line.startswith('repos:'):
+        in_repos = True
+        continue
+    if not in_repos:
+        continue
+    if line.startswith('  - '):
+        if current.get('name'):
+            print(f\"{current['name']}|{current.get('url','')}|{current.get('skills_path','skills')}\")
+        current = {}
+        rest = line[4:].strip()
+        if rest.startswith('name:'):
+            current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
+    elif line.startswith('    ') and ':' in line:
+        k, v = line.strip().split(':', 1)
+        current[k.strip()] = v.strip().strip('\"').strip(\"'\")
+    elif line and not line.startswith(' ') and not line.startswith('#'):
+        break
+if current.get('name'):
+    print(f\"{current['name']}|{current.get('url','')}|{current.get('skills_path','skills')}\")
+"
+}
+
+cmd_repo() {
+  local subcmd="${1:-}"
+  shift || true
+  case "$subcmd" in
+    list|ls)   cmd_repo_list "$@" ;;
+    add)       cmd_repo_add "$@" ;;
+    remove|rm) cmd_repo_remove "$@" ;;
+    update)    cmd_repo_update "$@" ;;
+    "")        die "Usage: ai-env repo <list|add|remove|update>" ;;
+    *)         die "Unknown repo command: $subcmd" ;;
+  esac
+}
+
+cmd_repo_list() {
+  if [[ ! -f "$SOURCES_FILE" ]] || ! grep -q "^repos:" "$SOURCES_FILE" 2>/dev/null; then
+    warn "No git repos registered. Add one with: ${CYAN}ai-env repo add <name> <url>${RESET}"
+    return
+  fi
+  echo -e "${BOLD}Registered git repos:${RESET}\n"
+
+  while IFS='|' read -r name url skills_path; do
+    local repo_dir="$REPOS_DIR/$name"
+    local status="${DIM}(not cloned)${RESET}"
+    if [[ -d "$repo_dir/.git" ]]; then
+      local branch
+      branch=$(git -C "$repo_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+      local short_hash
+      short_hash=$(git -C "$repo_dir" rev-parse --short HEAD 2>/dev/null || echo "?")
+      status="${GREEN}${branch}@${short_hash}${RESET}"
+    fi
+    echo -e "  ${BOLD}${name}${RESET}  ${status}"
+    echo -e "    ${DIM}${url}${RESET}"
+    echo -e "    ${DIM}skills_path: ${skills_path}${RESET}"
+    echo ""
+  done < <(parse_repos)
+}
+
+cmd_repo_add() {
+  local name="${1:-}" url="${2:-}" skills_path="${3:-skills}"
+  [[ -z "$name" || -z "$url" ]] && \
+    die "Usage: ai-env repo add <name> <url> [skills_path]\n  Example: ai-env repo add lenny https://github.com/RefoundAI/lenny-skills skills"
+
+  # Ensure sources file exists with header
+  if [[ ! -f "$SOURCES_FILE" ]]; then
+    mkdir -p "$(dirname "$SOURCES_FILE")"
+    echo "sources:" > "$SOURCES_FILE"
+  fi
+
+  # Check for duplicate name
+  if grep -q "repos:" "$SOURCES_FILE" 2>/dev/null && \
+     python3 -c "
+found = False
+in_repos = False
+for line in open('$SOURCES_FILE'):
+    line = line.rstrip()
+    if line.startswith('repos:'):
+        in_repos = True
+        continue
+    if in_repos and 'name:' in line and '$name' in line:
+        found = True
+        break
+print('yes' if found else 'no')
+" 2>/dev/null | grep -q "yes"; then
+    die "Repo '${name}' already registered. Remove it first with: ai-env repo remove ${name}"
+  fi
+
+  # Append repos section if needed
+  if ! grep -q "^repos:" "$SOURCES_FILE" 2>/dev/null; then
+    echo "" >> "$SOURCES_FILE"
+    echo "repos:" >> "$SOURCES_FILE"
+  fi
+
+  cat >> "$SOURCES_FILE" << EOF
+  - name: "${name}"
+    url: "${url}"
+    skills_path: "${skills_path}"
+EOF
+
+  # Clone the repo
+  mkdir -p "$REPOS_DIR"
+  local repo_dir="$REPOS_DIR/$name"
+  if [[ ! -d "$repo_dir" ]]; then
+    info "Cloning ${url}..."
+    if git clone --depth 1 "$url" "$repo_dir" 2>/dev/null; then
+      local skill_count=0
+      if [[ -d "$repo_dir/$skills_path" ]]; then
+        skill_count=$(find "$repo_dir/$skills_path" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+      fi
+      success "Cloned: ${BOLD}${name}${RESET} (${skill_count} skills found)"
+    else
+      warn "Clone failed. Run ${CYAN}ai-env repo update ${name}${RESET} to retry."
+    fi
+  fi
+
+  success "Registered repo: ${BOLD}${name}${RESET}"
+  info "Run ${CYAN}ai-env scan --force${RESET} to sync skills into the store."
+}
+
+cmd_repo_remove() {
+  local name="${1:-}"
+  [[ -z "$name" ]] && die "Usage: ai-env repo remove <name>"
+
+  if ! grep -q "^repos:" "$SOURCES_FILE" 2>/dev/null; then
+    die "No repos section found in sources.yaml"
+  fi
+
+  # Check if repo exists in config
+  local found
+  found=$(python3 -c "
+in_repos = False
+for line in open('$SOURCES_FILE'):
+    line = line.rstrip()
+    if line.startswith('repos:'):
+        in_repos = True
+        continue
+    if in_repos and 'name:' in line and '$name' in line:
+        print('yes')
+        break
+else:
+    print('no')
+" 2>/dev/null)
+
+  [[ "$found" != "yes" ]] && die "Repo '${name}' not found."
+
+  # Remove from config
+  python3 -c "
+lines = open('$SOURCES_FILE').read().split('\n')
+result = []
+skip = False
+in_repos = False
+for line in lines:
+    if line.startswith('repos:'):
+        in_repos = True
+        result.append(line)
+        continue
+    if in_repos and '  - name:' in line and '$name' in line:
+        skip = True
+        continue
+    if skip and (line.startswith('  - ') or (line and not line.startswith('    ') and not line.startswith('  - '))):
+        skip = False
+    if skip and line.startswith('    '):
+        continue
+    if not in_repos:
+        result.append(line)
+    else:
+        result.append(line)
+with open('$SOURCES_FILE', 'w') as f:
+    f.write('\n'.join(result))
+"
+
+  # Remove symlinks from store that point into this repo
+  local removed=0
+  local repo_dir="$REPOS_DIR/$name"
+  if [[ -d "$SKILL_STORE" ]]; then
+    for item in "$SKILL_STORE"/*/; do
+      [[ ! -L "${item%/}" ]] && continue
+      local target
+      target=$(readlink "${item%/}")
+      if [[ "$target" == *"repos/${name}/"* ]]; then
+        rm "${item%/}"
+        (( removed++ )) || true
+      fi
+    done
+  fi
+
+  # Remove cloned repo
+  if [[ -d "$repo_dir" ]]; then
+    rm -rf "$repo_dir"
+    info "Removed cloned repo: ${repo_dir}"
+  fi
+
+  success "Removed repo: ${BOLD}${name}${RESET} (${removed} skill symlinks cleaned)"
+}
+
+cmd_repo_update() {
+  local target="${1:-}"
+
+  if [[ ! -f "$SOURCES_FILE" ]] || ! grep -q "^repos:" "$SOURCES_FILE" 2>/dev/null; then
+    die "No git repos registered."
+  fi
+
+  local updated=0
+  while IFS='|' read -r name url skills_path; do
+    [[ -n "$target" && "$name" != "$target" ]] && continue
+
+    local repo_dir="$REPOS_DIR/$name"
+
+    if [[ ! -d "$repo_dir/.git" ]]; then
+      info "Repo '${name}' not cloned yet. Cloning..."
+      mkdir -p "$REPOS_DIR"
+      if git clone --depth 1 "$url" "$repo_dir" 2>/dev/null; then
+        success "Cloned: ${name}"
+        (( updated++ )) || true
+      else
+        warn "Failed to clone: ${name}"
+      fi
+      continue
+    fi
+
+    local before_hash
+    before_hash=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null)
+
+    info "Updating '${name}'..."
+    if git -C "$repo_dir" pull --ff-only 2>/dev/null; then
+      local after_hash
+      after_hash=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null)
+      if [[ "$before_hash" != "$after_hash" ]]; then
+        local commit_count
+        commit_count=$(git -C "$repo_dir" rev-list "${before_hash}..${after_hash}" --count 2>/dev/null || echo "?")
+        success "Updated: ${BOLD}${name}${RESET} (${commit_count} new commit(s))"
+        (( updated++ )) || true
+      else
+        echo -e "  ${DIM}${name}: already up to date${RESET}"
+      fi
+    else
+      warn "Update failed for '${name}'. Try: cd ${repo_dir} && git pull"
+    fi
+  done < <(parse_repos)
+
+  if [[ -n "$target" ]] && [[ $updated -eq 0 ]]; then
+    # Check if target was found at all
+    local found=false
+    while IFS='|' read -r name _ _; do
+      [[ "$name" == "$target" ]] && found=true
+    done < <(parse_repos)
+    [[ "$found" == false ]] && die "Repo '${target}' not found."
+  fi
+
+  if [[ $updated -gt 0 ]]; then
+    echo ""
+    info "Run ${CYAN}ai-env scan --force${RESET} to sync updated skills into the store."
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Scan Command
 # ---------------------------------------------------------------------------
 
@@ -461,11 +731,19 @@ print('yes' if found else 'no')
           if [[ "$already_registered" == "no" ]]; then
             local source_name="${plugin}"
             source_name="${source_name/itp-engineering-/itp-eng-}"
-            cat >> "$SOURCES_FILE" << EOF
-  - name: "${source_name}"
-    marketplace: "${marketplace}"
-    plugin: "${plugin}"
-EOF
+            # Insert into the sources: section (before repos: if it exists)
+            python3 -c "
+content = open('$SOURCES_FILE').read()
+entry = '  - name: \"${source_name}\"\n    marketplace: \"${marketplace}\"\n    plugin: \"${plugin}\"\n'
+if 'repos:' in content:
+    # Insert before the repos: line
+    content = content.replace('repos:', entry + 'repos:', 1)
+else:
+    # Append to end
+    content = content.rstrip() + '\n' + entry
+with open('$SOURCES_FILE', 'w') as f:
+    f.write(content)
+"
             info "Auto-registered new source: ${BOLD}${source_name}${RESET} (${marketplace}/${plugin})"
           fi
         fi
@@ -600,6 +878,79 @@ print(count)
     done
   fi
 
+  # 1b. Scan git repo sources
+  local total_repo_synced=0
+  local repo_updates_available=()
+
+  if [[ -f "$SOURCES_FILE" ]] && grep -q "^repos:" "$SOURCES_FILE" 2>/dev/null; then
+    while IFS='|' read -r repo_name repo_url repo_skills_path; do
+      local repo_dir="$REPOS_DIR/$repo_name"
+
+      if [[ ! -d "$repo_dir/.git" ]]; then
+        warn "Repo '${repo_name}': not cloned. Run ${CYAN}ai-env repo update ${repo_name}${RESET}"
+        continue
+      fi
+
+      # Check for remote updates (fetch only, no working tree changes)
+      if git -C "$repo_dir" fetch --dry-run 2>&1 | grep -q .; then
+        local local_hash remote_hash
+        local_hash=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null)
+        # Actually fetch so we can compare (fetch is safe — no working tree changes)
+        git -C "$repo_dir" fetch --quiet 2>/dev/null || true
+        local default_branch
+        default_branch=$(git -C "$repo_dir" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "main")
+        remote_hash=$(git -C "$repo_dir" rev-parse "origin/${default_branch}" 2>/dev/null || echo "")
+        if [[ -n "$remote_hash" && "$local_hash" != "$remote_hash" ]]; then
+          local behind_count
+          behind_count=$(git -C "$repo_dir" rev-list "HEAD..origin/${default_branch}" --count 2>/dev/null || echo "?")
+          repo_updates_available+=("${repo_name}|${behind_count}")
+        fi
+      fi
+
+      # Sync skills from repo into store
+      local repo_skill_dir="$repo_dir/$repo_skills_path"
+      if [[ ! -d "$repo_skill_dir" ]]; then
+        warn "Repo '${repo_name}': skills_path '${repo_skills_path}' not found"
+        continue
+      fi
+
+      local repo_count=0
+      for skill_dir in "$repo_skill_dir"/*/; do
+        [[ ! -d "$skill_dir" ]] && continue
+        local skill_name
+        skill_name=$(basename "$skill_dir")
+        local target="$SKILL_STORE/${skill_name}"
+
+        if [[ -d "$target" && ! -L "$target" ]]; then
+          # Local skill takes precedence
+          [[ "$verbose" == true ]] && echo -e "  ${DIM}skip: ${skill_name} (local override)${RESET}"
+          shadowed_skills+=("${skill_name}|${repo_name}")
+          (( total_skipped++ )) || true
+        elif [[ -L "$target" ]]; then
+          # Already a symlink -- update if pointing elsewhere
+          local current_target
+          current_target=$(readlink "$target")
+          local new_target="${skill_dir%/}"
+          if [[ "$current_target" != "$new_target" ]]; then
+            rm "$target"
+            ln -s "$new_target" "$target"
+            [[ "$verbose" == true ]] && echo -e "  ${DIM}update: ${skill_name} -> ${new_target}${RESET}"
+          fi
+          (( repo_count++ )) || true
+        else
+          # New skill -- create symlink
+          ln -s "${skill_dir%/}" "$target"
+          [[ "$verbose" == true ]] && echo -e "  ${GREEN}+${RESET} ${skill_name} -> ${skill_dir%/}"
+          (( repo_count++ )) || true
+        fi
+      done
+
+      (( total_repo_synced += repo_count )) || true
+      info "Repo '${repo_name}': ${repo_count} skills from ${repo_skills_path}/"
+
+    done < <(parse_repos)
+  fi
+
   # 2. Count local skills (direct dirs in canonical store, not symlinks)
   local local_count=0
   for item in "$SKILL_STORE"/*/; do
@@ -612,11 +963,25 @@ print(count)
     [[ -d "$item" ]] && (( total++ )) || true
   done
 
+  local from_synced=$(( total_synced + total_repo_synced ))
+
   echo ""
   # Update scan cache
   touch "$scan_cache"
 
-  success "Scan complete: ${BOLD}${total}${RESET} skills in canonical store (${local_count} local, ${total_synced} from plugins)"
+  success "Scan complete: ${BOLD}${total}${RESET} skills in canonical store (${local_count} local, ${total_synced} from plugins, ${total_repo_synced} from repos)"
+
+  # Report available repo updates
+  if [[ ${#repo_updates_available[@]} -gt 0 ]]; then
+    echo ""
+    info "Repo updates available:"
+    for entry in "${repo_updates_available[@]}"; do
+      local r_name="${entry%%|*}"
+      local r_behind="${entry##*|}"
+      echo -e "  ${YELLOW}•${RESET} ${BOLD}${r_name}${RESET}: ${r_behind} commit(s) behind"
+    done
+    echo -e "  ${DIM}Run ${CYAN}ai-env repo update${RESET}${DIM} to pull changes${RESET}"
+  fi
 
   # 3b. Warn about local skills that shadow plugin versions
   if [[ ${#shadowed_skills[@]} -gt 0 ]]; then
@@ -665,26 +1030,35 @@ store = Path(os.path.expanduser('$SKILL_STORE'))
 sources_file = os.path.expanduser('$SOURCES_FILE')
 
 source_map = {}
+repo_map = {}
 if os.path.exists(sources_file):
     current = {}
-    in_sources = False
+    section = None
     for line in open(sources_file):
         line = line.rstrip()
-        if line.startswith('sources:'):
-            in_sources = True
-            continue
-        if not in_sources: continue
+        if line.startswith('sources:'): section = 'sources'; continue
+        if line.startswith('repos:'): section = 'repos'; continue
         if line.startswith('  - '):
-            if current.get('name') and current.get('marketplace') and current.get('plugin'):
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
                 source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            elif section == 'repos' and current.get('name'):
+                repo_map[f'repos/{current[\"name\"]}'] = current['name']
             current = {}
             rest = line[4:].strip()
             if rest.startswith('name:'): current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
         elif line.startswith('    ') and ':' in line:
             k, v = line.strip().split(':', 1)
             current[k.strip()] = v.strip().strip('\"').strip(\"'\")
-    if current.get('name') and current.get('marketplace') and current.get('plugin'):
+        elif line and not line.startswith(' ') and not line.startswith('#'):
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            elif section == 'repos' and current.get('name'):
+                repo_map[f'repos/{current[\"name\"]}'] = current['name']
+            current = {}; section = None
+    if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
         source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+    elif section == 'repos' and current.get('name'):
+        repo_map[f'repos/{current[\"name\"]}'] = current['name']
 
 count = 0
 for item in store.iterdir():
@@ -694,6 +1068,9 @@ for item in store.iterdir():
         prefix = 'plugin'
         for pk, sn in source_map.items():
             if pk in target: prefix = sn; break
+        else:
+            for pk, rn in repo_map.items():
+                if pk in target: prefix = rn; break
         sid = f'{prefix}:{item.name}'
     elif '-' in item.name:
         sid = f'{item.name.split(\"-\",1)[0]}:{item.name.split(\"-\",1)[1]}'
@@ -722,18 +1099,87 @@ print(count)
 # Skill ID Derivation
 # ---------------------------------------------------------------------------
 
-# derive_skill_id <dirname>
-# For canonical store items: prefix = first segment before '-', name = rest
-# No dash = local:<dirname>
-derive_skill_id() {
-  local dirname="$1"
-  if [[ "$dirname" == *-* ]]; then
-    local prefix="${dirname%%-*}"
-    local name="${dirname#*-}"
-    echo "${prefix}:${name}"
-  else
-    echo "local:${dirname}"
-  fi
+# derive_skill_ids <dirnames...>
+# Resolves skill prefixes from symlink targets against registered sources.
+# Symlinks: prefix = source name from sources.yaml
+# Local dirs: prefix = "local"
+# Accepts newline-separated dirnames on stdin, outputs prefix:dirname lines.
+derive_skill_ids() {
+  python3 -c "
+import os, sys
+from pathlib import Path
+
+store = Path(os.path.expanduser('$SKILL_STORE'))
+sources_file = os.path.expanduser('$SOURCES_FILE')
+repos_dir = os.path.expanduser('$REPOS_DIR')
+
+# Build source mapping: marketplace/plugin -> source_name
+source_map = {}
+# Build repo mapping: repos/<name> -> repo_name
+repo_map = {}
+if os.path.exists(sources_file):
+    current = {}
+    section = None
+    for line in open(sources_file):
+        line = line.rstrip()
+        if line.startswith('sources:'):
+            section = 'sources'
+            continue
+        if line.startswith('repos:'):
+            section = 'repos'
+            continue
+        if line.startswith('  - '):
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
+                key = f\"{current['marketplace']}/{current['plugin']}\"
+                source_map[key] = current['name']
+            elif section == 'repos' and current.get('name'):
+                repo_map[f'repos/{current[\"name\"]}'] = current['name']
+            current = {}
+            rest = line[4:].strip()
+            if rest.startswith('name:'):
+                current['name'] = rest.split(':',1)[1].strip().strip('\"').strip(\"'\")
+        elif line.startswith('    ') and ':' in line:
+            k, v = line.strip().split(':', 1)
+            current[k.strip()] = v.strip().strip('\"').strip(\"'\")
+        elif line and not line.startswith(' ') and not line.startswith('#'):
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            elif section == 'repos' and current.get('name'):
+                repo_map[f'repos/{current[\"name\"]}'] = current['name']
+            current = {}
+            section = None
+    # Flush last entry
+    if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
+        source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+    elif section == 'repos' and current.get('name'):
+        repo_map[f'repos/{current[\"name\"]}'] = current['name']
+
+for dirname in sys.stdin:
+    dirname = dirname.strip()
+    if not dirname:
+        continue
+    item = store / dirname
+    if item.is_symlink():
+        target = str(item.resolve())
+        matched = False
+        # Check plugin sources
+        for path_key, src_name in source_map.items():
+            if path_key in target:
+                print(f'{src_name}:{dirname}')
+                matched = True
+                break
+        if not matched:
+            # Check repo sources
+            for path_key, repo_name in repo_map.items():
+                if path_key in target:
+                    print(f'{repo_name}:{dirname}')
+                    matched = True
+                    break
+        if not matched:
+            print(f'plugin:{dirname}')
+    else:
+        print(f'local:{dirname}')
+"
 }
 
 # ---------------------------------------------------------------------------
@@ -758,22 +1204,25 @@ from collections import defaultdict
 store = Path(os.path.expanduser('$SKILL_STORE'))
 sources_file = os.path.expanduser('$SOURCES_FILE')
 
-# Build source mapping: marketplace/plugin -> source_name
-source_map = {}  # partial path -> source name
+# Build source mapping and repo mapping
+source_map = {}
+repo_map = {}
 if os.path.exists(sources_file):
     current = {}
-    in_sources = False
+    section = None
     for line in open(sources_file):
         line = line.rstrip()
         if line.startswith('sources:'):
-            in_sources = True
+            section = 'sources'
             continue
-        if not in_sources:
+        if line.startswith('repos:'):
+            section = 'repos'
             continue
         if line.startswith('  - '):
-            if current.get('name') and current.get('marketplace') and current.get('plugin'):
-                key = f\"{current['marketplace']}/{current['plugin']}\"
-                source_map[key] = current['name']
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            elif section == 'repos' and current.get('name'):
+                repo_map[f'repos/{current[\"name\"]}'] = current['name']
             current = {}
             rest = line[4:].strip()
             if rest.startswith('name:'):
@@ -781,32 +1230,40 @@ if os.path.exists(sources_file):
         elif line.startswith('    ') and ':' in line:
             k, v = line.strip().split(':', 1)
             current[k.strip()] = v.strip().strip('\"').strip(\"'\")
-    if current.get('name') and current.get('marketplace') and current.get('plugin'):
+        elif line and not line.startswith(' ') and not line.startswith('#'):
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            elif section == 'repos' and current.get('name'):
+                repo_map[f'repos/{current[\"name\"]}'] = current['name']
+            current = {}
+            section = None
+    if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
         source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+    elif section == 'repos' and current.get('name'):
+        repo_map[f'repos/{current[\"name\"]}'] = current['name']
 
 def get_prefix(item):
     \"\"\"Determine skill prefix from symlink target or dirname.\"\"\"
     if item.is_symlink():
         target = str(item.resolve())
-        # Match against registered sources
         for path_key, src_name in source_map.items():
             if path_key in target:
-                return src_name, item.name
-        # Fallback: unknown plugin
-        return 'plugin', item.name
+                return src_name, item.name, 'plugin'
+        for path_key, rname in repo_map.items():
+            if path_key in target:
+                return rname, item.name, 'repo'
+        return 'plugin', item.name, 'plugin'
     else:
-        # Local skill: use first segment before dash, or 'local'
         name = item.name
         if '-' in name:
-            return name.split('-', 1)[0], name.split('-', 1)[1]
-        return 'local', name
+            return name.split('-', 1)[0], name.split('-', 1)[1], 'local'
+        return 'local', name, 'local'
 
 skills = []
 for item in sorted(store.iterdir()):
     if not item.is_dir():
         continue
-    prefix, remainder = get_prefix(item)
-    source_type = 'symlink' if item.is_symlink() else 'local'
+    prefix, remainder, source_type = get_prefix(item)
     skills.append((prefix, remainder, item.name, source_type))
 
 # Group by prefix
@@ -823,7 +1280,12 @@ for prefix in sorted(groups.keys()):
         skill_id = f'{prefix}:{remainder}'
         if filter_pattern and filter_pattern not in skill_id:
             continue
-        marker = '  \033[2m(plugin)\033[0m' if stype == 'symlink' else ''
+        if stype == 'plugin':
+            marker = '  \033[2m(plugin)\033[0m'
+        elif stype == 'repo':
+            marker = '  \033[2m(repo)\033[0m'
+        else:
+            marker = ''
         print(f'    {skill_id}{marker}')
     print()
 
@@ -849,21 +1311,25 @@ from pathlib import Path
 store = Path(os.path.expanduser('$SKILL_STORE'))
 sources_file = os.path.expanduser('$SOURCES_FILE')
 
-# Build source mapping: marketplace/plugin -> source_name
+# Build source and repo mappings
 source_map = {}
+repo_map = {}
 if os.path.exists(sources_file):
     current = {}
-    in_sources = False
+    section = None
     for line in open(sources_file):
         line = line.rstrip()
         if line.startswith('sources:'):
-            in_sources = True
+            section = 'sources'
             continue
-        if not in_sources:
+        if line.startswith('repos:'):
+            section = 'repos'
             continue
         if line.startswith('  - '):
-            if current.get('name') and current.get('marketplace') and current.get('plugin'):
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
                 source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            elif section == 'repos' and current.get('name'):
+                repo_map[f'repos/{current[\"name\"]}'] = current['name']
             current = {}
             rest = line[4:].strip()
             if rest.startswith('name:'):
@@ -871,8 +1337,17 @@ if os.path.exists(sources_file):
         elif line.startswith('    ') and ':' in line:
             k, v = line.strip().split(':', 1)
             current[k.strip()] = v.strip().strip('\"').strip(\"'\")
-    if current.get('name') and current.get('marketplace') and current.get('plugin'):
+        elif line and not line.startswith(' ') and not line.startswith('#'):
+            if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
+                source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+            elif section == 'repos' and current.get('name'):
+                repo_map[f'repos/{current[\"name\"]}'] = current['name']
+            current = {}
+            section = None
+    if section == 'sources' and current.get('name') and current.get('marketplace') and current.get('plugin'):
         source_map[f\"{current['marketplace']}/{current['plugin']}\"] = current['name']
+    elif section == 'repos' and current.get('name'):
+        repo_map[f'repos/{current[\"name\"]}'] = current['name']
 
 def get_prefix(item):
     if item.is_symlink():
@@ -880,6 +1355,9 @@ def get_prefix(item):
         for path_key, src_name in source_map.items():
             if path_key in target:
                 return src_name, item.name
+        for path_key, rname in repo_map.items():
+            if path_key in target:
+                return rname, item.name
         return 'plugin', item.name
     else:
         name = item.name
@@ -1476,8 +1954,8 @@ cmd_show() {
   count=$(echo "$resolved" | grep -c . || echo 0)
   echo -e "  ${count} skills matched\n"
 
-  echo "$resolved" | while IFS= read -r s; do
-    [[ -n "$s" ]] && echo -e "  $(derive_skill_id "$s")"
+  echo "$resolved" | derive_skill_ids | sort | while IFS= read -r s; do
+    [[ -n "$s" ]] && echo -e "  ${s}"
   done
 }
 
@@ -1491,6 +1969,147 @@ cmd_edit() {
   $EDITOR "$file"
 
   success "Updated: ${name}"
+}
+
+cmd_reset() {
+  local force=false
+  [[ "${1:-}" == "-f" || "${1:-}" == "--force" ]] && force=true
+
+  echo -e "${BOLD}ai-env reset${RESET} — restore to clean state\n"
+
+  # 1. Inventory what will be removed
+  local symlink_count_claude=0 symlink_count_agents=0 store_count=0
+  if [[ -d "$CLAUDE_SKILLS" ]]; then
+    symlink_count_claude=$(find "$CLAUDE_SKILLS" -maxdepth 1 -type l 2>/dev/null | wc -l | tr -d ' ')
+  fi
+  if [[ -d "$AGENT_SKILLS" ]]; then
+    symlink_count_agents=$(find "$AGENT_SKILLS" -maxdepth 1 -type l 2>/dev/null | wc -l | tr -d ' ')
+  fi
+  if [[ -d "$SKILL_STORE" ]]; then
+    store_count=$(find "$SKILL_STORE" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+  fi
+
+  # 2. Scan store symlinks to find which plugins are managed by ai-env
+  local settings_file="$HOME/.claude/settings.json"
+  local managed_plugins=""
+  if [[ -d "$SKILL_STORE" ]]; then
+    managed_plugins=$(python3 -c "
+import os, re
+from pathlib import Path
+
+store = Path(os.path.expanduser('$SKILL_STORE'))
+# Extract unique marketplace/plugin pairs from symlink targets
+# Symlinks point to: ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/...
+pattern = re.compile(r'/\.claude/plugins/cache/([^/]+)/([^/]+)/')
+seen = set()
+for item in sorted(store.iterdir()):
+    if item.is_symlink():
+        target = str(item.resolve())
+        m = pattern.search(target)
+        if m:
+            marketplace, plugin = m.group(1), m.group(2)
+            key = f'{plugin}@{marketplace}'
+            if key not in seen:
+                seen.add(key)
+                print(key)
+" 2>/dev/null || true)
+  fi
+
+  # Cross-reference with disabled plugins in settings.json
+  local plugins_to_enable=""
+  if [[ -n "$managed_plugins" && -f "$settings_file" ]]; then
+    plugins_to_enable=$(python3 -c "
+import json, sys
+
+managed = set(line.strip() for line in '''$managed_plugins'''.strip().splitlines() if line.strip())
+
+with open('$settings_file') as f:
+    data = json.load(f)
+plugins = data.get('enabledPlugins', {})
+for key, val in plugins.items():
+    if not val and key in managed:
+        print(key)
+" 2>/dev/null || true)
+  fi
+  local enable_count
+  enable_count=$(echo "$plugins_to_enable" | grep -c . 2>/dev/null || echo 0)
+
+  # 3. Show summary
+  echo -e "${BOLD}Will remove:${RESET}"
+  echo -e "  ${symlink_count_claude} managed symlink(s) in ~/.claude/skills/"
+  echo -e "  ${symlink_count_agents} managed symlink(s) in ~/.agents/skills/"
+  echo -e "  ${store_count} item(s) in skill store (~/.config/ai-env/skills/)"
+  echo -e "  State files (.active, .last-scan)"
+  echo ""
+  echo -e "${BOLD}Will re-enable (plugins with skills in store):${RESET}"
+  if [[ "$enable_count" -gt 0 ]]; then
+    echo "$plugins_to_enable" | while IFS= read -r p; do
+      [[ -n "$p" ]] && echo -e "  ${CYAN}${p}${RESET}"
+    done
+  else
+    echo -e "  ${DIM}(no managed plugins to re-enable)${RESET}"
+  fi
+  echo ""
+  echo -e "${BOLD}Will keep:${RESET}"
+  echo -e "  Environment configs (~/.config/ai-env/environments/)"
+  echo -e "  Source registry (~/.config/ai-env/sources.yaml)"
+  echo ""
+
+  # 4. Confirm unless --force
+  if [[ "$force" != true ]]; then
+    echo -n "Proceed? [y/N] "
+    read -r confirm
+    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { echo "Aborted."; return 0; }
+    echo ""
+  fi
+
+  # 5. Remove managed symlinks from agent skill dirs
+  if [[ -d "$CLAUDE_SKILLS" ]]; then
+    find "$CLAUDE_SKILLS" -maxdepth 1 -type l -delete 2>/dev/null
+    info "Cleaned ~/.claude/skills/ symlinks"
+  fi
+  if [[ -d "$AGENT_SKILLS" ]]; then
+    find "$AGENT_SKILLS" -maxdepth 1 -type l -delete 2>/dev/null
+    info "Cleaned ~/.agents/skills/ symlinks"
+  fi
+
+  # 6. Remove skill store
+  if [[ -d "$SKILL_STORE" ]]; then
+    rm -rf "$SKILL_STORE"
+    info "Removed skill store"
+  fi
+
+  # 7. Remove state files
+  rm -f "$ACTIVE_FILE" "$CONFIG_DIR/.last-scan"
+  info "Removed state files"
+
+  # 8. Re-enable plugins that had skills in the store
+  if [[ "$enable_count" -gt 0 && -f "$settings_file" ]]; then
+    local enabled_count
+    enabled_count=$(python3 -c "
+import json, sys
+
+to_enable = set(line.strip() for line in '''$plugins_to_enable'''.strip().splitlines() if line.strip())
+
+with open('$settings_file') as f:
+    data = json.load(f)
+plugins = data.get('enabledPlugins', {})
+count = 0
+for key in list(plugins.keys()):
+    if key in to_enable and not plugins[key]:
+        plugins[key] = True
+        count += 1
+if count > 0:
+    with open('$settings_file', 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\n')
+print(count)
+")
+    info "Re-enabled ${enabled_count} plugin(s) in settings.json"
+  fi
+
+  echo ""
+  success "Reset complete. To rebuild, run: ${CYAN}ai-env scan && ai-env activate <env>${RESET}"
 }
 
 cmd_clone() {
@@ -1564,8 +2183,14 @@ ${BOLD}SETUP${RESET}
   ${CYAN}source${RESET} add <name> <mkt> <p>  Register a plugin source
   ${CYAN}source${RESET} remove <name>         Unregister a plugin source
 
+${BOLD}GIT REPOS${RESET}
+  ${CYAN}repo${RESET} list                    Show registered git repos + status
+  ${CYAN}repo${RESET} add <name> <url> [path] Register + clone a git skill repo
+  ${CYAN}repo${RESET} remove <name>           Unregister repo + clean up symlinks
+  ${CYAN}repo${RESET} update [name]           Pull latest changes (all or specific)
+
 ${BOLD}DISCOVERY${RESET}
-  ${CYAN}scan${RESET}    [-v]                 Scan sources, sync to skill store
+  ${CYAN}scan${RESET}    [-v]                 Scan sources + repos, sync to skill store
   ${CYAN}inventory${RESET}                    List all skills with prefix grouping
 
 ${BOLD}ENVIRONMENTS${RESET}
@@ -1577,6 +2202,7 @@ ${BOLD}ENVIRONMENTS${RESET}
   ${CYAN}clone${RESET}   <src> <dest>         Clone an environment config
   ${CYAN}delete${RESET}  <name>               Delete an environment
   ${CYAN}which${RESET}                        Show currently active environment
+  ${CYAN}reset${RESET}   [-f]                 Remove symlinks, store & re-enable plugins
 
 ${BOLD}FLAGS${RESET}
   -a, --agent <name>        Launch agent after activation (claude, opencode, ...)
@@ -1590,6 +2216,7 @@ ${BOLD}SKILL PATTERNS${RESET}
     "gws:gmail*"       gws-gmail, gws-gmail-send, etc.
     "local:*"          all hand-written skills (no prefix dash)
     "superpowers:*"    all superpowers plugin skills
+    "lenny:ai-*"       repo skills matching ai-* (e.g. ai-evals)
     "*"                everything
 
 ${BOLD}EXAMPLES${RESET}
@@ -1599,16 +2226,19 @@ ${BOLD}EXAMPLES${RESET}
   ai-env activate my-project -a claude     # Activate + launch Claude Code
   ai-env activate my-project -a opencode   # Activate + launch OpenCode
   ai-env activate my-project --dry-run     # Preview what would change
-  ai-env source add sp superpowers-dev superpowers  # Register source
+  ai-env source add sp superpowers-dev superpowers  # Register plugin source
+  ai-env repo add lenny https://github.com/RefoundAI/lenny-skills  # Add git repo
+  ai-env repo update lenny                 # Pull latest changes
   ai-env inventory                         # See all available skills
 
 ${BOLD}DIRECTORIES${RESET}
   ${DIM}~/.config/ai-env/skills/${RESET}       Skill store (source of truth)
+  ${DIM}~/.config/ai-env/repos/${RESET}        Cloned git repos
   ${DIM}~/.agents/skills/${RESET}              Filtered view (symlinks)
   ${DIM}~/.claude/skills/${RESET}              Agent view (managed symlinks)
   ${DIM}~/.config/ai-env/${RESET}              Configuration
   ${DIM}~/.config/ai-env/environments/${RESET} Environment YAML files
-  ${DIM}~/.config/ai-env/sources.yaml${RESET}  Plugin source registry
+  ${DIM}~/.config/ai-env/sources.yaml${RESET}  Source + repo registry
 
 EOF
 )"
@@ -1633,7 +2263,9 @@ main() {
     clone|cp)                shift || true; cmd_clone "$@" ;;
     delete|rm)               shift || true; cmd_delete "$@" ;;
     which|active)            shift || true; cmd_which "$@" ;;
+    reset)                   shift || true; cmd_reset "$@" ;;
     source)                  shift || true; cmd_source "$@" ;;
+    repo)                    shift || true; cmd_repo "$@" ;;
     -h|--help|help)          usage ;;
     -v|--version)            echo "ai-env v${VERSION}" ;;
     "")                      usage ;;
