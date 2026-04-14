@@ -2060,14 +2060,17 @@ _export_to_dir() {
     done
   fi
 
-  while IFS=$'\t' read -r skill_name real_path; do
+  while IFS=$'\t' read -r skill_name real_dir; do
     [[ -z "$skill_name" ]] && continue
     local dest="$target/${skill_name}"
+    local file_count
+    file_count=$(find "$real_dir" -type f 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$dry_run" == true ]]; then
-      echo -e "  ${GREEN}copy${RESET}   ${skill_name}/SKILL.md  ${DIM}← ${real_path}${RESET}"
+      echo -e "  ${GREEN}copy${RESET}   ${skill_name}/  ${DIM}(${file_count} files) ← ${real_dir}${RESET}"
     else
-      mkdir -p "$dest"
-      cp "$real_path" "$dest/SKILL.md"
+      mkdir -p "$target"
+      rm -rf "$dest"
+      cp -a "$real_dir" "$dest"
     fi
     (( exported++ )) || true
   done <<< "$resolve_output"
@@ -2113,13 +2116,15 @@ _export_to_s3() {
     done <<< "$existing_skills"
   fi
 
-  while IFS=$'\t' read -r skill_name real_path; do
+  while IFS=$'\t' read -r skill_name real_dir; do
     [[ -z "$skill_name" ]] && continue
-    local s3_key="${prefix}/${skill_name}/SKILL.md"
+    local s3_dest="s3://${bucket}/${prefix}/${skill_name}/"
+    local file_count
+    file_count=$(find "$real_dir" -type f 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$dry_run" == true ]]; then
-      echo -e "  ${GREEN}upload${RESET} s3://${bucket}/${s3_key}  ${DIM}← ${real_path}${RESET}"
+      echo -e "  ${GREEN}upload${RESET} ${s3_dest}  ${DIM}(${file_count} files) ← ${real_dir}${RESET}"
     else
-      aws "${aws_flags[@]}" s3 cp "$real_path" "s3://${bucket}/${s3_key}" > /dev/null 2>&1
+      aws "${aws_flags[@]}" s3 cp "$real_dir" "$s3_dest" --recursive > /dev/null 2>&1
     fi
     (( exported++ )) || true
   done <<< "$resolve_output"
@@ -2193,7 +2198,7 @@ if not use_all and env_file:
 if not patterns:
     exit(0)
 
-# Resolve each skill to its real SKILL.md path
+# Resolve each skill to its real directory path
 for item in sorted(store.iterdir()):
     if not item.is_dir() and not item.is_symlink():
         continue
@@ -2207,7 +2212,7 @@ for item in sorted(store.iterdir()):
     prefix, remainder = _get_prefix(item, source_map, repo_map)
     skill_id = f'{prefix}:{remainder}'
     if any(fnmatch.fnmatch(skill_id, p) for p in patterns):
-        print(f'{item.name}\t{real_path}')
+        print(f'{item.name}\t{real_path.parent}')
 ")
 
   if [[ -z "$resolve_output" ]]; then
