@@ -127,6 +127,44 @@ agents:
 ~/.claude/skills.bak.2026-03-17/  # backup created by init
 ```
 
+## Exporting Skills
+
+Export resolves symlink chains and copies the real SKILL.md files to a target directory or S3 bucket. This is useful for Docker containers, cloud runtimes (Lambda, ECS), and CI/CD pipelines where symlinks don't work.
+
+```bash
+# Export an environment's skills to a local directory
+ai-env export my-project --to ./exported-skills/
+
+# Export directly to S3
+ai-env export my-project --to s3://my-bucket/skills/
+
+# Export all skills (no environment filter)
+ai-env export --all --to /tmp/all-skills/
+
+# Preview without copying
+ai-env export my-project --to ./skills/ --dry-run
+
+# Remove stale skills from target that are no longer in the export set
+ai-env export my-project --to ./skills/ --clean
+```
+
+**Flags:**
+- `--dry-run` / `-n` — preview what would be copied without writing anything
+- `--clean` — remove skill directories in the target that aren't in the export set
+
+**S3 environment variables:**
+- `AWS_PROFILE` — passed through to `aws s3 cp`
+- `AWS_ENDPOINT_URL` — for LocalStack or custom S3-compatible endpoints
+
+The output directory structure mirrors the skill store:
+```
+exported-skills/
+  gws-calendar/SKILL.md
+  gws-gmail-send/SKILL.md
+  brainstorming/SKILL.md
+  ...
+```
+
 ## Shell Aliases
 
 ```bash
@@ -163,6 +201,13 @@ ai-env delete <name>               # remove environment
 ai-env activate <name>             # scan + rebuild symlinks + summary
 ai-env activate <name> --dry-run   # preview changes
 ai-env which                       # show active environment
+
+# Export
+ai-env export <name> --to <dir>    # copy resolved skills to directory
+ai-env export <name> --to s3://b/  # upload resolved skills to S3
+ai-env export --all --to <target>  # export all skills
+ai-env export <name> --to <t> --clean     # remove stale skills from target
+ai-env export <name> --to <t> --dry-run   # preview only
 
 # Source management
 ai-env source list                 # show registered sources
