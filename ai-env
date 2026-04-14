@@ -198,7 +198,11 @@ def _build_maps(sources_file):
             if section == "sources" and current.get("name") and current.get("marketplace") and current.get("plugin"):
                 source_map[current["marketplace"] + "/" + current["plugin"]] = current["name"]
             elif section == "repos" and current.get("name"):
-                repo_map["repos/" + current["name"]] = current["name"]
+                pfx = current.get("prefix", "")
+                rname = pfx if pfx and pfx not in ("false", "true") else current["name"]
+                if pfx == "true":
+                    rname = current["name"]
+                repo_map["repos/" + current["name"]] = rname
             current = {}
             rest = line[4:].strip()
             if rest.startswith("name:"):
@@ -210,13 +214,21 @@ def _build_maps(sources_file):
             if section == "sources" and current.get("name") and current.get("marketplace") and current.get("plugin"):
                 source_map[current["marketplace"] + "/" + current["plugin"]] = current["name"]
             elif section == "repos" and current.get("name"):
-                repo_map["repos/" + current["name"]] = current["name"]
+                pfx = current.get("prefix", "")
+                rname = pfx if pfx and pfx not in ("false", "true") else current["name"]
+                if pfx == "true":
+                    rname = current["name"]
+                repo_map["repos/" + current["name"]] = rname
             current = {}
             section = None
     if section == "sources" and current.get("name") and current.get("marketplace") and current.get("plugin"):
         source_map[current["marketplace"] + "/" + current["plugin"]] = current["name"]
     elif section == "repos" and current.get("name"):
-        repo_map["repos/" + current["name"]] = current["name"]
+        pfx = current.get("prefix", "")
+        rname = pfx if pfx and pfx not in ("false", "true") else current["name"]
+        if pfx == "true":
+            rname = current["name"]
+        repo_map["repos/" + current["name"]] = rname
     return source_map, repo_map
 
 def _get_prefix(item, source_map, repo_map):
@@ -998,6 +1010,7 @@ print(count)
         skill_name=$(basename "$skill_dir")
 
         # Apply custom prefix if set (non-empty and not "false")
+        local original_name="$skill_name"
         if [[ -n "$repo_prefix" && "$repo_prefix" != "false" && "$repo_prefix" != "true" ]]; then
           # Use custom prefix value
           if [[ ! "$skill_name" == "${repo_prefix}-"* ]]; then
@@ -1007,6 +1020,15 @@ print(count)
           # Use repo name as prefix
           if [[ ! "$skill_name" == "${repo_name}-"* ]]; then
             skill_name="${repo_name}-${skill_name}"
+          fi
+        fi
+
+        # Clean up stale unprefixed symlink if prefix was applied
+        if [[ "$skill_name" != "$original_name" ]]; then
+          local stale="$SKILL_STORE/${original_name}"
+          if [[ -L "$stale" ]] && [[ "$(readlink "$stale")" == *"repos/${repo_name}/"* ]]; then
+            rm "$stale"
+            [[ "$verbose" == true ]] && echo -e "  ${DIM}clean: removed unprefixed ${original_name} (now ${skill_name})${RESET}"
           fi
         fi
 
