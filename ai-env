@@ -172,6 +172,81 @@ config_get() {
   [[ -f "$CONFIG_FILE" ]] && yaml_get "$CONFIG_FILE" "$key" || echo ""
 }
 
+# Walk from a directory up to / looking for .ai-env.yaml
+# Prints the path to the first one found, or empty string
+find_project_config() {
+  local dir="${1:-$PWD}"
+  dir="${dir/#\~/$HOME}"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/.ai-env.yaml" ]]; then
+      echo "$dir/.ai-env.yaml"
+      return 0
+    fi
+    dir=$(dirname "$dir")
+  done
+  return 1
+}
+
+# Resolve environment name from current working directory
+# Strategy 1: .ai-env.yaml in cwd or parent (nearest match)
+# Strategy 2: match cwd against directory: fields in all environments
+# Strategy 3: fall back to default_environment from config.yaml
+# Prints: environment name, or exits non-zero
+resolve_env_from_cwd() {
+  local cwd="${1:-$PWD}"
+
+  # Strategy 1: .ai-env.yaml file
+  local project_config
+  if project_config=$(find_project_config "$cwd"); then
+    local env_ref
+    env_ref=$(yaml_get "$project_config" "environment")
+    if [[ -n "$env_ref" ]]; then
+      if env_exists "$env_ref"; then
+        echo "$env_ref"
+        return 0
+      else
+        warn ".ai-env.yaml references unknown environment: ${env_ref}"
+      fi
+    fi
+  fi
+
+  # Strategy 2: match cwd against directory: fields
+  local best_match="" best_length=0
+  for env_file in "$ENV_DIR"/*.yaml; do
+    [[ ! -f "$env_file" ]] && continue
+    local env_dir
+    env_dir=$(yaml_get "$env_file" "directory")
+    [[ -z "$env_dir" ]] && continue
+    env_dir="${env_dir/#\~/$HOME}"
+    # Normalize: remove trailing slash
+    env_dir="${env_dir%/}"
+    local check_dir="${cwd%/}"
+    # Check if cwd starts with env_dir (is inside or equal)
+    if [[ "$check_dir" == "$env_dir" || "$check_dir" == "$env_dir"/* ]]; then
+      local dir_length=${#env_dir}
+      if [[ $dir_length -gt $best_length ]]; then
+        best_length=$dir_length
+        best_match=$(basename "$env_file" .yaml)
+      fi
+    fi
+  done
+
+  if [[ -n "$best_match" ]]; then
+    echo "$best_match"
+    return 0
+  fi
+
+  # Strategy 3: default environment
+  local default_env
+  default_env=$(config_get "default_environment")
+  if [[ -n "$default_env" ]] && env_exists "$default_env"; then
+    echo "$default_env"
+    return 0
+  fi
+
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Shared Python: source/repo map builder + get_prefix
 # ---------------------------------------------------------------------------
