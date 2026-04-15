@@ -78,7 +78,6 @@ Environments live as YAML files in `~/.config/ai-env/environments/<name>.yaml`:
 ```yaml
 name: "My Project"
 description: "Backend services"
-directory: "~/Dev/my-project"
 
 # Skill patterns (include-only, supports wildcards)
 skills:
@@ -102,6 +101,20 @@ agents:
 - Empty `skills:` section means no skills activated
 - Patterns union (order doesn't matter)
 
+## Binding a Directory to a Profile
+
+Drop a `.ai-env.yaml` file in any project directory to bind it to a profile:
+
+```yaml
+environment: "my-project"
+```
+
+When you run `ai-env activate` from that directory (or any subdirectory), it auto-detects the profile and sets up skills locally in `.agents/skills/` and `.claude/skills/`.
+
+If no `.ai-env.yaml` exists, `activate` prompts you to pick a profile and creates the file automatically.
+
+Profiles are reusable — the same profile can be bound to multiple directories via separate `.ai-env.yaml` files.
+
 ## Key Directories
 
 ```
@@ -110,7 +123,6 @@ agents:
   environments/                # your project profiles
     my-project.yaml
     another-project.yaml
-  .active                       # currently active environment
 
 ~/.agents/skills/              # canonical skill store (single source of truth)
   gws-drive/

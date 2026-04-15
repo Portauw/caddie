@@ -5,3 +5,6 @@
 .claude/skills/
 .agents/skills/
 .claude/.ai-env-fingerprint
+
+# ai-env managed skill directories
+.agents/SOURCES.md
