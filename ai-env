@@ -1949,6 +1949,9 @@ cmd_list() {
     [[ "$skill_count" -gt 0 ]] && echo -e "    ${DIM}${skill_count} skill pattern(s)${RESET}" || true
     echo ""
   done <<< "$envs"
+
+  echo -e "  ${DIM}Auto-detect: ${CYAN}ai-env activate${RESET}${DIM} (resolves from cwd)${RESET}"
+  echo ""
 }
 
 cmd_show() {
@@ -1963,6 +1966,17 @@ cmd_show() {
   directory=$(yaml_get "$file" "directory")
 
   echo -e "${BOLD}Environment: ${CYAN}${display_name:-$name}${RESET}\n"
+
+  if [[ -n "$directory" ]]; then
+    local expanded_dir="${directory/#\~/$HOME}"
+    echo -e "  ${DIM}Skills managed in:${RESET}"
+    echo -e "    ${DIM}${expanded_dir}/.claude/skills/${RESET}"
+    echo -e "    ${DIM}${expanded_dir}/.agents/skills/${RESET}"
+    if [[ -f "${expanded_dir}/.claude/.ai-env-fingerprint" ]]; then
+      echo -e "    ${DIM}(fingerprint: active)${RESET}"
+    fi
+    echo ""
+  fi
 
   # Show config
   cat "$file"
