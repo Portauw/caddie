@@ -2062,6 +2062,7 @@ for key, val in plugins.items():
   echo -e "  ${symlink_count_agents} managed symlink(s) in ~/.agents/skills/"
   echo -e "  ${store_count} item(s) in skill store (~/.config/ai-env/skills/)"
   echo -e "  State files (.active, .last-scan)"
+  echo -e "  Project-local skill symlinks (for all environments with directory: set)"
   echo ""
   echo -e "${BOLD}Will re-enable (plugins with skills in store):${RESET}"
   if [[ "$enable_count" -gt 0 ]]; then
@@ -2093,6 +2094,29 @@ for key, val in plugins.items():
   if [[ -d "$AGENT_SKILLS" ]]; then
     find "$AGENT_SKILLS" -maxdepth 1 -type l -delete 2>/dev/null
     info "Cleaned ~/.agents/skills/ symlinks"
+  fi
+
+  # 5b. Clean project-local skill dirs for all known environments
+  local project_cleaned=0
+  for env_yaml in "$ENV_DIR"/*.yaml; do
+    [[ ! -f "$env_yaml" ]] && continue
+    local env_dir
+    env_dir=$(yaml_get "$env_yaml" "directory")
+    [[ -z "$env_dir" ]] && continue
+    env_dir="${env_dir/#\~/$HOME}"
+    for subdir in ".claude/skills" ".agents/skills"; do
+      local pdir="$env_dir/$subdir"
+      if [[ -d "$pdir" ]]; then
+        for item in "$pdir"/*; do
+          [[ -L "$item" ]] && rm "$item" && (( project_cleaned++ )) || true
+        done
+      fi
+    done
+    # Remove fingerprint
+    rm -f "$env_dir/.claude/.ai-env-fingerprint"
+  done
+  if [[ $project_cleaned -gt 0 ]]; then
+    info "Cleaned ${project_cleaned} project-local symlink(s)"
   fi
 
   # 6. Remove skill store
