@@ -273,6 +273,46 @@ compute_fingerprint() {
   } | shasum -a 256 | cut -d' ' -f1
 }
 
+# Ensure .claude/skills is a symlink to .agents/skills (not a separate dir)
+# For project-local: <project>/.claude/skills → ../.agents/skills
+# For global: ~/.claude/skills → ../.agents/skills
+ensure_claude_skills_symlink() {
+  local claude_dir="$1"    # e.g. <project>/.claude/skills or ~/.claude/skills
+  local agents_dir="$2"    # e.g. <project>/.agents/skills or ~/.agents/skills
+
+  # If it's already the correct symlink, nothing to do
+  if [[ -L "$claude_dir" ]]; then
+    local current_target
+    current_target=$(readlink "$claude_dir")
+    if [[ "$current_target" == "../.agents/skills" || "$(cd "$(dirname "$claude_dir")" && cd "$current_target" 2>/dev/null && pwd)" == "$(cd "$agents_dir" 2>/dev/null && pwd)" ]]; then
+      return 0
+    fi
+    # Wrong target — remove and recreate
+    rm "$claude_dir"
+  fi
+
+  # If it's a real directory, migrate contents to agents dir then remove
+  if [[ -d "$claude_dir" ]]; then
+    mkdir -p "$agents_dir"
+    for item in "$claude_dir"/*; do
+      [[ ! -e "$item" && ! -L "$item" ]] && continue
+      local name="${item##*/}"
+      # Move non-symlink items (real skill dirs) to agents dir
+      if [[ ! -L "$item" && -d "$item" && ! -d "$agents_dir/$name" ]]; then
+        mv "$item" "$agents_dir/$name"
+      elif [[ -L "$item" && ! -L "$agents_dir/$name" ]]; then
+        # Copy symlink to agents dir if not already there
+        cp -a "$item" "$agents_dir/$name" 2>/dev/null || true
+      fi
+    done
+    rm -rf "$claude_dir"
+  fi
+
+  # Create the symlink
+  mkdir -p "$(dirname "$claude_dir")"
+  ln -s "../.agents/skills" "$claude_dir"
+}
+
 # Reconcile symlinks in a skill directory to match expected set
 # Args: <target_dir> <expected_skills (newline-separated)> <skill_store_path>
 # Returns: added|removed counts via global vars
@@ -1017,8 +1057,9 @@ print(count)
 
   # 0c. Sweep new skills from agent dirs into store
   #     (catches skills installed by npx skills add -g)
+  #     Only sweep from .agents/skills — .claude/skills is a symlink to it
   local swept=0
-  for agent_dir in "$AGENT_SKILLS" "$CLAUDE_SKILLS"; do
+  for agent_dir in "$AGENT_SKILLS"; do
     [[ ! -d "$agent_dir" ]] && continue
     for item in "$agent_dir"/*/; do
       [[ ! -d "$item" ]] && continue
@@ -1534,13 +1575,11 @@ cmd_activate() {
     project_dir="$(dirname "$_LAST_PROJECT_CONFIG")"
   fi
 
-  local target_claude target_agents fingerprint_dir
+  local target_agents fingerprint_dir
   if [[ -n "$project_dir" ]]; then
-    target_claude="$project_dir/.claude/skills"
     target_agents="$project_dir/.agents/skills"
     fingerprint_dir="$project_dir/.claude"
   else
-    target_claude="$CLAUDE_SKILLS"
     target_agents="$AGENT_SKILLS"
     fingerprint_dir="$CONFIG_DIR"
   fi
@@ -1627,8 +1666,7 @@ print(f'SUMMARY:{summary}')
     echo -e "  Skills:      ${skill_count} (${prefix_summary})"
     echo ""
     echo -e "  ${DIM}Would manage:${RESET}"
-    echo -e "    ${DIM}${target_claude}/${RESET}"
-    echo -e "    ${DIM}${target_agents}/${RESET}"
+    echo -e "    ${DIM}${target_agents}/ (.claude/skills → symlink)${RESET}"
     echo ""
     echo -e "  Matched skills:"
     echo "$matched_skills" | while IFS= read -r s; do
@@ -1651,21 +1689,19 @@ print(f'SUMMARY:{summary}')
     fi
   fi
 
-  # Reconcile skill directories
-  reconcile_skill_dir "$target_claude" "$matched_skills" "$SKILL_STORE"
-  local claude_added=$_RECONCILE_ADDED claude_removed=$_RECONCILE_REMOVED
-
+  # Reconcile .agents/skills (canonical), then ensure .claude/skills symlinks to it
   reconcile_skill_dir "$target_agents" "$matched_skills" "$SKILL_STORE"
-  local agents_added=$_RECONCILE_ADDED agents_removed=$_RECONCILE_REMOVED
+  local total_added=$_RECONCILE_ADDED
+  local total_removed=$_RECONCILE_REMOVED
 
-  local total_added=$(( claude_added + agents_added ))
-  local total_removed=$(( claude_removed + agents_removed ))
-
-  # Clear global skill dirs when using project-local dirs
   if [[ -n "$project_dir" ]]; then
-    reconcile_skill_dir "$CLAUDE_SKILLS" "" "$SKILL_STORE"
+    ensure_claude_skills_symlink "$project_dir/.claude/skills" "$target_agents"
+    # Clear global dirs when using project-local
     reconcile_skill_dir "$AGENT_SKILLS" "" "$SKILL_STORE"
+    ensure_claude_skills_symlink "$CLAUDE_SKILLS" "$AGENT_SKILLS"
     _ensure_gitignore "$project_dir"
+  else
+    ensure_claude_skills_symlink "$CLAUDE_SKILLS" "$AGENT_SKILLS"
   fi
 
   # Write fingerprint
@@ -1758,6 +1794,10 @@ cmd_init() {
   else
     info "No bare files/dirs to migrate"
   fi
+
+  # 3b. Set up ~/.claude/skills as symlink to ~/.agents/skills
+  ensure_claude_skills_symlink "$CLAUDE_SKILLS" "$AGENT_SKILLS"
+  success "Set up ~/.claude/skills → ~/.agents/skills"
 
   # 4. Auto-detect plugin sources
   if [[ ! -f "$SOURCES_FILE" ]]; then
@@ -1967,8 +2007,7 @@ cmd_show() {
   if [[ -n "$directory" ]]; then
     local expanded_dir="${directory/#\~/$HOME}"
     echo -e "  ${DIM}Skills managed in:${RESET}"
-    echo -e "    ${DIM}${expanded_dir}/.claude/skills/${RESET}"
-    echo -e "    ${DIM}${expanded_dir}/.agents/skills/${RESET}"
+    echo -e "    ${DIM}${expanded_dir}/.agents/skills/ (.claude/skills → symlink)${RESET}"
     if [[ -f "${expanded_dir}/.claude/.ai-env-fingerprint" ]]; then
       echo -e "    ${DIM}(fingerprint: active)${RESET}"
     fi
@@ -2011,10 +2050,9 @@ cmd_reset() {
   echo -e "${BOLD}ai-env reset${RESET} — restore to clean state\n"
 
   # 1. Inventory what will be removed
-  local symlink_count_claude=0 symlink_count_agents=0 store_count=0
-  if [[ -d "$CLAUDE_SKILLS" ]]; then
-    symlink_count_claude=$(find "$CLAUDE_SKILLS" -maxdepth 1 -type l 2>/dev/null | wc -l | tr -d ' ')
-  fi
+  local symlink_count_agents=0 store_count=0
+  local claude_is_symlink=false
+  [[ -L "$CLAUDE_SKILLS" ]] && claude_is_symlink=true
   if [[ -d "$AGENT_SKILLS" ]]; then
     symlink_count_agents=$(find "$AGENT_SKILLS" -maxdepth 1 -type l 2>/dev/null | wc -l | tr -d ' ')
   fi
@@ -2069,8 +2107,8 @@ for key, val in plugins.items():
 
   # 3. Show summary
   echo -e "${BOLD}Will remove:${RESET}"
-  echo -e "  ${symlink_count_claude} managed symlink(s) in ~/.claude/skills/"
   echo -e "  ${symlink_count_agents} managed symlink(s) in ~/.agents/skills/"
+  [[ "$claude_is_symlink" == true ]] && echo -e "  ~/.claude/skills/ → ~/.agents/skills/ (symlink)"
   echo -e "  ${store_count} item(s) in skill store (~/.config/ai-env/skills/)"
   echo -e "  State files (.active, .last-scan)"
   echo -e "  Project-local skill symlinks (for all environments with directory: set)"
@@ -2097,15 +2135,13 @@ for key, val in plugins.items():
     echo ""
   fi
 
-  # 5. Remove managed symlinks from agent skill dirs
-  if [[ -d "$CLAUDE_SKILLS" ]]; then
-    find "$CLAUDE_SKILLS" -maxdepth 1 -type l -delete 2>/dev/null
-    info "Cleaned ~/.claude/skills/ symlinks"
-  fi
+  # 5. Remove managed symlinks from global agent skill dir
   if [[ -d "$AGENT_SKILLS" ]]; then
     find "$AGENT_SKILLS" -maxdepth 1 -type l -delete 2>/dev/null
     info "Cleaned ~/.agents/skills/ symlinks"
   fi
+  # Remove .claude/skills symlink (it points to .agents/skills)
+  [[ -L "$CLAUDE_SKILLS" ]] && rm "$CLAUDE_SKILLS" && info "Removed ~/.claude/skills symlink"
 
   # 5b. Clean project-local skill dirs for all known environments
   local project_cleaned=0
@@ -2115,15 +2151,14 @@ for key, val in plugins.items():
     env_dir=$(yaml_get "$env_yaml" "directory")
     [[ -z "$env_dir" ]] && continue
     env_dir="${env_dir/#\~/$HOME}"
-    for subdir in ".claude/skills" ".agents/skills"; do
-      local pdir="$env_dir/$subdir"
-      if [[ -d "$pdir" ]]; then
-        for item in "$pdir"/*; do
-          if [[ -L "$item" ]]; then rm "$item"; (( project_cleaned++ )) || true; fi
-        done
-      fi
-    done
-    # Remove fingerprint
+    local pdir="$env_dir/.agents/skills"
+    if [[ -d "$pdir" ]]; then
+      for item in "$pdir"/*; do
+        if [[ -L "$item" ]]; then rm "$item"; (( project_cleaned++ )) || true; fi
+      done
+    fi
+    # Remove .claude/skills symlink and fingerprint
+    [[ -L "$env_dir/.claude/skills" ]] && rm "$env_dir/.claude/skills"
     rm -f "$env_dir/.claude/.ai-env-fingerprint"
   done
   if [[ $project_cleaned -gt 0 ]]; then
@@ -2505,8 +2540,8 @@ ${BOLD}DIRECTORIES${RESET}
   ${DIM}~/.config/ai-env/skills/${RESET}            Skill store (source of truth)
   ${DIM}~/.config/ai-env/repos/${RESET}             Cloned git repos
   ${DIM}~/.config/ai-env/config.yaml${RESET}        Global settings (default_environment)
-  ${DIM}<project>/.claude/skills/${RESET}            Project skill view (managed symlinks)
-  ${DIM}<project>/.agents/skills/${RESET}            Project agent view (managed symlinks)
+  ${DIM}<project>/.agents/skills/${RESET}            Project skills (managed symlinks)
+  ${DIM}<project>/.claude/skills${RESET}             Symlink to .agents/skills
   ${DIM}<project>/.ai-env.yaml${RESET}              Project profile binding
   ${DIM}~/.config/ai-env/environments/${RESET}       Environment YAML files
   ${DIM}~/.config/ai-env/sources.yaml${RESET}        Source + repo registry
