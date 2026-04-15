@@ -22,6 +22,7 @@ SOURCES_FILE="$CONFIG_DIR/sources.yaml"
 ACTIVE_FILE="$CONFIG_DIR/.active"
 SKILL_STORE="$CONFIG_DIR/skills"
 REPOS_DIR="$CONFIG_DIR/repos"
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
 AGENT_SKILLS="$HOME/.agents/skills"
 CLAUDE_SKILLS="$HOME/.claude/skills"
 EDITOR="${EDITOR:-vim}"
@@ -163,6 +164,12 @@ list_envs() {
 
 get_active() {
   [[ -f "$ACTIVE_FILE" ]] && cat "$ACTIVE_FILE" || echo ""
+}
+
+# Read a value from config.yaml
+config_get() {
+  local key="$1"
+  [[ -f "$CONFIG_FILE" ]] && yaml_get "$CONFIG_FILE" "$key" || echo ""
 }
 
 # ---------------------------------------------------------------------------
