@@ -15,7 +15,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Constants & defaults
 # ---------------------------------------------------------------------------
-VERSION="2.0.0"
+VERSION="3.0.0"
 CONFIG_DIR="${AI_ENV_DIR:-$HOME/.config/ai-env}"
 ENV_DIR="$CONFIG_DIR/environments"
 SOURCES_FILE="$CONFIG_DIR/sources.yaml"
