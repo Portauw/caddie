@@ -12,6 +12,13 @@
 
 set -euo pipefail
 
+# Require bash 4+ for associative arrays
+if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
+  echo "ai-env requires bash 4+. You have bash ${BASH_VERSION}." >&2
+  echo "Install via: brew install bash" >&2
+  exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Constants & defaults
 # ---------------------------------------------------------------------------
@@ -212,10 +219,10 @@ resolve_env_from_cwd() {
 
   # Strategy 2: match cwd against directory: fields
   local best_match="" best_length=0
-  for env_file in "$ENV_DIR"/*.yaml; do
-    [[ ! -f "$env_file" ]] && continue
+  for env_yaml in "$ENV_DIR"/*.yaml; do
+    [[ ! -f "$env_yaml" ]] && continue
     local env_dir
-    env_dir=$(yaml_get "$env_file" "directory")
+    env_dir=$(yaml_get "$env_yaml" "directory")
     [[ -z "$env_dir" ]] && continue
     env_dir="${env_dir/#\~/$HOME}"
     # Normalize: remove trailing slash
@@ -226,7 +233,7 @@ resolve_env_from_cwd() {
       local dir_length=${#env_dir}
       if [[ $dir_length -gt $best_length ]]; then
         best_length=$dir_length
-        best_match=$(basename "$env_file" .yaml)
+        best_match=$(basename "$env_yaml" .yaml)
       fi
     fi
   done
@@ -1454,7 +1461,7 @@ for dirname in sorted(matched):
 }
 
 # ---------------------------------------------------------------------------
-# Stub Command Functions (Tasks 8-12)
+# Gitignore helper
 # ---------------------------------------------------------------------------
 
 # Ensure project .gitignore has entries for ai-env managed dirs
@@ -1675,9 +1682,6 @@ print(f'SUMMARY:{summary}')
     mkdir -p "$(dirname "$fingerprint_file")"
     echo "$new_fingerprint" > "$fingerprint_file"
 
-    # Step 8: Write active marker
-    echo "$name" > "$ACTIVE_FILE"
-
     # Build change description
     local change_desc=""
     if [[ $total_added -gt 0 && $total_removed -gt 0 ]]; then
@@ -1693,6 +1697,9 @@ print(f'SUMMARY:{summary}')
     # Fingerprint matched — no rebuild needed
     echo -e "${GREEN}✓${RESET} ${BOLD}${display_name:-$name}${RESET}: ${skill_count} skills (unchanged)"
   fi
+
+  # Always update active marker (even on no-rebuild path)
+  echo "$name" > "$ACTIVE_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -2127,7 +2134,7 @@ for key, val in plugins.items():
       local pdir="$env_dir/$subdir"
       if [[ -d "$pdir" ]]; then
         for item in "$pdir"/*; do
-          [[ -L "$item" ]] && rm "$item" && (( project_cleaned++ )) || true
+          if [[ -L "$item" ]]; then rm "$item"; (( project_cleaned++ )) || true; fi
         done
       fi
     done
