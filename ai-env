@@ -26,7 +26,6 @@ VERSION="3.0.0"
 CONFIG_DIR="${AI_ENV_DIR:-$HOME/.config/ai-env}"
 ENV_DIR="$CONFIG_DIR/environments"
 SOURCES_FILE="$CONFIG_DIR/sources.yaml"
-ACTIVE_FILE="$CONFIG_DIR/.active"
 SKILL_STORE="$CONFIG_DIR/skills"
 REPOS_DIR="$CONFIG_DIR/repos"
 CONFIG_FILE="$CONFIG_DIR/config.yaml"
@@ -169,9 +168,6 @@ list_envs() {
   find "$ENV_DIR" -maxdepth 1 -name '*.yaml' -exec basename {} .yaml \; 2>/dev/null | sort
 }
 
-get_active() {
-  [[ -f "$ACTIVE_FILE" ]] && cat "$ACTIVE_FILE" || echo ""
-}
 
 # Read a value from config.yaml
 config_get() {
@@ -1584,18 +1580,7 @@ cmd_activate() {
     fingerprint_dir="$CONFIG_DIR"
   fi
 
-  # Fast path: check fingerprint before expensive scan + resolve
   local fingerprint_file="$fingerprint_dir/.ai-env-fingerprint"
-  if [[ "$dry_run" == false && -f "$fingerprint_file" ]]; then
-    local cached_fingerprint
-    cached_fingerprint=$(cat "$fingerprint_file" 2>/dev/null || echo "")
-    # Fingerprint format: env_name + sorted skill names hashed together
-    # Quick prefix check: if active env name changed, fingerprint is stale
-    if [[ -n "$cached_fingerprint" && "$(get_active)" == "$name" ]]; then
-      # Defer full check until after resolve (we need the skill list to compare)
-      :
-    fi
-  fi
 
   # Scan sources (silent, cached for 60s)
   cmd_scan > /dev/null 2>&1 || true
@@ -1683,7 +1668,6 @@ print(f'SUMMARY:{summary}')
     local old_fingerprint
     old_fingerprint=$(cat "$fingerprint_file" 2>/dev/null || echo "")
     if [[ "$old_fingerprint" == "$new_fingerprint" ]]; then
-      echo "$name" > "$ACTIVE_FILE"
       echo -e "${GREEN}✓${RESET} ${BOLD}${display_name:-$name}${RESET}: ${skill_count} skills (unchanged)"
       return
     fi
@@ -1707,9 +1691,6 @@ print(f'SUMMARY:{summary}')
   # Write fingerprint
   mkdir -p "$(dirname "$fingerprint_file")"
   echo "$new_fingerprint" > "$fingerprint_file"
-
-  # Write active marker
-  echo "$name" > "$ACTIVE_FILE"
 
   local change_desc=""
   if [[ $total_added -gt 0 && $total_removed -gt 0 ]]; then
@@ -1957,7 +1938,6 @@ YAML
 cmd_list() {
   local envs active
   envs=$(list_envs)
-  active=$(get_active)
 
   if [[ -z "$envs" ]]; then
     warn "No environments found."
@@ -1977,10 +1957,7 @@ cmd_list() {
     # Count skill patterns
     skill_count=$(yaml_list "$file" "skills" | wc -l | xargs)
 
-    local marker=""
-    [[ "$env_name" == "$active" ]] && marker=" ${GREEN}● active${RESET}"
-
-    echo -e "  ${BOLD}${CYAN}${env_name}${RESET}${marker}"
+    echo -e "  ${BOLD}${CYAN}${env_name}${RESET}"
     [[ -n "$display_name" && "$display_name" != "$env_name" ]] && echo -e "    ${display_name}" || true
     [[ -n "$description" ]] && echo -e "    ${DIM}${description}${RESET}" || true
     [[ "$skill_count" -gt 0 ]] && echo -e "    ${DIM}${skill_count} skill pattern(s)${RESET}" || true
@@ -2110,7 +2087,7 @@ for key, val in plugins.items():
   echo -e "  ${symlink_count_agents} managed symlink(s) in ~/.agents/skills/"
   [[ "$claude_is_symlink" == true ]] && echo -e "  ~/.claude/skills/ → ~/.agents/skills/ (symlink)"
   echo -e "  ${store_count} item(s) in skill store (~/.config/ai-env/skills/)"
-  echo -e "  State files (.active, .last-scan)"
+  echo -e "  State files (.last-scan)"
   echo -e "  Project-local skill symlinks (for all environments with directory: set)"
   echo ""
   echo -e "${BOLD}Will re-enable (plugins with skills in store):${RESET}"
@@ -2172,7 +2149,7 @@ for key, val in plugins.items():
   fi
 
   # 7. Remove state files
-  rm -f "$ACTIVE_FILE" "$CONFIG_DIR/.last-scan"
+  rm -f "$CONFIG_DIR/.last-scan"
   info "Removed state files"
 
   # 8. Re-enable plugins that had skills in the store
@@ -2225,9 +2202,6 @@ cmd_delete() {
   [[ -z "$name" ]] && die "Usage: ai-env delete <name>"
   env_exists "$name" || die "Environment '${name}' not found."
 
-  local active
-  active=$(get_active)
-
   read -rp "Are you sure you want to delete '${name}'? [y/N] " -n 1 confirm
   echo ""
   [[ "$confirm" != "y" && "$confirm" != "Y" ]] && return
@@ -2236,26 +2210,17 @@ cmd_delete() {
   file="$(env_file "$name")"
   rm "$file"
 
-  # Clear active if it was the deleted environment
-  if [[ "$active" == "$name" ]]; then
-    rm -f "$ACTIVE_FILE"
-    warn "Cleared active environment marker"
-  fi
-
   success "Deleted: ${name}"
 }
 
 cmd_which() {
-  local active
-  active=$(get_active)
-
-  if [[ -z "$active" ]]; then
-    warn "No active environment."
-    info "Run ${CYAN}ai-env activate <name>${RESET} to set one."
-    return
+  local resolved
+  if resolved=$(resolve_env_from_cwd); then
+    echo "$resolved"
+  else
+    warn "No profile found for ${PWD}"
+    return 1
   fi
-
-  echo "$active"
 }
 
 # ---------------------------------------------------------------------------
