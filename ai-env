@@ -1637,25 +1637,44 @@ _activate_sync_repos() {
     now=$(date +%s)
     cache_age=$(( now - cache_mtime ))
     if [[ "$cache_age" -lt 60 ]]; then
+      echo -e "  ${DIM}✓ sources up to date${RESET}"
       return 0
     fi
   fi
 
   # Check if we have any repos at all
-  if [[ ! -f "$SOURCES_FILE" ]] || ! grep -q "^repos:" "$SOURCES_FILE" 2>/dev/null; then
+  local has_repos=false
+  if [[ -f "$SOURCES_FILE" ]] && grep -q "^repos:" "$SOURCES_FILE" 2>/dev/null; then
+    has_repos=true
+  fi
+
+  if [[ "$has_repos" == false ]]; then
+    echo -e "  ${DIM}⟳ scanning sources...${RESET}"
     cmd_scan > /dev/null 2>&1 || true
     return 0
   fi
 
+  # Count repos for display
+  local repo_count=0
+  while IFS='|' read -r _ _ _ _; do
+    (( repo_count++ )) || true
+  done < <(parse_repos)
+
+  echo -e "  ${DIM}⟳ fetching ${repo_count} repo(s)...${RESET}"
+
   local any_updated=false
+  local repos_checked=0 repos_updated=0
 
   while IFS='|' read -r repo_name repo_url repo_skills_path repo_prefix; do
     local repo_dir="$REPOS_DIR/$repo_name"
 
     # Skip repos that aren't cloned
     if [[ ! -d "$repo_dir/.git" ]]; then
+      echo -e "  ${YELLOW}⚠${RESET} ${DIM}${repo_name}: not cloned${RESET}"
       continue
     fi
+
+    (( repos_checked++ )) || true
 
     # Fetch to check for updates
     git -C "$repo_dir" fetch --quiet 2>/dev/null || continue
@@ -1670,19 +1689,21 @@ _activate_sync_repos() {
       local behind_count
       behind_count=$(git -C "$repo_dir" rev-list "HEAD..origin/${default_branch}" --count 2>/dev/null || echo "?")
 
-      echo -e "  ${DIM}↓ ${repo_name}: ${behind_count} new commit(s), pulling...${RESET}"
+      echo -e "  ${CYAN}↓${RESET} ${repo_name}: pulling ${behind_count} commit(s)..."
       if git -C "$repo_dir" pull --ff-only --quiet 2>/dev/null; then
         any_updated=true
+        (( repos_updated++ )) || true
       else
-        warn "  ${repo_name}: pull failed (not fast-forward?). Run manually: cd ${repo_dir} && git pull"
+        warn "${repo_name}: pull failed (not fast-forward?). Run: cd ${repo_dir} && git pull"
       fi
     fi
   done < <(parse_repos)
 
-  # Force rescan if any repo was updated, otherwise normal cached scan
-  if [[ "$any_updated" == true ]]; then
+  if [[ $repos_updated -gt 0 ]]; then
+    echo -e "  ${DIM}⟳ rescanning (${repos_updated} repo(s) updated)...${RESET}"
     cmd_scan --force > /dev/null 2>&1 || true
   else
+    echo -e "  ${DIM}✓ ${repos_checked} repo(s) up to date${RESET}"
     cmd_scan > /dev/null 2>&1 || true
   fi
 }
@@ -1788,6 +1809,8 @@ cmd_activate() {
 
   local fingerprint_file="$fingerprint_dir/.ai-env-fingerprint"
 
+  echo -e "${BOLD}${display_name:-$name}${RESET} ${DIM}→ ${project_dir:-global}${RESET}"
+
   # Update repos if behind, then scan
   _activate_sync_repos
 
@@ -1876,7 +1899,7 @@ print(f'SUMMARY:{summary}')
     if [[ "$old_fingerprint" == "$new_fingerprint" ]]; then
       # Regenerate manifest even on unchanged (source repos may have moved)
       _generate_sources_manifest "$target_agents"
-      echo -e "${GREEN}✓${RESET} ${BOLD}${display_name:-$name}${RESET}: ${skill_count} skills (unchanged)"
+      echo -e "${GREEN}✓${RESET} ${skill_count} skills (unchanged)"
       return
     fi
   fi
@@ -1912,7 +1935,7 @@ print(f'SUMMARY:{summary}')
     change_desc=" (-${total_removed} removed)"
   fi
 
-  echo -e "${GREEN}✓${RESET} ${BOLD}${display_name:-$name}${RESET}: ${skill_count} skills${change_desc}"
+  echo -e "${GREEN}✓${RESET} ${skill_count} skills${change_desc}"
 }
 
 # ---------------------------------------------------------------------------
