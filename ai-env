@@ -248,6 +248,68 @@ resolve_env_from_cwd() {
 }
 
 # ---------------------------------------------------------------------------
+# Fingerprint & Reconcile helpers (for incremental symlink updates)
+# ---------------------------------------------------------------------------
+
+# Compute a fingerprint for a skill set
+# Input: sorted skill directory names (one per line) on stdin
+# Output: SHA-256 hash string
+compute_fingerprint() {
+  local env_name="$1"
+  {
+    echo "$env_name"
+    cat  # stdin: sorted skill names
+  } | shasum -a 256 | cut -d' ' -f1
+}
+
+# Reconcile symlinks in a skill directory to match expected set
+# Args: <target_dir> <expected_skills (newline-separated)> <skill_store_path>
+# Returns: added|removed counts via global vars
+_RECONCILE_ADDED=0
+_RECONCILE_REMOVED=0
+
+reconcile_skill_dir() {
+  local target_dir="$1"
+  local expected="$2"
+  local store="$3"
+
+  mkdir -p "$target_dir"
+
+  _RECONCILE_ADDED=0
+  _RECONCILE_REMOVED=0
+
+  # Build expected set
+  local -A expected_set
+  while IFS= read -r skill; do
+    [[ -n "$skill" ]] && expected_set["$skill"]=1
+  done <<< "$expected"
+
+  # Remove symlinks not in expected set
+  for item in "$target_dir"/*; do
+    [[ ! -L "$item" ]] && continue
+    local name
+    name=$(basename "$item")
+    if [[ -z "${expected_set[$name]+_}" ]]; then
+      rm "$item"
+      (( _RECONCILE_REMOVED++ )) || true
+    fi
+  done
+
+  # Add missing symlinks
+  while IFS= read -r skill; do
+    [[ -z "$skill" ]] && continue
+    local target_path="$target_dir/${skill}"
+    if [[ ! -L "$target_path" ]]; then
+      local source_path="$store/${skill}"
+      if [[ -d "$source_path" || -L "$source_path" ]]; then
+        ln -s "$source_path" "$target_path"
+        (( _RECONCILE_ADDED++ )) || true
+      fi
+    fi
+  done <<< "$expected"
+}
+
+# ---------------------------------------------------------------------------
 # Shared Python: source/repo map builder + get_prefix
 # ---------------------------------------------------------------------------
 # Emits Python code that builds source_map, repo_map, and defines get_prefix().
