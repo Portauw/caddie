@@ -1842,7 +1842,12 @@ YAML
   echo -e "  ${CYAN}ai-env source list${RESET}           Review detected sources"
   echo -e "  ${CYAN}ai-env inventory${RESET}             See all discovered skills"
   echo -e "  ${CYAN}ai-env create my-project${RESET}     Create your first environment"
-  echo -e "  ${CYAN}ai-env activate my-project${RESET}   Activate it"
+  echo ""
+  info "Shell integration (add to ~/.zshrc):"
+  echo ""
+  echo -e "  ${DIM}claude() {"
+  echo -e "    ai-env activate && command claude \"\\\$@\""
+  echo -e "  }${RESET}"
 }
 
 # ---------------------------------------------------------------------------
@@ -2455,7 +2460,7 @@ ${BOLD}ENVIRONMENTS${RESET}
   ${CYAN}list${RESET}    (ls)                 List all environments
   ${CYAN}show${RESET}    <name>               Show config + resolved skills
   ${CYAN}edit${RESET}    <name>               Open environment config in \$EDITOR
-  ${CYAN}activate${RESET} <name> [-a agent]   Scan + rebuild symlinks [+ launch agent]
+  ${CYAN}activate${RESET} [name]              Resolve skills for cwd (or explicit env)
   ${CYAN}clone${RESET}   <src> <dest>         Clone an environment config
   ${CYAN}delete${RESET}  <name>               Delete an environment
   ${CYAN}which${RESET}                        Show currently active environment
@@ -2469,7 +2474,6 @@ ${BOLD}EXPORT${RESET}
   Env:   AWS_PROFILE, AWS_ENDPOINT_URL (for S3 targets)
 
 ${BOLD}FLAGS${RESET}
-  -a, --agent <name>        Launch agent after activation (claude, opencode, ...)
   -n, --dry-run             Show what would happen without executing
   -v, --verbose             Show detailed output
   -h, --help                Show this help message
@@ -2486,23 +2490,34 @@ ${BOLD}SKILL PATTERNS${RESET}
 ${BOLD}EXAMPLES${RESET}
   ai-env init                              # First-time setup
   ai-env create my-project                 # Create environment
-  ai-env activate my-project               # Activate (sets up symlinks)
-  ai-env activate my-project -a claude     # Activate + launch Claude Code
-  ai-env activate my-project -a opencode   # Activate + launch OpenCode
-  ai-env activate my-project --dry-run     # Preview what would change
+  ai-env activate                          # Auto-detect profile from cwd
+  ai-env activate my-project               # Explicit profile activation
+  ai-env activate --dry-run                # Preview what would change
   ai-env source add sp superpowers-dev superpowers  # Register plugin source
   ai-env repo add lenny https://github.com/RefoundAI/lenny-skills  # Add git repo
-  ai-env repo update lenny                 # Pull latest changes
   ai-env inventory                         # See all available skills
 
+${BOLD}SHELL INTEGRATION${RESET}
+  Add to ~/.zshrc (or ~/.bashrc):
+
+    claude() {
+      ai-env activate && command claude "\$@"
+    }
+
+${BOLD}PROJECT CONFIG${RESET}
+  Create .ai-env.yaml in your project root:
+
+    environment: "my-project"
+
 ${BOLD}DIRECTORIES${RESET}
-  ${DIM}~/.config/ai-env/skills/${RESET}       Skill store (source of truth)
-  ${DIM}~/.config/ai-env/repos/${RESET}        Cloned git repos
-  ${DIM}~/.agents/skills/${RESET}              Filtered view (symlinks)
-  ${DIM}~/.claude/skills/${RESET}              Agent view (managed symlinks)
-  ${DIM}~/.config/ai-env/${RESET}              Configuration
-  ${DIM}~/.config/ai-env/environments/${RESET} Environment YAML files
-  ${DIM}~/.config/ai-env/sources.yaml${RESET}  Source + repo registry
+  ${DIM}~/.config/ai-env/skills/${RESET}            Skill store (source of truth)
+  ${DIM}~/.config/ai-env/repos/${RESET}             Cloned git repos
+  ${DIM}~/.config/ai-env/config.yaml${RESET}        Global settings (default_environment)
+  ${DIM}<project>/.claude/skills/${RESET}            Project skill view (managed symlinks)
+  ${DIM}<project>/.agents/skills/${RESET}            Project agent view (managed symlinks)
+  ${DIM}<project>/.ai-env.yaml${RESET}              Project profile binding
+  ${DIM}~/.config/ai-env/environments/${RESET}       Environment YAML files
+  ${DIM}~/.config/ai-env/sources.yaml${RESET}        Source + repo registry
 
 EOF
 )"
