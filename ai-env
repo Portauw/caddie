@@ -243,13 +243,7 @@ resolve_env_from_cwd() {
     return 0
   fi
 
-  # Strategy 3: default environment
-  local default_env
-  default_env=$(config_get "default_environment")
-  if [[ -n "$default_env" ]] && env_exists "$default_env"; then
-    echo "$default_env"
-    return 0
-  fi
+  # No match — let cmd_activate handle interactively
 
   return 1
 }
@@ -1548,7 +1542,42 @@ cmd_activate() {
   # Auto-detect environment if no name provided
   if [[ -z "$name" ]]; then
     if ! name=$(resolve_env_from_cwd); then
-      die "No profile found for ${PWD}\n  Create one: ${CYAN}ai-env create <name>${RESET}\n  Or add .ai-env.yaml: ${CYAN}echo 'environment: \"<name>\"' > .ai-env.yaml${RESET}"
+      # No profile found — let user pick one interactively
+      local envs
+      envs=$(list_envs)
+      if [[ -z "$envs" ]]; then
+        die "No profiles found. Run ${CYAN}ai-env create <name>${RESET} first."
+      fi
+
+      echo -e "${BOLD}No profile for ${PWD##*/}${RESET}\n"
+      echo -e "Pick an environment to use here:\n"
+
+      local -a env_arr=()
+      local i=1
+      while IFS= read -r env_name; do
+        local efile
+        efile="$(env_file "$env_name")"
+        local desc
+        desc=$(yaml_get "$efile" "description")
+        printf "  ${CYAN}%d${RESET}) ${BOLD}%-20s${RESET} ${DIM}%s${RESET}\n" "$i" "$env_name" "$desc"
+        env_arr+=("$env_name")
+        (( i++ )) || true
+      done <<< "$envs"
+
+      echo ""
+      local choice
+      read -rp "  Choice [1-${#env_arr[@]}]: " choice
+
+      if [[ -z "$choice" || "$choice" -lt 1 || "$choice" -gt ${#env_arr[@]} ]] 2>/dev/null; then
+        die "Invalid choice."
+      fi
+
+      name="${env_arr[$((choice - 1))]}"
+
+      # Write .ai-env.yaml so this choice is remembered
+      echo "environment: \"${name}\"" > "$PWD/.ai-env.yaml"
+      success "Created .ai-env.yaml → ${name}"
+      echo ""
     fi
   fi
 
