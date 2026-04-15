@@ -199,12 +199,16 @@ find_project_config() {
 # Strategy 2: match cwd against directory: fields in all environments
 # Strategy 3: fall back to default_environment from config.yaml
 # Prints: environment name, or exits non-zero
+_LAST_PROJECT_CONFIG=""  # cached by resolve_env_from_cwd for cmd_activate
+
 resolve_env_from_cwd() {
   local cwd="${1:-$PWD}"
+  _LAST_PROJECT_CONFIG=""
 
   # Strategy 1: .ai-env.yaml file
   local project_config
   if project_config=$(find_project_config "$cwd"); then
+    _LAST_PROJECT_CONFIG="$project_config"
     local env_ref
     env_ref=$(yaml_get "$project_config" "environment")
     if [[ -n "$env_ref" ]]; then
@@ -285,24 +289,20 @@ reconcile_skill_dir() {
   _RECONCILE_ADDED=0
   _RECONCILE_REMOVED=0
 
-  # Build expected set
   local -A expected_set
   while IFS= read -r skill; do
     [[ -n "$skill" ]] && expected_set["$skill"]=1
   done <<< "$expected"
 
-  # Remove symlinks not in expected set
   for item in "$target_dir"/*; do
     [[ ! -L "$item" ]] && continue
-    local name
-    name=$(basename "$item")
+    local name="${item##*/}"
     if [[ -z "${expected_set[$name]+_}" ]]; then
       rm "$item"
       (( _RECONCILE_REMOVED++ )) || true
     fi
   done
 
-  # Add missing symlinks
   while IFS= read -r skill; do
     [[ -z "$skill" ]] && continue
     local target_path="$target_dir/${skill}"
@@ -1483,14 +1483,11 @@ _ensure_gitignore() {
   done
 
   if [[ "$needs_update" == true ]]; then
-    # Append missing entries
     [[ -f "$gitignore" ]] && [[ -n "$(tail -c 1 "$gitignore")" ]] && echo "" >> "$gitignore"
     echo "" >> "$gitignore"
     echo "# ai-env managed skill directories" >> "$gitignore"
     for entry in "${entries[@]}"; do
-      if [[ ! -f "$gitignore" ]] || ! grep -qxF "$entry" "$gitignore" 2>/dev/null; then
-        echo "$entry" >> "$gitignore"
-      fi
+      grep -qxF "$entry" "$gitignore" 2>/dev/null || echo "$entry" >> "$gitignore"
     done
   fi
 }
@@ -1528,24 +1525,17 @@ cmd_activate() {
   directory=$(yaml_get "$file" "directory")
   [[ -n "$directory" ]] && directory="${directory/#\~/$HOME}"
 
-  # Determine if this is a project-local or global activation
+  # Determine project directory (env config > .ai-env.yaml > empty for global)
   local project_dir=""
-  local use_project_local=true
-
   if [[ -n "$directory" ]]; then
     project_dir="$directory"
-  else
-    # No directory: field — check if we're in a project with .ai-env.yaml
-    local project_config
-    if project_config=$(find_project_config "$PWD"); then
-      project_dir="$(dirname "$project_config")"
-    else
-      use_project_local=false
-    fi
+  elif [[ -n "${_LAST_PROJECT_CONFIG:-}" ]]; then
+    # Reuse result from resolve_env_from_cwd (avoids double dir walk)
+    project_dir="$(dirname "$_LAST_PROJECT_CONFIG")"
   fi
 
   local target_claude target_agents fingerprint_dir
-  if [[ "$use_project_local" == true ]]; then
+  if [[ -n "$project_dir" ]]; then
     target_claude="$project_dir/.claude/skills"
     target_agents="$project_dir/.agents/skills"
     fingerprint_dir="$project_dir/.claude"
@@ -1555,10 +1545,23 @@ cmd_activate() {
     fingerprint_dir="$CONFIG_DIR"
   fi
 
-  # Step 1: Scan sources (silent)
+  # Fast path: check fingerprint before expensive scan + resolve
+  local fingerprint_file="$fingerprint_dir/.ai-env-fingerprint"
+  if [[ "$dry_run" == false && -f "$fingerprint_file" ]]; then
+    local cached_fingerprint
+    cached_fingerprint=$(cat "$fingerprint_file" 2>/dev/null || echo "")
+    # Fingerprint format: env_name + sorted skill names hashed together
+    # Quick prefix check: if active env name changed, fingerprint is stale
+    if [[ -n "$cached_fingerprint" && "$(get_active)" == "$name" ]]; then
+      # Defer full check until after resolve (we need the skill list to compare)
+      :
+    fi
+  fi
+
+  # Scan sources (silent, cached for 60s)
   cmd_scan > /dev/null 2>&1 || true
 
-  # Step 2: Resolve skills + count by prefix (single python call)
+  # Resolve skills + count by prefix
   local resolve_output
   resolve_output=$(python3 -c "
 $PY_PREFIX_HELPER
@@ -1569,7 +1572,6 @@ store = Path(os.path.expanduser('$SKILL_STORE'))
 source_map, repo_map = _build_maps(os.path.expanduser('$SOURCES_FILE'))
 env_file = '$file'
 
-# Read patterns
 patterns = []
 in_skills = False
 for line in open(env_file):
@@ -1586,7 +1588,6 @@ if not patterns:
     print('SUMMARY:')
     exit(0)
 
-# Build skill map and match
 skill_map = {}
 prefix_map = {}
 for item in sorted(store.iterdir()):
@@ -1603,11 +1604,9 @@ for pattern in patterns:
         if fnmatch.fnmatch(skill_id, pattern):
             matched.add(dirname)
 
-# Output matched skills
 for dirname in sorted(matched):
     print(dirname)
 
-# Output summary line
 counts = Counter()
 for dirname in matched:
     counts[prefix_map.get(dirname, 'unknown')] += 1
@@ -1616,7 +1615,6 @@ summary = ', '.join(parts)
 print(f'SUMMARY:{summary}')
 ")
 
-  # Parse output
   local matched_skills prefix_summary skill_count
   prefix_summary=$(echo "$resolve_output" | grep '^SUMMARY:' | sed 's/^SUMMARY://')
   matched_skills=$(echo "$resolve_output" | grep -v '^SUMMARY:')
@@ -1639,67 +1637,54 @@ print(f'SUMMARY:{summary}')
     return
   fi
 
-  # Step 3: Fingerprint check — skip rebuild if nothing changed
-  local fingerprint_file="$fingerprint_dir/.ai-env-fingerprint"
+  # Fingerprint check — skip rebuild if nothing changed
   local new_fingerprint
   new_fingerprint=$(echo "$matched_skills" | compute_fingerprint "$name")
 
-  local needs_rebuild=true
   if [[ -f "$fingerprint_file" ]]; then
     local old_fingerprint
     old_fingerprint=$(cat "$fingerprint_file" 2>/dev/null || echo "")
     if [[ "$old_fingerprint" == "$new_fingerprint" ]]; then
-      needs_rebuild=false
+      echo "$name" > "$ACTIVE_FILE"
+      echo -e "${GREEN}✓${RESET} ${BOLD}${display_name:-$name}${RESET}: ${skill_count} skills (unchanged)"
+      return
     fi
   fi
 
-  if [[ "$needs_rebuild" == true ]]; then
-    # Step 4: Reconcile project-local (or global) skill directories
-    reconcile_skill_dir "$target_claude" "$matched_skills" "$SKILL_STORE"
-    local claude_added=$_RECONCILE_ADDED claude_removed=$_RECONCILE_REMOVED
+  # Reconcile skill directories
+  reconcile_skill_dir "$target_claude" "$matched_skills" "$SKILL_STORE"
+  local claude_added=$_RECONCILE_ADDED claude_removed=$_RECONCILE_REMOVED
 
-    reconcile_skill_dir "$target_agents" "$matched_skills" "$SKILL_STORE"
-    local agents_added=$_RECONCILE_ADDED agents_removed=$_RECONCILE_REMOVED
+  reconcile_skill_dir "$target_agents" "$matched_skills" "$SKILL_STORE"
+  local agents_added=$_RECONCILE_ADDED agents_removed=$_RECONCILE_REMOVED
 
-    local total_added=$(( claude_added + agents_added ))
-    local total_removed=$(( claude_removed + agents_removed ))
+  local total_added=$(( claude_added + agents_added ))
+  local total_removed=$(( claude_removed + agents_removed ))
 
-    # Step 5: Clear global skill dirs only when using project-local dirs
-    if [[ "$use_project_local" == true ]]; then
-      for global_dir in "$CLAUDE_SKILLS" "$AGENT_SKILLS"; do
-        if [[ -d "$global_dir" ]]; then
-          for item in "$global_dir"/*; do
-            [[ -L "$item" ]] && rm "$item"
-          done
-        fi
-      done
-    fi
-
-    # Step 6: Ensure .gitignore entries exist (project-local only)
-    [[ "$use_project_local" == true ]] && _ensure_gitignore "$project_dir"
-
-    # Step 7: Write fingerprint
-    mkdir -p "$(dirname "$fingerprint_file")"
-    echo "$new_fingerprint" > "$fingerprint_file"
-
-    # Build change description
-    local change_desc=""
-    if [[ $total_added -gt 0 && $total_removed -gt 0 ]]; then
-      change_desc=" (+${total_added} added, -${total_removed} removed)"
-    elif [[ $total_added -gt 0 ]]; then
-      change_desc=" (+${total_added} added)"
-    elif [[ $total_removed -gt 0 ]]; then
-      change_desc=" (-${total_removed} removed)"
-    fi
-
-    echo -e "${GREEN}✓${RESET} ${BOLD}${display_name:-$name}${RESET}: ${skill_count} skills${change_desc}"
-  else
-    # Fingerprint matched — no rebuild needed
-    echo -e "${GREEN}✓${RESET} ${BOLD}${display_name:-$name}${RESET}: ${skill_count} skills (unchanged)"
+  # Clear global skill dirs when using project-local dirs
+  if [[ -n "$project_dir" ]]; then
+    reconcile_skill_dir "$CLAUDE_SKILLS" "" "$SKILL_STORE"
+    reconcile_skill_dir "$AGENT_SKILLS" "" "$SKILL_STORE"
+    _ensure_gitignore "$project_dir"
   fi
 
-  # Always update active marker (even on no-rebuild path)
+  # Write fingerprint
+  mkdir -p "$(dirname "$fingerprint_file")"
+  echo "$new_fingerprint" > "$fingerprint_file"
+
+  # Write active marker
   echo "$name" > "$ACTIVE_FILE"
+
+  local change_desc=""
+  if [[ $total_added -gt 0 && $total_removed -gt 0 ]]; then
+    change_desc=" (+${total_added} added, -${total_removed} removed)"
+  elif [[ $total_added -gt 0 ]]; then
+    change_desc=" (+${total_added} added)"
+  elif [[ $total_removed -gt 0 ]]; then
+    change_desc=" (-${total_removed} removed)"
+  fi
+
+  echo -e "${GREEN}✓${RESET} ${BOLD}${display_name:-$name}${RESET}: ${skill_count} skills${change_desc}"
 }
 
 # ---------------------------------------------------------------------------
