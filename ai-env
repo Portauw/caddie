@@ -1457,25 +1457,60 @@ for dirname in sorted(matched):
 # Stub Command Functions (Tasks 8-12)
 # ---------------------------------------------------------------------------
 
+# Ensure project .gitignore has entries for ai-env managed dirs
+_ensure_gitignore() {
+  local project_dir="$1"
+  local gitignore="$project_dir/.gitignore"
+
+  # Only modify if project is a git repo
+  [[ ! -d "$project_dir/.git" ]] && return
+
+  local entries=(".claude/skills/" ".agents/skills/" ".claude/.ai-env-fingerprint")
+  local needs_update=false
+
+  for entry in "${entries[@]}"; do
+    if [[ ! -f "$gitignore" ]] || ! grep -qxF "$entry" "$gitignore" 2>/dev/null; then
+      needs_update=true
+      break
+    fi
+  done
+
+  if [[ "$needs_update" == true ]]; then
+    # Append missing entries
+    [[ -f "$gitignore" ]] && [[ -n "$(tail -c 1 "$gitignore")" ]] && echo "" >> "$gitignore"
+    echo "" >> "$gitignore"
+    echo "# ai-env managed skill directories" >> "$gitignore"
+    for entry in "${entries[@]}"; do
+      if [[ ! -f "$gitignore" ]] || ! grep -qxF "$entry" "$gitignore" 2>/dev/null; then
+        echo "$entry" >> "$gitignore"
+      fi
+    done
+  fi
+}
+
 # ---------------------------------------------------------------------------
-# Task 8: Activate Command
+# Activate Command
 # ---------------------------------------------------------------------------
 
 cmd_activate() {
   local name=""
   local dry_run=false
-  local agent=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run|-n) dry_run=true; shift ;;
-      --agent|-a) agent="$2"; shift 2 ;;
       -*) die "Unknown flag: $1" ;;
       *)  name="$1"; shift ;;
     esac
   done
 
-  [[ -z "$name" ]] && die "Usage: ai-env activate <name> [--agent <agent>] [--dry-run]"
+  # Auto-detect environment if no name provided
+  if [[ -z "$name" ]]; then
+    if ! name=$(resolve_env_from_cwd); then
+      die "No profile found for ${PWD}\n  Create one: ${CYAN}ai-env create <name>${RESET}\n  Or add .ai-env.yaml: ${CYAN}echo 'environment: \"<name>\"' > .ai-env.yaml${RESET}"
+    fi
+  fi
+
   env_exists "$name" || die "Environment '${name}' not found. Run 'ai-env list' to see available environments."
 
   local file
@@ -1486,8 +1521,34 @@ cmd_activate() {
   directory=$(yaml_get "$file" "directory")
   [[ -n "$directory" ]] && directory="${directory/#\~/$HOME}"
 
-  # Step 1: Scan sources (silent unless verbose)
-  info "Scanning sources..."
+  # Determine if this is a project-local or global activation
+  local project_dir=""
+  local use_project_local=true
+
+  if [[ -n "$directory" ]]; then
+    project_dir="$directory"
+  else
+    # No directory: field — check if we're in a project with .ai-env.yaml
+    local project_config
+    if project_config=$(find_project_config "$PWD"); then
+      project_dir="$(dirname "$project_config")"
+    else
+      use_project_local=false
+    fi
+  fi
+
+  local target_claude target_agents fingerprint_dir
+  if [[ "$use_project_local" == true ]]; then
+    target_claude="$project_dir/.claude/skills"
+    target_agents="$project_dir/.agents/skills"
+    fingerprint_dir="$project_dir/.claude"
+  else
+    target_claude="$CLAUDE_SKILLS"
+    target_agents="$AGENT_SKILLS"
+    fingerprint_dir="$CONFIG_DIR"
+  fi
+
+  # Step 1: Scan sources (silent)
   cmd_scan > /dev/null 2>&1 || true
 
   # Step 2: Resolve skills + count by prefix (single python call)
@@ -1539,7 +1600,7 @@ for pattern in patterns:
 for dirname in sorted(matched):
     print(dirname)
 
-# Output summary line (prefixed with SUMMARY:)
+# Output summary line
 counts = Counter()
 for dirname in matched:
     counts[prefix_map.get(dirname, 'unknown')] += 1
@@ -1548,7 +1609,7 @@ summary = ', '.join(parts)
 print(f'SUMMARY:{summary}')
 ")
 
-  # Parse output: skill lines + last line is SUMMARY:
+  # Parse output
   local matched_skills prefix_summary skill_count
   prefix_summary=$(echo "$resolve_output" | grep '^SUMMARY:' | sed 's/^SUMMARY://')
   matched_skills=$(echo "$resolve_output" | grep -v '^SUMMARY:')
@@ -1557,12 +1618,12 @@ print(f'SUMMARY:{summary}')
   if [[ "$dry_run" == true ]]; then
     echo -e "\n${YELLOW}Dry run — would activate:${RESET}\n"
     echo -e "  Environment: ${BOLD}${display_name:-$name}${RESET}"
-    [[ -n "$directory" ]] && echo -e "  Directory:   ${directory}"
+    echo -e "  Project dir: ${project_dir:-global}"
     echo -e "  Skills:      ${skill_count} (${prefix_summary})"
-    [[ -n "$agent" ]] && echo -e "  Agent:       ${agent}"
     echo ""
-    echo -e "  ${DIM}Would rebuild ~/.claude/skills/ with ${skill_count} symlinks${RESET}"
-    [[ -n "$agent" ]] && echo -e "  ${DIM}Would launch: ${agent}${RESET}"
+    echo -e "  ${DIM}Would manage:${RESET}"
+    echo -e "    ${DIM}${target_claude}/${RESET}"
+    echo -e "    ${DIM}${target_agents}/${RESET}"
     echo ""
     echo -e "  Matched skills:"
     echo "$matched_skills" | while IFS= read -r s; do
@@ -1571,117 +1632,66 @@ print(f'SUMMARY:{summary}')
     return
   fi
 
-  # Step 4: Rebuild agent skill directories (skip if unchanged)
-  local linked=0
-  local current_active
-  current_active=$(get_active)
+  # Step 3: Fingerprint check — skip rebuild if nothing changed
+  local fingerprint_file="$fingerprint_dir/.ai-env-fingerprint"
+  local new_fingerprint
+  new_fingerprint=$(echo "$matched_skills" | compute_fingerprint "$name")
 
-  # Check if we can skip rebuild (same env, symlinks already correct)
   local needs_rebuild=true
-  if [[ "$current_active" == "$name" ]]; then
-    # Quick check: count symlinks in claude dir matches skill count
-    local existing_count=0
-    for item in "$CLAUDE_SKILLS"/*; do
-      [[ -L "$item" ]] && (( existing_count++ )) || true
-    done
-    [[ "$existing_count" -eq "$skill_count" ]] && needs_rebuild=false
+  if [[ -f "$fingerprint_file" ]]; then
+    local old_fingerprint
+    old_fingerprint=$(cat "$fingerprint_file" 2>/dev/null || echo "")
+    if [[ "$old_fingerprint" == "$new_fingerprint" ]]; then
+      needs_rebuild=false
+    fi
   fi
 
   if [[ "$needs_rebuild" == true ]]; then
-    for agent_dir in "$CLAUDE_SKILLS" "$AGENT_SKILLS"; do
-      mkdir -p "$agent_dir"
+    # Step 4: Reconcile project-local (or global) skill directories
+    reconcile_skill_dir "$target_claude" "$matched_skills" "$SKILL_STORE"
+    local claude_added=$_RECONCILE_ADDED claude_removed=$_RECONCILE_REMOVED
 
-      # Remove all existing symlinks
-      for item in "$agent_dir"/*; do
-        [[ -L "$item" ]] && rm "$item"
-      done
+    reconcile_skill_dir "$target_agents" "$matched_skills" "$SKILL_STORE"
+    local agents_added=$_RECONCILE_ADDED agents_removed=$_RECONCILE_REMOVED
 
-      # Create new symlinks for matched skills
-      while IFS= read -r skill_dir; do
-        [[ -z "$skill_dir" ]] && continue
-        local source_path="$SKILL_STORE/${skill_dir}"
-        local target_path="$agent_dir/${skill_dir}"
+    local total_added=$(( claude_added + agents_added ))
+    local total_removed=$(( claude_removed + agents_removed ))
 
-        if [[ -d "$source_path" || -L "$source_path" ]]; then
-          ln -s "$source_path" "$target_path"
-          [[ "$agent_dir" == "$CLAUDE_SKILLS" ]] && (( linked++ )) || true
-        else
-          warn "Skill directory not found: ${source_path}"
+    # Step 5: Clear global skill dirs only when using project-local dirs
+    if [[ "$use_project_local" == true ]]; then
+      for global_dir in "$CLAUDE_SKILLS" "$AGENT_SKILLS"; do
+        if [[ -d "$global_dir" ]]; then
+          for item in "$global_dir"/*; do
+            [[ -L "$item" ]] && rm "$item"
+          done
         fi
-      done <<< "$matched_skills"
-    done
-  else
-    linked=$skill_count
-  fi
-
-  # Step 5: Write active marker
-  echo "$name" > "$ACTIVE_FILE"
-
-  # Step 6: Build agent command (if --agent specified)
-  local agent_cmd=()
-  local agent_display=""
-
-  if [[ -n "$agent" ]]; then
-    local agent_command
-    agent_command=$(yaml_nested_get "$file" "agents.${agent}.command")
-    agent_command="${agent_command:-$agent}"
-
-    case "$agent" in
-      claude)
-        agent_cmd=("$agent_command")
-        local model permission_mode
-        model=$(yaml_nested_get "$file" "agents.claude.model")
-        permission_mode=$(yaml_nested_get "$file" "agents.claude.permission_mode")
-        [[ -n "$model" ]] && agent_cmd+=("--model" "$model")
-        [[ -n "$permission_mode" ]] && agent_cmd+=("--permission-mode" "$permission_mode")
-        agent_display="claude"
-        [[ -n "$model" ]] && agent_display="${agent_display} (${model}"
-        [[ -n "$permission_mode" ]] && agent_display="${agent_display}, ${permission_mode} mode"
-        [[ -n "$model" || -n "$permission_mode" ]] && agent_display="${agent_display})"
-        ;;
-      opencode)
-        agent_cmd=("$agent_command")
-        local model
-        model=$(yaml_nested_get "$file" "agents.opencode.model")
-        [[ -n "$model" ]] && agent_cmd+=("--model" "$model")
-        agent_display="opencode"
-        [[ -n "$model" ]] && agent_display="${agent_display} (${model})"
-        ;;
-      *)
-        # Generic agent — just use command + model if available
-        agent_cmd=("$agent_command")
-        local model
-        model=$(yaml_nested_get "$file" "agents.${agent}.model")
-        [[ -n "$model" ]] && agent_cmd+=("--model" "$model")
-        agent_display="${agent}"
-        [[ -n "$model" ]] && agent_display="${agent_display} (${model})"
-        ;;
-    esac
-  fi
-
-  # Step 7: Print summary
-  echo ""
-  echo -e "${GREEN}✓${RESET} ${BOLD}Activated: ${display_name:-$name}${RESET}"
-  [[ -n "$directory" ]] && echo -e "  Directory: ${directory}"
-  echo -e "  Skills: ${linked} active (${prefix_summary})"
-  [[ -n "$agent_display" ]] && echo -e "  Agent: ${agent_display}"
-  echo ""
-
-  # Step 8: Launch agent or print hint
-  if [[ ${#agent_cmd[@]} -gt 0 ]]; then
-    if [[ -n "$directory" ]]; then
-      echo -e "  ${DIM}Launching: ${agent_cmd[*]}${RESET}"
-      echo -e "${DIM}────────────────────────────────────────────────────${RESET}"
-      cd "$directory"
+      done
     fi
-    exec "${agent_cmd[@]}"
-  else
-    if [[ -n "$directory" ]]; then
-      echo -e "  ${DIM}cd ${directory} && claude${RESET}"
-    else
-      echo -e "  ${DIM}claude${RESET}"
+
+    # Step 6: Ensure .gitignore entries exist (project-local only)
+    [[ "$use_project_local" == true ]] && _ensure_gitignore "$project_dir"
+
+    # Step 7: Write fingerprint
+    mkdir -p "$(dirname "$fingerprint_file")"
+    echo "$new_fingerprint" > "$fingerprint_file"
+
+    # Step 8: Write active marker
+    echo "$name" > "$ACTIVE_FILE"
+
+    # Build change description
+    local change_desc=""
+    if [[ $total_added -gt 0 && $total_removed -gt 0 ]]; then
+      change_desc=" (+${total_added} added, -${total_removed} removed)"
+    elif [[ $total_added -gt 0 ]]; then
+      change_desc=" (+${total_added} added)"
+    elif [[ $total_removed -gt 0 ]]; then
+      change_desc=" (-${total_removed} removed)"
     fi
-    echo ""
+
+    echo -e "${GREEN}✓${RESET} ${BOLD}${display_name:-$name}${RESET}: ${skill_count} skills${change_desc}"
+  else
+    # Fingerprint matched — no rebuild needed
+    echo -e "${GREEN}✓${RESET} ${BOLD}${display_name:-$name}${RESET}: ${skill_count} skills (unchanged)"
   fi
 }
 
