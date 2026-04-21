@@ -6,6 +6,7 @@ package skills
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -150,37 +151,12 @@ func StoreExists() bool {
 	return err == nil && info.IsDir()
 }
 
-// fnmatchMatch mirrors Python's fnmatch.fnmatch for the subset resolve_skills
-// patterns actually use (`*`, `?`, literals). Iterative two-pointer algorithm;
-// no regexp dep.
-func fnmatchMatch(s, p string) bool {
-	si, pi := 0, 0
-	star := -1
-	ss := 0
-	for si < len(s) {
-		if pi < len(p) && (p[pi] == '?' || p[pi] == s[si]) {
-			si++
-			pi++
-			continue
-		}
-		if pi < len(p) && p[pi] == '*' {
-			star = pi
-			ss = si
-			pi++
-			continue
-		}
-		if star != -1 {
-			pi = star + 1
-			ss++
-			si = ss
-			continue
-		}
-		return false
-	}
-	for pi < len(p) && p[pi] == '*' {
-		pi++
-	}
-	return pi == len(p)
+// matchPattern matches a skill id against a user-supplied pattern. Skill ids
+// never contain '/', so stdlib path.Match (which handles *, ?, and [abc]
+// classes) is a sufficient stand-in for python's fnmatch.fnmatch.
+func matchPattern(id, pattern string) bool {
+	ok, _ := path.Match(pattern, id)
+	return ok
 }
 
 // SkillID returns "<prefix>:<remainder>" — the form used to match against
@@ -192,11 +168,9 @@ func (i Item) SkillID() string { return i.Prefix + ":" + i.Remainder }
 // dirname had a prefix stripped to form remainder.
 func (i Item) DisplayID() string { return i.Prefix + ":" + i.DirName }
 
-// Resolve mirrors bash resolve_skills: walk the store, derive each skill's ID
-// (prefix:remainder), and return the sorted literal dirnames of skills whose
-// ID fnmatch-matches at least one pattern. Empty patterns → empty result
-// (matches python `if not patterns: exit(0)`).
-func Resolve(patterns []string) ([]string, error) {
+// matchItems returns the store items whose SkillID matches at least one
+// pattern. Empty patterns → no matches (python `if not patterns: exit(0)`).
+func matchItems(patterns []string) ([]Item, error) {
 	if len(patterns) == 0 {
 		return nil, nil
 	}
@@ -204,47 +178,44 @@ func Resolve(patterns []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	matched := map[string]bool{}
+	var out []Item
 	for _, it := range items {
 		id := it.SkillID()
 		for _, p := range patterns {
-			if fnmatchMatch(id, p) {
-				matched[it.DirName] = true
+			if matchPattern(id, p) {
+				out = append(out, it)
 				break
 			}
 		}
 	}
+	return out, nil
+}
+
+// Resolve mirrors bash resolve_skills: sorted literal dirnames of matched
+// store items.
+func Resolve(patterns []string) ([]string, error) {
+	matched, err := matchItems(patterns)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]string, 0, len(matched))
-	for k := range matched {
-		out = append(out, k)
+	for _, it := range matched {
+		out = append(out, it.DirName)
 	}
 	sort.Strings(out)
 	return out, nil
 }
 
-// ResolveIDs returns skill IDs (prefix:remainder) for matched skills, sorted.
-// Mirrors `resolve_skills | derive_skill_ids | sort` in cmd_show.
+// ResolveIDs returns sorted skill display IDs (prefix:dirname) for matched
+// skills. Mirrors `resolve_skills | derive_skill_ids | sort` in cmd_show.
 func ResolveIDs(patterns []string) ([]string, error) {
-	if len(patterns) == 0 {
-		return nil, nil
-	}
-	items, err := Scan()
+	matched, err := matchItems(patterns)
 	if err != nil {
 		return nil, err
 	}
-	byDir := map[string]Item{}
-	for _, it := range items {
-		byDir[it.DirName] = it
-	}
-	names, err := Resolve(patterns)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(names))
-	for _, n := range names {
-		if it, ok := byDir[n]; ok {
-			out = append(out, it.DisplayID())
-		}
+	out := make([]string, 0, len(matched))
+	for _, it := range matched {
+		out = append(out, it.DisplayID())
 	}
 	sort.Strings(out)
 	return out, nil

@@ -18,34 +18,9 @@ import (
 //go:embed ai-env-legacy.sh
 var script []byte
 
-// Exec extracts the embedded bash script to a stable cache path and runs it
-// with the given args. It inherits stdin/stdout/stderr and propagates the
-// exit code. It never returns on success.
-func Exec(args []string) error {
-	path, err := materialize()
-	if err != nil {
-		return fmt.Errorf("materialize legacy script: %w", err)
-	}
-
-	cmd := exec.Command("bash", append([]string{path}, args...)...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
-
-	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
-		}
-		return err
-	}
-	os.Exit(0)
-	return nil
-}
-
-// Run is like Exec but does not call os.Exit — it returns whether the bash
-// process succeeded so the caller (e.g. `init`, which wraps `scan`) can keep
-// running native Go code after delegation.
+// Run extracts the embedded bash script to a stable cache path and runs it
+// with the given args, returning bash's exit error. Callers that should not
+// continue after delegation (the fallthrough in main) use Exec instead.
 func Run(args []string) error {
 	path, err := materialize()
 	if err != nil {
@@ -57,6 +32,19 @@ func Run(args []string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
 	return cmd.Run()
+}
+
+// Exec runs the embedded bash and os.Exit's with its exit code. Only the
+// process error (e.g. couldn't materialize) returns to the caller.
+func Exec(args []string) error {
+	if err := Run(args); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		return err
+	}
+	os.Exit(0)
+	return nil
 }
 
 func materialize() (string, error) {

@@ -1208,7 +1208,6 @@ func cmdInit(args []string) {
 	agentSkills := filepath.Join(home, ".agents", "skills")
 	sourcesFile := filepath.Join(configDir, "sources.yaml")
 
-	// 1. Create config directories.
 	_ = os.MkdirAll(configDir, 0o755)
 	_ = os.MkdirAll(envDir, 0o755)
 	_ = os.MkdirAll(skillStore, 0o755)
@@ -1216,7 +1215,6 @@ func cmdInit(args []string) {
 	fmt.Printf("%s✓%s  Environments: %s\n", ansiGreen, ansiReset, envDir)
 	fmt.Printf("%s✓%s  Skill store: %s\n", ansiGreen, ansiReset, skillStore)
 
-	// 2. Backup existing skill directories (only if non-empty).
 	date := time.Now().Format("2006-01-02")
 	for _, d := range []string{claudeSkills, agentSkills} {
 		info, err := os.Stat(d)
@@ -1239,7 +1237,6 @@ func cmdInit(args []string) {
 		}
 	}
 
-	// 3. Migrate bare skills from ~/.claude/skills + ~/.agents/skills → store.
 	migrated := 0
 	for _, src := range []string{claudeSkills, agentSkills} {
 		info, err := os.Stat(src)
@@ -1303,7 +1300,6 @@ func cmdInit(args []string) {
 	ensureClaudeSkillsSymlink(claudeSkills, agentSkills)
 	fmt.Printf("%s✓%s  Set up ~/.claude/skills → ~/.agents/skills\n", ansiGreen, ansiReset)
 
-	// 4. Auto-detect plugin sources (only if sources.yaml is absent).
 	if _, err := os.Stat(sourcesFile); os.IsNotExist(err) {
 		// Start file with "sources:\n".
 		f, err := os.Create(sourcesFile)
@@ -1367,7 +1363,6 @@ func cmdInit(args []string) {
 		fmt.Printf("%sℹ%s  Sources file already exists: %s\n", ansiBlue, ansiReset, sourcesFile)
 	}
 
-	// 5. Create example environment if no envs exist.
 	if entries, err := os.ReadDir(envDir); err == nil && len(entries) == 0 {
 		example := filepath.Join(envDir, "example.yaml")
 		exampleBody := `name: "Example"
@@ -1387,16 +1382,10 @@ skills:
 			ansiBlue, ansiReset, ansiCyan, ansiReset)
 	}
 
-	// 6. Delegate the scan step to the legacy bash script. scan hasn't been
-	// ported yet, and init always follows its native setup with scan + a
-	// "Next steps" block. We run `bash legacy.sh scan` which emits scan's
-	// own stdout plus the tail block defined in cmd_init AFTER the scan.
-	// To match exactly, we call the legacy `init` command for the tail —
-	// but that would redo setup. Instead emit the fixed tail ourselves and
-	// run scan via legacy.
+	// scan hasn't been ported yet — delegate it without exiting so the native
+	// "Next steps" tail still runs. Scan failures are non-fatal for init.
 	fmt.Println()
-	if err := runLegacyScan(); err != nil {
-		// Scan errors aren't fatal for init — log and continue.
+	if err := legacy.Run([]string{"scan"}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
 
@@ -1411,15 +1400,6 @@ skills:
 	fmt.Printf("  %sclaude() {\n", ansiDim)
 	fmt.Printf("    ai-env activate && command claude \"\\$@\"\n")
 	fmt.Printf("  }%s\n", ansiReset)
-}
-
-// runLegacyScan invokes the embedded bash script with `scan`, streaming stdio.
-// Doesn't os.Exit on completion (unlike legacy.Exec) so init can keep going.
-func runLegacyScan() error {
-	// Build a minimal exec via legacy — but legacy.Exec calls os.Exit, so
-	// we replicate the narrow path: just run `bash <embedded> scan`.
-	// Reach through by asking legacy to materialize + exec with no Exit.
-	return legacy.Run([]string{"scan"})
 }
 
 // ensureClaudeSkillsSymlink mirrors bash ensure_claude_skills_symlink for the
