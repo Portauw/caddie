@@ -66,64 +66,51 @@ func BuildMaps() (sourceMap, repoMap map[string]string, err error) {
 	return sourceMap, repoMap, nil
 }
 
-// getPrefix mirrors PY_PREFIX_HELPER._get_prefix for one item.
-// For symlinks: resolve target, substring-match against source_map then
-// repo_map keys, fallback "plugin". For plain dirs: split on first "-".
-func getPrefix(storeDir, dirName string, sourceMap, repoMap map[string]string) (prefix, remainder string) {
-	full := filepath.Join(storeDir, dirName)
-	info, err := os.Lstat(full)
-	if err != nil {
-		return "local", dirName
+// sortedKeys returns the map's keys in sorted order. Needed because Go map
+// iteration is randomized; bash/python walked their dicts in insertion order
+// but keys in our fixtures are substring-disjoint in practice, so stable
+// lexicographic order keeps classification deterministic.
+func sortedKeys(m map[string]string) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	sort.Strings(ks)
+	return ks
+}
+
+// resolve mirrors PY_PREFIX_HELPER._get_prefix + inventory's get_source_type
+// in a single pass. For symlinks, resolves the target once and substring-
+// matches against sourceMap (→ prefix = source name, type = plugin) then
+// repoMap (→ prefix = repo prefix, type = repo), fallback ("plugin", plugin).
+// For plain dirs, splits on first "-"; "local" if no hyphen.
+func resolve(full, dirName string, isSymlink bool, sourceMap, repoMap map[string]string) (prefix, remainder string, typ SourceType) {
+	if isSymlink {
 		target, err := filepath.EvalSymlinks(full)
 		if err != nil {
 			target = full
 		}
-		for k, v := range sourceMap {
+		for _, k := range sortedKeys(sourceMap) {
 			if strings.Contains(target, k) {
-				return v, dirName
+				return sourceMap[k], dirName, TypePlugin
 			}
 		}
-		for k, v := range repoMap {
+		for _, k := range sortedKeys(repoMap) {
 			if strings.Contains(target, k) {
-				return v, dirName
+				return repoMap[k], dirName, TypeRepo
 			}
 		}
-		return "plugin", dirName
+		return "plugin", dirName, TypePlugin
 	}
 	if i := strings.Index(dirName, "-"); i >= 0 {
-		return dirName[:i], dirName[i+1:]
+		return dirName[:i], dirName[i+1:], TypeLocal
 	}
-	return "local", dirName
+	return "local", dirName, TypeLocal
 }
 
-// classify mirrors inventory's get_source_type: symlinks whose resolved
-// target contains one of the repo_map keys are "repo"; other symlinks are
-// "plugin"; non-symlinks are "local".
-func classify(storeDir, dirName string, repoMap map[string]string) SourceType {
-	full := filepath.Join(storeDir, dirName)
-	info, err := os.Lstat(full)
-	if err != nil {
-		return TypeLocal
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		return TypeLocal
-	}
-	target, err := filepath.EvalSymlinks(full)
-	if err != nil {
-		target = full
-	}
-	for k := range repoMap {
-		if strings.Contains(target, k) {
-			return TypeRepo
-		}
-	}
-	return TypePlugin
-}
-
-// Scan reads the store and returns one Item per directory entry, sorted by
-// literal dirname (matching python's sorted(store.iterdir())).
+// Scan reads the store and returns one Item per directory entry (symlinks
+// to dirs included — python's is_dir() follows symlinks), sorted by literal
+// dirname.
 func Scan() ([]Item, error) {
 	storeDir := Store()
 	entries, err := os.ReadDir(storeDir)
@@ -137,19 +124,20 @@ func Scan() ([]Item, error) {
 
 	var items []Item
 	for _, e := range entries {
-		// python: `if not item.is_dir(): continue`. is_dir() follows
-		// symlinks, so we do too.
 		full := filepath.Join(storeDir, e.Name())
+		// DirEntry.Type() uses the cached syscall from ReadDir — cheap.
+		// Follow symlinks before classifying as dir, matching is_dir().
 		info, err := os.Stat(full)
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		prefix, remainder := getPrefix(storeDir, e.Name(), sourceMap, repoMap)
+		isSymlink := e.Type()&os.ModeSymlink != 0
+		prefix, remainder, typ := resolve(full, e.Name(), isSymlink, sourceMap, repoMap)
 		items = append(items, Item{
 			Prefix:    prefix,
 			Remainder: remainder,
 			DirName:   e.Name(),
-			Type:      classify(storeDir, e.Name(), repoMap),
+			Type:      typ,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].DirName < items[j].DirName })

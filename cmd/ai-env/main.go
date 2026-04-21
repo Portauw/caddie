@@ -324,31 +324,26 @@ func cmdRepo(args []string) {
 }
 
 func cmdRepoList(_ []string) {
-	sourcesFile := filepath.Join(config.Dir(), "sources.yaml")
-	if _, err := os.Stat(sourcesFile); os.IsNotExist(err) || !repos.HasReposSection() {
-		// Bash: warn "No git repos registered. Add one with: ${CYAN}ai-env repo add <name> <url>${RESET}"
+	entries, err := repos.Parse()
+	if err != nil {
+		die(err.Error())
+	}
+	if len(entries) == 0 {
 		fmt.Printf("%s⚠%s  No git repos registered. Add one with: %sai-env repo add <name> <url>%s\n",
 			ansiYellow, ansiReset, ansiCyan, ansiReset)
 		return
 	}
 	fmt.Printf("%sRegistered git repos:%s\n\n", ansiBold, ansiReset)
 
-	entries, err := repos.Parse()
-	if err != nil {
-		die(err.Error())
-	}
 	for _, e := range entries {
 		repoDir := filepath.Join(repos.Dir(), e.Name)
-		// Bash: status defaults to "(not cloned)" (dim). When .git exists,
-		// replace with "<branch>@<short_hash>" in green. Missing git calls
-		// return "?" via `|| echo "?"`.
 		status := fmt.Sprintf("%s(not cloned)%s", ansiDim, ansiReset)
 		if info, err := os.Stat(filepath.Join(repoDir, ".git")); err == nil && info.IsDir() {
-			branch := gitOutput(repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+			branch := repos.GitOutput(repoDir, "rev-parse", "--abbrev-ref", "HEAD")
 			if branch == "" {
 				branch = "?"
 			}
-			shortHash := gitOutput(repoDir, "rev-parse", "--short", "HEAD")
+			shortHash := repos.GitOutput(repoDir, "rev-parse", "--short", "HEAD")
 			if shortHash == "" {
 				shortHash = "?"
 			}
@@ -368,17 +363,6 @@ func cmdRepoList(_ []string) {
 		fmt.Printf("    %sskills_path: %s, prefix: %s%s\n", ansiDim, e.SkillsPath, prefixDisplay, ansiReset)
 		fmt.Println("")
 	}
-}
-
-// gitOutput runs `git -C dir <args...>` and returns trimmed stdout, or ""
-// on error. Mirrors bash `$(git -C "$dir" ... 2>/dev/null)`.
-func gitOutput(dir string, args ...string) string {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 func cmdInventory(args []string) {
@@ -411,7 +395,7 @@ func cmdInventory(args []string) {
 
 	for _, prefix := range prefixes {
 		g := groups[prefix]
-		fmt.Printf("  \033[1m%s\033[0m (%d skills)\n", prefix, len(g))
+		fmt.Printf("  %s%s%s (%d skills)\n", ansiBold, prefix, ansiReset, len(g))
 		for _, it := range g {
 			skillID := fmt.Sprintf("%s:%s", prefix, it.Remainder)
 			if filter != "" && !strings.Contains(skillID, filter) {
@@ -420,9 +404,9 @@ func cmdInventory(args []string) {
 			marker := ""
 			switch it.Type {
 			case skills.TypePlugin:
-				marker = "  \033[2m(plugin)\033[0m"
+				marker = fmt.Sprintf("  %s(plugin)%s", ansiDim, ansiReset)
 			case skills.TypeRepo:
-				marker = "  \033[2m(repo)\033[0m"
+				marker = fmt.Sprintf("  %s(repo)%s", ansiDim, ansiReset)
 			}
 			fmt.Printf("    %s%s\n", skillID, marker)
 		}

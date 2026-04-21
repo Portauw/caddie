@@ -6,10 +6,12 @@ package repos
 import (
 	"bufio"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/Portauw/ai-env/internal/config"
+	"github.com/Portauw/ai-env/internal/sources"
 )
 
 // Entry mirrors the tuple emitted by bash parse_repos:
@@ -74,7 +76,7 @@ func Parse() ([]Entry, error) {
 			cur = &Entry{}
 			rest := strings.TrimSpace(line[4:])
 			if strings.HasPrefix(rest, "name:") {
-				cur.Name = stripQuotes(strings.TrimSpace(rest[len("name:"):]))
+				cur.Name = sources.StripQuotes(strings.TrimSpace(rest[len("name:"):]))
 			}
 			continue
 		}
@@ -87,7 +89,7 @@ func Parse() ([]Entry, error) {
 				continue
 			}
 			k := strings.TrimSpace(kv[0])
-			v := stripQuotes(strings.TrimSpace(kv[1]))
+			v := sources.StripQuotes(strings.TrimSpace(kv[1]))
 			switch k {
 			case "name":
 				cur.Name = v
@@ -113,21 +115,15 @@ func Parse() ([]Entry, error) {
 	return out, nil
 }
 
-// HasReposSection reports whether sources.yaml contains a `^repos:` line.
-// Mirrors `grep -q "^repos:" sources.yaml` from cmd_repo_list.
-func HasReposSection() bool {
-	f, err := os.Open(File())
+// GitOutput runs `git -C dir <args...>` and returns trimmed stdout, or ""
+// on error. Mirrors bash `$(git -C "$dir" ... 2>/dev/null)`.
+func GitOutput(dir string, args ...string) string {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.Output()
 	if err != nil {
-		return false
+		return ""
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if strings.HasPrefix(sc.Text(), "repos:") {
-			return true
-		}
-	}
-	return false
+	return strings.TrimSpace(string(out))
 }
 
 // RepoName returns the effective prefix used in the inventory repo_map:
@@ -140,12 +136,3 @@ func (e Entry) RepoName() string {
 	return e.Prefix
 }
 
-func stripQuotes(v string) string {
-	if len(v) >= 2 {
-		c := v[0]
-		if (c == '"' || c == '\'') && v[len(v)-1] == c {
-			return v[1 : len(v)-1]
-		}
-	}
-	return v
-}

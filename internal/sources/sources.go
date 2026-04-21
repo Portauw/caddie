@@ -64,7 +64,7 @@ func Parse() ([]Entry, error) {
 			cur = &Entry{}
 			rest := strings.TrimSpace(line[4:])
 			if strings.HasPrefix(rest, "name:") {
-				cur.Name = stripQuotes(strings.TrimSpace(rest[len("name:"):]))
+				cur.Name = StripQuotes(strings.TrimSpace(rest[len("name:"):]))
 			}
 			continue
 		}
@@ -77,7 +77,7 @@ func Parse() ([]Entry, error) {
 				continue
 			}
 			k := strings.TrimSpace(kv[0])
-			v := stripQuotes(strings.TrimSpace(kv[1]))
+			v := StripQuotes(strings.TrimSpace(kv[1]))
 			switch k {
 			case "name":
 				cur.Name = v
@@ -101,7 +101,10 @@ func Parse() ([]Entry, error) {
 	return entries, nil
 }
 
-func stripQuotes(v string) string {
+// StripQuotes removes a single layer of matched surrounding quotes
+// (single or double). Exported for reuse by sibling packages that parse
+// the same hand-formatted YAML shape.
+func StripQuotes(v string) string {
 	if len(v) >= 2 {
 		c := v[0]
 		if (c == '"' || c == '\'') && v[len(v)-1] == c {
