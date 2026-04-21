@@ -8,3 +8,8 @@
 
 # ai-env managed skill directories
 .agents/SOURCES.md
+
+# Go build
+/dist/
+# Build artifact: refreshed by scripts/build.sh from ./ai-env
+/internal/legacy/ai-env-legacy.sh
