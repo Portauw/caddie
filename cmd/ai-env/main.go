@@ -25,11 +25,6 @@ import (
 	"github.com/Portauw/ai-env/internal/version"
 )
 
-// jsonUnmarshal/jsonMarshalIndent are thin wrappers so the reset handler can
-// use encoding/json without importing it in every test fixture file.
-func jsonUnmarshal(data []byte, v any) error    { return json.Unmarshal(data, v) }
-func jsonMarshalIndent(v any, p, i string) ([]byte, error) { return json.MarshalIndent(v, p, i) }
-
 type handler func(args []string)
 
 var nativeCommands = map[string]handler{
@@ -757,7 +752,6 @@ func cmdReset(args []string) {
 	skillStore := filepath.Join(config.Dir(), "skills")
 	settingsFile := filepath.Join(home, ".claude", "settings.json")
 
-	// 1. Inventory
 	symlinkCountAgents := 0
 	storeCount := 0
 	claudeIsSymlink := false
@@ -780,7 +774,6 @@ func cmdReset(args []string) {
 		}
 	}
 
-	// 2. Scan store symlinks to detect managed plugins (marketplace/plugin pairs).
 	managed := []string{}
 	if info, err := os.Stat(skillStore); err == nil && info.IsDir() {
 		seen := map[string]bool{}
@@ -833,7 +826,6 @@ func cmdReset(args []string) {
 	}
 	enableCount := len(pluginsToEnable)
 
-	// 3. Show summary
 	fmt.Printf("%sWill remove:%s\n", ansiBold, ansiReset)
 	fmt.Printf("  %d managed symlink(s) in ~/.agents/skills/\n", symlinkCountAgents)
 	if claudeIsSymlink {
@@ -857,9 +849,9 @@ func cmdReset(args []string) {
 	fmt.Printf("  Source registry (~/.config/ai-env/sources.yaml)\n")
 	fmt.Println()
 
-	// 4. Confirm unless --force. Bash: `echo -n "Proceed? [y/N] "; read -r confirm`.
-	// Unlike cmdDelete (which uses `read -rp`), here the prompt is an echo so
-	// it's always emitted regardless of tty state — match that.
+	// Bash uses `echo -n "Proceed?..."; read -r confirm` here — an echo, not
+	// `read -rp`, so the prompt fires regardless of tty state. Don't gate on
+	// isTerminal like cmdDelete does.
 	if !force {
 		fmt.Print("Proceed? [y/N] ")
 		br := bufio.NewReader(os.Stdin)
@@ -872,7 +864,6 @@ func cmdReset(args []string) {
 		fmt.Println()
 	}
 
-	// 5. Remove symlinks in $AGENT_SKILLS (maxdepth 1, type l).
 	if info, err := os.Stat(agentSkills); err == nil && info.IsDir() {
 		if entries, err := os.ReadDir(agentSkills); err == nil {
 			for _, e := range entries {
@@ -932,17 +923,14 @@ func cmdReset(args []string) {
 		fmt.Printf("%sℹ%s  Cleaned %d project-local symlink(s)\n", ansiBlue, ansiReset, projectCleaned)
 	}
 
-	// 6. Remove skill store
 	if info, err := os.Stat(skillStore); err == nil && info.IsDir() {
 		_ = os.RemoveAll(skillStore)
 		fmt.Printf("%sℹ%s  Removed skill store\n", ansiBlue, ansiReset)
 	}
 
-	// 7. Remove state files
 	_ = os.Remove(filepath.Join(config.Dir(), ".last-scan"))
 	fmt.Printf("%sℹ%s  Removed state files\n", ansiBlue, ansiReset)
 
-	// 8. Re-enable plugins
 	if enableCount > 0 {
 		if _, err := os.Stat(settingsFile); err == nil {
 			enabled := enablePlugins(settingsFile, pluginsToEnable)
@@ -964,7 +952,7 @@ func readDisabledPlugins(path string) ([]string, bool) {
 		return nil, false
 	}
 	var doc map[string]any
-	if err := jsonUnmarshal(data, &doc); err != nil {
+	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, false
 	}
 	plugins, ok := doc["enabledPlugins"].(map[string]any)
@@ -990,7 +978,7 @@ func enablePlugins(path string, toEnable []string) int {
 		return 0
 	}
 	var doc map[string]any
-	if err := jsonUnmarshal(data, &doc); err != nil {
+	if err := json.Unmarshal(data, &doc); err != nil {
 		return 0
 	}
 	plugins, ok := doc["enabledPlugins"].(map[string]any)
@@ -1014,7 +1002,7 @@ func enablePlugins(path string, toEnable []string) int {
 	if count == 0 {
 		return 0
 	}
-	out, err := jsonMarshalIndent(doc, "", "  ")
+	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return 0
 	}
