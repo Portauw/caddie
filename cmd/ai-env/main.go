@@ -233,10 +233,8 @@ func cmdEdit(args []string) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		// Bash doesn't check exit — it just runs success afterward.
-		// Preserve that: fall through even if editor failed.
-	}
+	// Bash runs `$EDITOR "$file"` without checking exit status — we match.
+	_ = cmd.Run()
 	fmt.Printf("%s✓%s  Updated: %s\n", ansiGreen, ansiReset, name)
 }
 

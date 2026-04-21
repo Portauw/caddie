@@ -6,6 +6,7 @@ package contract
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,30 +25,64 @@ func repoRoot(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
 
-// buildGoBinary compiles cmd/ai-env into a temp path and returns it.
+// sharedGoBinary is built once per `go test` invocation by TestMain and
+// reused across every contract test. Path is absolute.
+var sharedGoBinary string
+
+// buildGoBinary returns the shared binary path, failing the test if TestMain
+// could not build it.
 func buildGoBinary(t *testing.T) string {
 	t.Helper()
-	root := repoRoot(t)
+	if sharedGoBinary == "" {
+		t.Fatal("sharedGoBinary not initialized; TestMain did not run")
+	}
+	return sharedGoBinary
+}
 
-	// Ensure the embed target exists (scripts/build.sh normally does this).
+// buildSharedBinary compiles cmd/ai-env once for the test process. It also
+// refreshes internal/legacy/ai-env-legacy.sh (the //go:embed target) from the
+// frozen bash script at the repo root, matching scripts/build.sh.
+func buildSharedBinary() (string, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("cannot determine caller path")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+
 	src := filepath.Join(root, "ai-env")
 	dst := filepath.Join(root, "internal", "legacy", "ai-env-legacy.sh")
 	data, err := os.ReadFile(src)
 	if err != nil {
-		t.Fatalf("read bash script: %v", err)
+		return "", fmt.Errorf("read bash script: %w", err)
 	}
 	if err := os.WriteFile(dst, data, 0o755); err != nil {
-		t.Fatalf("seed embed file: %v", err)
+		return "", fmt.Errorf("seed embed file: %w", err)
 	}
 
-	out := filepath.Join(t.TempDir(), "ai-env")
+	tmpDir, err := os.MkdirTemp("", "ai-env-contract-")
+	if err != nil {
+		return "", err
+	}
+	out := filepath.Join(tmpDir, "ai-env")
 	cmd := exec.Command("go", "build", "-o", out, "./cmd/ai-env")
 	cmd.Dir = root
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("go build: %v", err)
+		return "", fmt.Errorf("go build: %w", err)
 	}
-	return out
+	return out, nil
+}
+
+func TestMain(m *testing.M) {
+	bin, err := buildSharedBinary()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	sharedGoBinary = bin
+	code := m.Run()
+	_ = os.RemoveAll(filepath.Dir(bin))
+	os.Exit(code)
 }
 
 type runResult struct {
@@ -191,6 +226,17 @@ func TestWhichContract(t *testing.T) {
 	})
 }
 
+// setupEnvDir creates a fresh AI_ENV_DIR containing an empty environments/
+// subdir and returns its path. Use for tests that need a valid ai-env layout.
+func setupEnvDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "environments"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -221,23 +267,20 @@ func TestListContract(t *testing.T) {
 	bashBin := filepath.Join(repoRoot(t), "ai-env")
 
 	t.Run("empty", func(t *testing.T) {
-		aiEnvDir := t.TempDir()
-		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		aiEnvDir := setupEnvDir(t)
 		opts := runOpts{aiEnvDir: aiEnvDir}
 		diffResult(t, runWith(t, goBin, opts, "list"), runWith(t, bashBin, opts, "list"))
 	})
 
 	t.Run("single_minimal", func(t *testing.T) {
-		aiEnvDir := t.TempDir()
-		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		aiEnvDir := setupEnvDir(t)
 		mustWrite(t, filepath.Join(aiEnvDir, "environments", "solo.yaml"), "skills:\n  - \"*\"\n")
 		opts := runOpts{aiEnvDir: aiEnvDir}
 		diffResult(t, runWith(t, goBin, opts, "list"), runWith(t, bashBin, opts, "list"))
 	})
 
 	t.Run("full_fields", func(t *testing.T) {
-		aiEnvDir := t.TempDir()
-		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		aiEnvDir := setupEnvDir(t)
 		mustWrite(t, filepath.Join(aiEnvDir, "environments", "alpha.yaml"),
 			"name: \"Alpha Display\"\ndescription: \"first env\"\nskills:\n  - \"a:*\"\n  - \"b:*\"\n")
 		mustWrite(t, filepath.Join(aiEnvDir, "environments", "beta.yaml"),
@@ -247,8 +290,7 @@ func TestListContract(t *testing.T) {
 	})
 
 	t.Run("ls_alias", func(t *testing.T) {
-		aiEnvDir := t.TempDir()
-		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		aiEnvDir := setupEnvDir(t)
 		mustWrite(t, filepath.Join(aiEnvDir, "environments", "a.yaml"), "skills:\n  - \"*\"\n")
 		opts := runOpts{aiEnvDir: aiEnvDir}
 		diffResult(t, runWith(t, goBin, opts, "ls"), runWith(t, bashBin, opts, "ls"))
@@ -369,8 +411,7 @@ func TestEditContract(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		for _, bin := range []string{goBin, bashBin} {
-			aiEnvDir := t.TempDir()
-			os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+			aiEnvDir := setupEnvDir(t)
 			envFile := filepath.Join(aiEnvDir, "environments", "myenv.yaml")
 			mustWrite(t, envFile, "skills:\n  - \"*\"\n")
 			opts := runOpts{aiEnvDir: aiEnvDir, env: []string{"EDITOR=true"}}
@@ -385,15 +426,13 @@ func TestEditContract(t *testing.T) {
 	})
 
 	t.Run("not_found", func(t *testing.T) {
-		aiEnvDir := t.TempDir()
-		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		aiEnvDir := setupEnvDir(t)
 		opts := runOpts{aiEnvDir: aiEnvDir, env: []string{"EDITOR=true"}}
 		diffResult(t, runWith(t, goBin, opts, "edit", "ghost"), runWith(t, bashBin, opts, "edit", "ghost"))
 	})
 
 	t.Run("no_arg", func(t *testing.T) {
-		aiEnvDir := t.TempDir()
-		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		aiEnvDir := setupEnvDir(t)
 		opts := runOpts{aiEnvDir: aiEnvDir, env: []string{"EDITOR=true"}}
 		diffResult(t, runWith(t, goBin, opts, "edit"), runWith(t, bashBin, opts, "edit"))
 	})
@@ -405,8 +444,7 @@ func TestDeleteContract(t *testing.T) {
 	bashBin := filepath.Join(repoRoot(t), "ai-env")
 
 	setup := func(t *testing.T) (aiEnvDir, envFile string) {
-		aiEnvDir = t.TempDir()
-		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		aiEnvDir = setupEnvDir(t)
 		envFile = filepath.Join(aiEnvDir, "environments", "myenv.yaml")
 		mustWrite(t, envFile, "skills:\n  - \"*\"\n")
 		return
@@ -450,8 +488,7 @@ func TestDeleteContract(t *testing.T) {
 	})
 
 	t.Run("not_found", func(t *testing.T) {
-		aiEnvDir := t.TempDir()
-		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		aiEnvDir := setupEnvDir(t)
 		opts := runOpts{aiEnvDir: aiEnvDir}
 		diffResult(t, runWith(t, goBin, opts, "delete", "ghost"), runWith(t, bashBin, opts, "delete", "ghost"))
 	})
@@ -478,8 +515,7 @@ func TestCloneContract(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		for _, bin := range []string{goBin, bashBin} {
-			aiEnvDir := t.TempDir()
-			os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+			aiEnvDir := setupEnvDir(t)
 			content := "name: \"Src\"\nskills:\n  - \"*\"\n"
 			mustWrite(t, filepath.Join(aiEnvDir, "environments", "src.yaml"), content)
 			opts := runOpts{aiEnvDir: aiEnvDir}
@@ -495,15 +531,13 @@ func TestCloneContract(t *testing.T) {
 	})
 
 	t.Run("src_missing", func(t *testing.T) {
-		aiEnvDir := t.TempDir()
-		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		aiEnvDir := setupEnvDir(t)
 		opts := runOpts{aiEnvDir: aiEnvDir}
 		diffResult(t, runWith(t, goBin, opts, "clone", "ghost", "new"), runWith(t, bashBin, opts, "clone", "ghost", "new"))
 	})
 
 	t.Run("dest_exists", func(t *testing.T) {
-		aiEnvDir := t.TempDir()
-		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		aiEnvDir := setupEnvDir(t)
 		mustWrite(t, filepath.Join(aiEnvDir, "environments", "a.yaml"), "skills:\n  - \"*\"\n")
 		mustWrite(t, filepath.Join(aiEnvDir, "environments", "b.yaml"), "skills:\n  - \"*\"\n")
 		opts := runOpts{aiEnvDir: aiEnvDir}
@@ -512,8 +546,7 @@ func TestCloneContract(t *testing.T) {
 
 	t.Run("cp_alias", func(t *testing.T) {
 		for _, bin := range []string{goBin, bashBin} {
-			aiEnvDir := t.TempDir()
-			os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+			aiEnvDir := setupEnvDir(t)
 			mustWrite(t, filepath.Join(aiEnvDir, "environments", "src.yaml"), "skills:\n  - \"*\"\n")
 			opts := runOpts{aiEnvDir: aiEnvDir}
 			r := runWith(t, bin, opts, "cp", "src", "dst")
@@ -527,10 +560,8 @@ func TestCloneContract(t *testing.T) {
 	})
 
 	t.Run("compare_output_success", func(t *testing.T) {
-		a := t.TempDir()
-		b := t.TempDir()
-		os.MkdirAll(filepath.Join(a, "environments"), 0o755)
-		os.MkdirAll(filepath.Join(b, "environments"), 0o755)
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
 		mustWrite(t, filepath.Join(a, "environments", "src.yaml"), "skills:\n  - \"*\"\n")
 		mustWrite(t, filepath.Join(b, "environments", "src.yaml"), "skills:\n  - \"*\"\n")
 		diffResult(t,
