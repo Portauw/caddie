@@ -9,9 +9,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/Portauw/ai-env/internal/config"
 	"github.com/Portauw/ai-env/internal/legacy"
+	"github.com/Portauw/ai-env/internal/sources"
 	"github.com/Portauw/ai-env/internal/version"
 )
 
@@ -24,6 +26,7 @@ var nativeCommands = map[string]handler{
 	"active":    cmdWhich,
 	"list":      cmdList,
 	"ls":        cmdList,
+	"source":    cmdSource,
 }
 
 // ANSI codes mirroring the bash helpers so stdout stays byte-identical.
@@ -34,7 +37,14 @@ const (
 	ansiDim    = "\033[2m"
 	ansiYellow = "\033[1;33m"
 	ansiBlue   = "\033[0;34m"
+	ansiRed    = "\033[0;31m"
+	ansiGreen  = "\033[0;32m"
 )
+
+func die(msg string) {
+	fmt.Fprintf(os.Stderr, "%s✗%s  %s\n", ansiRed, ansiReset, msg)
+	os.Exit(1)
+}
 
 func main() {
 	args := os.Args[1:]
@@ -91,6 +101,98 @@ func cmdList(_ []string) {
 
 	fmt.Printf("  %sAuto-detect: %sai-env activate%s%s (resolves from cwd)%s\n\n",
 		ansiDim, ansiCyan, ansiReset, ansiDim, ansiReset)
+}
+
+func cmdSource(args []string) {
+	if len(args) == 0 {
+		die("Usage: ai-env source <list|add|remove>")
+	}
+	sub := args[0]
+	rest := args[1:]
+	switch sub {
+	case "list", "ls":
+		cmdSourceList(rest)
+	case "add":
+		cmdSourceAdd(rest)
+	case "remove", "rm":
+		cmdSourceRemove(rest)
+	default:
+		die("Unknown source command: " + sub)
+	}
+}
+
+func cmdSourceList(_ []string) {
+	path := filepath.Join(config.Dir(), "sources.yaml")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Printf("%s⚠%s  No sources registered. Run %sai-env init%s or %sai-env source add%s.\n",
+			ansiYellow, ansiReset, ansiCyan, ansiReset, ansiCyan, ansiReset)
+		return
+	}
+	fmt.Printf("%sRegistered plugin sources:%s\n\n", ansiBold, ansiReset)
+	fmt.Printf("  %s(~/.config/ai-env/skills/ is always scanned implicitly)%s\n\n", ansiDim, ansiReset)
+
+	entries, err := sources.Parse()
+	if err != nil {
+		die(err.Error())
+	}
+	for _, e := range entries {
+		name := e.Name
+		if name == "" {
+			name = "?"
+		}
+		mkt := e.Marketplace
+		if mkt == "" {
+			mkt = "?"
+		}
+		plg := e.Plugin
+		if plg == "" {
+			plg = "?"
+		}
+		fmt.Printf("  %-20s %s/%s\n", name, mkt, plg)
+	}
+}
+
+func cmdSourceAdd(args []string) {
+	if len(args) < 3 || args[0] == "" || args[1] == "" || args[2] == "" {
+		die("Usage: ai-env source add <name> <marketplace> <plugin>\n  Example: ai-env source add superpowers superpowers-dev superpowers")
+	}
+	name, mkt, plg := args[0], args[1], args[2]
+
+	cachePath := filepath.Join(sources.PluginCacheDir(), mkt, plg)
+	if info, err := os.Stat(cachePath); err != nil || !info.IsDir() {
+		die(fmt.Sprintf("Plugin cache not found: %s\n  Available marketplaces: %s", cachePath, sources.AvailableMarketplaces()))
+	}
+
+	exists, err := sources.ExistsStrict(name)
+	if err != nil {
+		die(err.Error())
+	}
+	if exists {
+		die(fmt.Sprintf("Source '%s' already registered. Remove it first with: ai-env source remove %s", name, name))
+	}
+
+	if err := sources.Append(sources.Entry{Name: name, Marketplace: mkt, Plugin: plg}); err != nil {
+		die(err.Error())
+	}
+	fmt.Printf("%s✓%s  Registered source: %s%s%s (%s/%s)\n", ansiGreen, ansiReset, ansiBold, name, ansiReset, mkt, plg)
+}
+
+func cmdSourceRemove(args []string) {
+	if len(args) == 0 || args[0] == "" {
+		die("Usage: ai-env source remove <name>")
+	}
+	name := args[0]
+	exists, err := sources.ExistsLoose(name)
+	if err != nil {
+		die(err.Error())
+	}
+	if !exists {
+		die(fmt.Sprintf("Source '%s' not found.", name))
+	}
+	if err := sources.Remove(name); err != nil {
+		die(err.Error())
+	}
+	fmt.Printf("%s✓%s  Removed source: %s%s%s\n", ansiGreen, ansiReset, ansiBold, name, ansiReset)
 }
 
 func cmdWhich(_ []string) {
