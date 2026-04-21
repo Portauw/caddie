@@ -768,7 +768,9 @@ func TestInventoryContract(t *testing.T) {
 		if r.exitCode != 0 {
 			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
 		}
-		for _, want := range []string{"lenny:lenny-thing", "local:foo", "local:standalone", "local:lonely"} {
+		// Repo skill dirname is "lenny-thing"; repo's effective prefix is
+		// "lenny", so inventory strips it and shows "lenny:thing".
+		for _, want := range []string{"lenny:thing", "local:foo", "local:standalone", "local:lonely"} {
 			if !strings.Contains(r.stdout, want) {
 				t.Errorf("missing %q in inventory:\n%s", want, r.stdout)
 			}
@@ -914,6 +916,9 @@ func TestShowContract(t *testing.T) {
 	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	t.Run("populated", func(t *testing.T) {
+		// Go-only: bash printed Resolved skills as `prefix:<dirname>` (with
+		// the prefix duplicated in the dirname, e.g. `local:local-foo`).
+		// We strip the prefix now so IDs match what inventory shows.
 		aiEnvDir := setupEnvDir(t)
 		mustWrite(t, filepath.Join(aiEnvDir, "environments", "demo.yaml"),
 			"name: \"Demo\"\ndescription: \"hello\"\ndirectory: \"~/Dev/demo\"\n\nskills:\n  - \"local:*\"\n  - \"other:*\"\n")
@@ -923,8 +928,20 @@ func TestShowContract(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		opts := runOpts{aiEnvDir: aiEnvDir}
-		diffResult(t, runWith(t, goBin, opts, "show", "demo"), runWith(t, bashBin, opts, "show", "demo"))
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir}, "show", "demo")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		for _, want := range []string{"local:foo", "other:thing", "2 skills matched"} {
+			if !strings.Contains(r.stdout, want) {
+				t.Errorf("missing %q in show output:\n%s", want, r.stdout)
+			}
+		}
+		for _, banned := range []string{"local:local-foo", "other:other-thing"} {
+			if strings.Contains(r.stdout, banned) {
+				t.Errorf("output still shows duplicated prefix %q:\n%s", banned, r.stdout)
+			}
+		}
 	})
 
 	t.Run("empty_skills_quirk", func(t *testing.T) {

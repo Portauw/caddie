@@ -67,9 +67,11 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // resolve classifies one store entry. Symlinks that resolve into a registered
-// repo get the repo's prefix and TypeRepo; everything else (plain dirs, orphan
-// symlinks) is TypeLocal — "local" if there's no prefix hyphen, otherwise the
-// prefix is the portion before the first "-".
+// repo get the repo's effective prefix and TypeRepo; the remainder strips
+// "<prefix>-" from the dirname when present so inventory shows the same
+// split bash produced (`lenny:foo`, not `lenny:lenny-foo`). Plain dirs and
+// orphan symlinks are TypeLocal — "local" if there's no hyphen, otherwise
+// the portion before the first "-".
 func resolve(full, dirName string, isSymlink bool, repoMap map[string]string) (prefix, remainder string, typ SourceType) {
 	if isSymlink {
 		target, err := filepath.EvalSymlinks(full)
@@ -78,7 +80,9 @@ func resolve(full, dirName string, isSymlink bool, repoMap map[string]string) (p
 		}
 		for _, k := range sortedKeys(repoMap) {
 			if strings.Contains(target, k) {
-				return repoMap[k], dirName, TypeRepo
+				prefix = repoMap[k]
+				remainder = strings.TrimPrefix(dirName, prefix+"-")
+				return prefix, remainder, TypeRepo
 			}
 		}
 	}
@@ -141,10 +145,6 @@ func matchPattern(id, pattern string) bool {
 // user-supplied patterns in resolve_skills (python skill_map key).
 func (i Item) SkillID() string { return i.Prefix + ":" + i.Remainder }
 
-// DisplayID returns "<prefix>:<dirname>" — the form derive_skill_ids prints
-// (python `f'{prefix}:{dirname}'`). Slightly different from SkillID when the
-// dirname had a prefix stripped to form remainder.
-func (i Item) DisplayID() string { return i.Prefix + ":" + i.DirName }
 
 // matchItems returns the store items whose SkillID matches at least one
 // pattern. Empty patterns → no matches (python `if not patterns: exit(0)`).
@@ -193,13 +193,13 @@ func ResolveIDs(patterns []string) ([]string, error) {
 	}
 	out := make([]string, 0, len(matched))
 	for _, it := range matched {
-		out = append(out, it.DisplayID())
+		out = append(out, it.SkillID())
 	}
 	sort.Strings(out)
 	return out, nil
 }
 
-// PatternMatches returns the count of store items whose DisplayID matches
+// PatternMatches returns the count of store items whose SkillID matches
 // pattern. Used by the orphaned-pattern warning in scan.
 func PatternMatches(pattern string) int {
 	items, err := Scan()
@@ -208,7 +208,7 @@ func PatternMatches(pattern string) int {
 	}
 	count := 0
 	for _, it := range items {
-		if matchPattern(it.DisplayID(), pattern) {
+		if matchPattern(it.SkillID(), pattern) {
 			count++
 		}
 	}
