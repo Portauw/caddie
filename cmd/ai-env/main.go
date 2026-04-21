@@ -312,8 +312,12 @@ func cmdRepo(args []string) {
 	switch sub {
 	case "list", "ls":
 		cmdRepoList(args[1:])
-	case "add", "remove", "rm", "update":
-		// Fall through to legacy for not-yet-ported write commands.
+	case "add":
+		cmdRepoAdd(args[1:])
+	case "remove", "rm":
+		cmdRepoRemove(args[1:])
+	case "update":
+		// Fall through to legacy: requires git pull logic, separate scope.
 		if err := legacy.Exec(append([]string{"repo"}, args...)); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -363,6 +367,131 @@ func cmdRepoList(_ []string) {
 		fmt.Printf("    %sskills_path: %s, prefix: %s%s\n", ansiDim, e.SkillsPath, prefixDisplay, ansiReset)
 		fmt.Println("")
 	}
+}
+
+// cmdRepoAdd mirrors bash cmd_repo_add: register a git repo under `repos:`
+// in sources.yaml, then `git clone --depth 1` the URL into $CONFIG_DIR/repos/<name>.
+// Clone failures print a warning (matching bash) but don't fail the command —
+// the registration still succeeds so `ai-env repo update` can retry later.
+func cmdRepoAdd(args []string) {
+	if len(args) < 2 || args[0] == "" || args[1] == "" {
+		die("Usage: ai-env repo add <name> <url> [skills_path]\n  Example: ai-env repo add lenny https://github.com/RefoundAI/lenny-skills skills")
+	}
+	name, url := args[0], args[1]
+	skillsPath := "skills"
+	if len(args) >= 3 && args[2] != "" {
+		skillsPath = args[2]
+	}
+
+	// Check for duplicate name only when a repos: section already exists.
+	hasRepos, err := repos.HasReposSection()
+	if err != nil {
+		die(err.Error())
+	}
+	if hasRepos {
+		exists, err := repos.Exists(name)
+		if err != nil {
+			die(err.Error())
+		}
+		if exists {
+			die(fmt.Sprintf("Repo '%s' already registered. Remove it first with: ai-env repo remove %s", name, name))
+		}
+	}
+
+	if err := repos.Append(name, url, skillsPath); err != nil {
+		die(err.Error())
+	}
+
+	// Clone the repo. Bash only clones when $REPOS_DIR/$name does not exist.
+	if err := os.MkdirAll(repos.Dir(), 0o755); err != nil {
+		die(err.Error())
+	}
+	repoDir := filepath.Join(repos.Dir(), name)
+	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
+		fmt.Printf("%sℹ%s  Cloning %s...\n", ansiBlue, ansiReset, url)
+		clone := exec.Command("git", "clone", "--depth", "1", url, repoDir)
+		// Bash redirects stderr to /dev/null; we do the same (suppress git noise).
+		if err := clone.Run(); err == nil {
+			skillCount := 0
+			skillsDir := filepath.Join(repoDir, skillsPath)
+			if entries, err := os.ReadDir(skillsDir); err == nil {
+				for _, e := range entries {
+					if e.IsDir() {
+						skillCount++
+					}
+				}
+			}
+			fmt.Printf("%s✓%s  Cloned: %s%s%s (%d skills found)\n", ansiGreen, ansiReset, ansiBold, name, ansiReset, skillCount)
+		} else {
+			fmt.Printf("%s⚠%s  Clone failed. Run %sai-env repo update %s%s to retry.\n", ansiYellow, ansiReset, ansiCyan, name, ansiReset)
+		}
+	}
+
+	fmt.Printf("%s✓%s  Registered repo: %s%s%s\n", ansiGreen, ansiReset, ansiBold, name, ansiReset)
+	fmt.Printf("%sℹ%s  Run %sai-env scan --force%s to sync skills into the store.\n", ansiBlue, ansiReset, ansiCyan, ansiReset)
+}
+
+// cmdRepoRemove mirrors bash cmd_repo_remove: unregister a repo from
+// sources.yaml, remove any symlinks in the skill store pointing into its
+// checkout, and rm -rf the checkout directory.
+func cmdRepoRemove(args []string) {
+	if len(args) == 0 || args[0] == "" {
+		die("Usage: ai-env repo remove <name>")
+	}
+	name := args[0]
+
+	hasRepos, err := repos.HasReposSection()
+	if err != nil {
+		die(err.Error())
+	}
+	if !hasRepos {
+		die("No repos section found in sources.yaml")
+	}
+	exists, err := repos.Exists(name)
+	if err != nil {
+		die(err.Error())
+	}
+	if !exists {
+		die(fmt.Sprintf("Repo '%s' not found.", name))
+	}
+
+	if err := repos.Remove(name); err != nil {
+		die(err.Error())
+	}
+
+	// Clean symlinks in the skill store that point into this repo's checkout.
+	removed := 0
+	store := skills.Store()
+	repoDir := filepath.Join(repos.Dir(), name)
+	needle := string(os.PathSeparator) + "repos" + string(os.PathSeparator) + name + string(os.PathSeparator)
+	if entries, err := os.ReadDir(store); err == nil {
+		for _, e := range entries {
+			full := filepath.Join(store, e.Name())
+			info, err := os.Lstat(full)
+			if err != nil || info.Mode()&os.ModeSymlink == 0 {
+				continue
+			}
+			target, err := os.Readlink(full)
+			if err != nil {
+				continue
+			}
+			if strings.Contains(target, needle) {
+				if err := os.Remove(full); err == nil {
+					removed++
+				}
+			}
+		}
+	}
+
+	// Remove cloned repo directory.
+	if info, err := os.Stat(repoDir); err == nil && info.IsDir() {
+		if err := os.RemoveAll(repoDir); err != nil {
+			die(err.Error())
+		}
+		fmt.Printf("%sℹ%s  Removed cloned repo: %s\n", ansiBlue, ansiReset, repoDir)
+	}
+
+	fmt.Printf("%s✓%s  Removed repo: %s%s%s (%d skill symlinks cleaned)\n", ansiGreen, ansiReset, ansiBold, name, ansiReset, removed)
 }
 
 func cmdInventory(args []string) {

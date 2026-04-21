@@ -115,6 +115,120 @@ func Parse() ([]Entry, error) {
 	return out, nil
 }
 
+// HasReposSection reports whether sources.yaml contains a `^repos:` line.
+// Mirrors bash `grep -q "^repos:" "$SOURCES_FILE"`.
+func HasReposSection() (bool, error) {
+	f, err := os.Open(File())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		if strings.HasPrefix(sc.Text(), "repos:") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Exists mirrors the bash cmd_repo_add / cmd_repo_remove python duplicate
+// check: scans for any line under `repos:` containing `name:` and the given
+// substring. Preserves the bash substring-match quirk for parity.
+func Exists(name string) (bool, error) {
+	f, err := os.Open(File())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	inRepos := false
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "repos:") {
+			inRepos = true
+			continue
+		}
+		if inRepos && strings.Contains(line, "name:") && strings.Contains(line, name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Append adds a new repo entry to sources.yaml. Creates the file with
+// `sources:` header if missing, and appends a `repos:` header section if
+// absent. Byte-compatible with the bash HEREDOC.
+func Append(name, url, skillsPath string) error {
+	path := File()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := os.WriteFile(path, []byte("sources:\n"), 0o644); err != nil {
+			return err
+		}
+	}
+	hasRepos, err := HasReposSection()
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if !hasRepos {
+		if _, err := f.WriteString("\nrepos:\n"); err != nil {
+			return err
+		}
+	}
+	_, err = f.WriteString("  - name: \"" + name + "\"\n    url: \"" + url + "\"\n    skills_path: \"" + skillsPath + "\"\n")
+	return err
+}
+
+// Remove deletes the block for `name` under `repos:` from sources.yaml.
+// Mirrors the bash cmd_repo_remove python algorithm line-for-line.
+func Remove(name string) error {
+	path := File()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	var out []string
+	skip := false
+	inRepos := false
+	for _, line := range lines {
+		if strings.HasPrefix(line, "repos:") {
+			inRepos = true
+			out = append(out, line)
+			continue
+		}
+		if inRepos && strings.Contains(line, "  - name:") && strings.Contains(line, name) {
+			skip = true
+			continue
+		}
+		if skip {
+			if strings.HasPrefix(line, "  - ") ||
+				(line != "" && !strings.HasPrefix(line, "    ") && !strings.HasPrefix(line, "  - ")) {
+				skip = false
+			}
+		}
+		if skip && strings.HasPrefix(line, "    ") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644)
+}
+
 // GitOutput runs `git -C dir <args...>` and returns trimmed stdout, or ""
 // on error. Mirrors bash `$(git -C "$dir" ... 2>/dev/null)`.
 func GitOutput(dir string, args ...string) string {

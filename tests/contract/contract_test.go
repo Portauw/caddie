@@ -623,10 +623,41 @@ func TestRepoListContract(t *testing.T) {
 	})
 }
 
-// TestRepoAddFallthrough: `repo add` is NOT ported natively — the Go binary
-// must delegate to the frozen bash script. We assert that Go-vs-bash produce
-// identical output for an invocation that hits the bash error path.
-func TestRepoAddFallthrough(t *testing.T) {
+// makeBareRepo creates a local bare git repo with a single committed file,
+// usable as a clone URL for offline contract tests. Returns the bare repo path.
+func makeBareRepo(t *testing.T) string {
+	t.Helper()
+	work := t.TempDir()
+	bare := t.TempDir()
+	run := func(dir string, args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		// Silence git config warnings about missing identity.
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	run(work, "git", "init", "-q", "-b", "main")
+	if err := os.MkdirAll(filepath.Join(work, "skills", "alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "skills", "alpha", "SKILL.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(work, "git", "add", "-A")
+	run(work, "git", "commit", "-q", "-m", "init")
+	run(work, "git", "clone", "-q", "--bare", work, bare)
+	return bare
+}
+
+// TestRepoAddContract: native `repo add` must match bash — success clones
+// into $CONFIG_DIR/repos/<name> and appends to sources.yaml, missing-args dies,
+// duplicate names die.
+func TestRepoAddContract(t *testing.T) {
 	goBin := buildGoBinary(t)
 	bashBin := filepath.Join(repoRoot(t), "ai-env")
 
@@ -637,6 +668,121 @@ func TestRepoAddFallthrough(t *testing.T) {
 			runWith(t, goBin, runOpts{aiEnvDir: a}, "repo", "add"),
 			runWith(t, bashBin, runOpts{aiEnvDir: b}, "repo", "add"),
 		)
+	})
+
+	t.Run("success_clone", func(t *testing.T) {
+		url := makeBareRepo(t)
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir := setupEnvDir(t)
+			opts := runOpts{aiEnvDir: aiEnvDir}
+			r := runWith(t, bin, opts, "repo", "add", "mine", url)
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d stderr=%q stdout=%q", bin, r.exitCode, r.stderr, r.stdout)
+			}
+			// sources.yaml should contain the repo block.
+			body, _ := os.ReadFile(filepath.Join(aiEnvDir, "sources.yaml"))
+			want := "  - name: \"mine\"\n    url: \"" + url + "\"\n    skills_path: \"skills\"\n"
+			if !strings.Contains(string(body), want) {
+				t.Errorf("%s: sources.yaml missing repo block, got %q", bin, string(body))
+			}
+			if !strings.Contains(string(body), "repos:") {
+				t.Errorf("%s: sources.yaml missing repos: header, got %q", bin, string(body))
+			}
+			// Clone happened.
+			if _, err := os.Stat(filepath.Join(aiEnvDir, "repos", "mine", ".git")); err != nil {
+				t.Errorf("%s: clone target missing: %v", bin, err)
+			}
+		}
+	})
+
+	t.Run("duplicate_name", func(t *testing.T) {
+		url := makeBareRepo(t)
+		// Seed sources.yaml with the target name already present.
+		seed := "sources:\n\nrepos:\n  - name: \"mine\"\n    url: \"u\"\n    skills_path: \"skills\"\n"
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		mustWrite(t, filepath.Join(a, "sources.yaml"), seed)
+		mustWrite(t, filepath.Join(b, "sources.yaml"), seed)
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "repo", "add", "mine", url),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "repo", "add", "mine", url),
+		)
+	})
+}
+
+// TestRepoRemoveContract: native `repo remove` must match bash — success cleans
+// the checkout + sources.yaml block, not-found dies, `rm` alias works.
+func TestRepoRemoveContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	seedRegistered := func(t *testing.T, aiEnvDir, name string) {
+		t.Helper()
+		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+			"sources:\n\nrepos:\n  - name: \""+name+"\"\n    url: \"u\"\n    skills_path: \"skills\"\n")
+		// Fake a cloned checkout dir — doesn't need to be a real git repo.
+		if err := os.MkdirAll(filepath.Join(aiEnvDir, "repos", name, "skills"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("success", func(t *testing.T) {
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir := setupEnvDir(t)
+			seedRegistered(t, aiEnvDir, "mine")
+			opts := runOpts{aiEnvDir: aiEnvDir}
+			r := runWith(t, bin, opts, "repo", "remove", "mine")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d stderr=%q", bin, r.exitCode, r.stderr)
+			}
+			// Checkout gone.
+			if _, err := os.Stat(filepath.Join(aiEnvDir, "repos", "mine")); !os.IsNotExist(err) {
+				t.Errorf("%s: checkout still present: %v", bin, err)
+			}
+			// sources.yaml no longer contains the name.
+			body, _ := os.ReadFile(filepath.Join(aiEnvDir, "sources.yaml"))
+			if strings.Contains(string(body), "mine") {
+				t.Errorf("%s: repo block still present: %q", bin, string(body))
+			}
+		}
+	})
+
+	t.Run("not_found", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		seed := "sources:\n\nrepos:\n  - name: \"other\"\n    url: \"u\"\n    skills_path: \"skills\"\n"
+		mustWrite(t, filepath.Join(a, "sources.yaml"), seed)
+		mustWrite(t, filepath.Join(b, "sources.yaml"), seed)
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "repo", "remove", "ghost"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "repo", "remove", "ghost"),
+		)
+	})
+
+	t.Run("no_repos_section", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		mustWrite(t, filepath.Join(a, "sources.yaml"), "sources:\n")
+		mustWrite(t, filepath.Join(b, "sources.yaml"), "sources:\n")
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "repo", "remove", "ghost"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "repo", "remove", "ghost"),
+		)
+	})
+
+	t.Run("rm_alias", func(t *testing.T) {
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir := setupEnvDir(t)
+			seedRegistered(t, aiEnvDir, "mine")
+			opts := runOpts{aiEnvDir: aiEnvDir}
+			r := runWith(t, bin, opts, "repo", "rm", "mine")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d stderr=%q", bin, r.exitCode, r.stderr)
+			}
+			if _, err := os.Stat(filepath.Join(aiEnvDir, "repos", "mine")); !os.IsNotExist(err) {
+				t.Errorf("%s: checkout still present", bin)
+			}
+		}
 	})
 }
 
