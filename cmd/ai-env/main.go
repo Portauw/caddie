@@ -50,6 +50,7 @@ var nativeCommands = map[string]handler{
 	"create":    cmdCreate,
 	"new":       cmdCreate,
 	"init":      cmdInit,
+	"scan":      cmdScan,
 }
 
 // ANSI codes mirroring the bash helpers so stdout stays byte-identical.
@@ -1092,12 +1093,9 @@ skills:
 			ansiBlue, ansiReset, ansiCyan, ansiReset)
 	}
 
-	// scan hasn't been ported yet — delegate it without exiting so the native
-	// "Next steps" tail still runs. Scan failures are non-fatal for init.
+	// Run the native scan so init stays self-contained. Failures are non-fatal.
 	fmt.Println()
-	if err := legacy.Run([]string{"scan"}); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-	}
+	cmdScan(nil)
 
 	fmt.Println()
 	fmt.Printf("%sℹ%s  Next steps:\n", ansiBlue, ansiReset)
@@ -1156,4 +1154,135 @@ func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) {
 	}
 	_ = os.MkdirAll(filepath.Dir(claudeDir), 0o755)
 	_ = os.Symlink("../.agents/skills", claudeDir)
+}
+
+// cmdScan mirrors bash cmd_scan but repo-only: plugin sources were dropped.
+// Sweeps ~/.agents/skills/ into the store, cleans broken store symlinks,
+// iterates every registered repo (checking for remote updates + syncing
+// skills), then prints counts + warnings. Cached by mtime of .last-scan
+// (60 s) unless --force.
+func cmdScan(args []string) {
+	verbose, force := false, false
+	for _, a := range args {
+		switch a {
+		case "-v", "--verbose":
+			verbose = true
+		case "-f", "--force":
+			force = true
+		}
+	}
+
+	store := skills.Store()
+	_ = os.MkdirAll(store, 0o755)
+
+	cachePath := filepath.Join(config.Dir(), ".last-scan")
+	if !force {
+		if info, err := os.Stat(cachePath); err == nil {
+			age := time.Since(info.ModTime())
+			if age < 60*time.Second {
+				if verbose {
+					fmt.Printf("%sℹ%s  Scan cached (%ds ago, use --force to rescan)\n",
+						ansiBlue, ansiReset, int(age.Seconds()))
+				}
+				return
+			}
+		}
+	}
+
+	fmt.Printf("%sℹ%s  Scanning skill sources...\n", ansiBlue, ansiReset)
+
+	home := os.Getenv("HOME")
+	if home == "" {
+		h, _ := os.UserHomeDir()
+		home = h
+	}
+
+	verbosef := func(format string, a ...any) { fmt.Printf(format, a...) }
+
+	swept := skills.SweepAgentDir(home, verbose, verbosef)
+	if swept > 0 {
+		fmt.Printf("%sℹ%s  Swept %d new skill(s) from agent dirs into store\n", ansiBlue, ansiReset, swept)
+	}
+
+	brokenRemoved := skills.CleanBrokenStoreLinks(verbose, verbosef)
+	if brokenRemoved > 0 {
+		fmt.Printf("%sℹ%s  Removed %d broken symlink(s) from store\n", ansiBlue, ansiReset, brokenRemoved)
+	}
+
+	totalRepo, updates, shadowed, perRepo := skills.SyncRepos(verbose, verbosef)
+	for _, r := range perRepo {
+		if r.Warning != "" {
+			switch r.Warning {
+			case "not cloned":
+				fmt.Printf("%s⚠%s  Repo '%s': not cloned. Run %sai-env repo update %s%s\n",
+					ansiYellow, ansiReset, r.Name, ansiCyan, r.Name, ansiReset)
+			case "skills_path not found":
+				fmt.Printf("%s⚠%s  Repo '%s': skills_path '%s' not found\n",
+					ansiYellow, ansiReset, r.Name, r.SkillsPath)
+			}
+			continue
+		}
+		fmt.Printf("%sℹ%s  Repo '%s': %d skills from %s/\n",
+			ansiBlue, ansiReset, r.Name, r.Count, r.SkillsPath)
+	}
+
+	localCount, total := skills.CountStore()
+	fmt.Println()
+	_ = os.WriteFile(cachePath, nil, 0o644)
+	// touch: if the file already existed the WriteFile above resets mtime; if
+	// it didn't, we just created it. Either way .last-scan is refreshed.
+
+	fmt.Printf("%s✓%s  Scan complete: %s%d%s skills in canonical store (%d local, %d from repos)\n",
+		ansiGreen, ansiReset, ansiBold, total, ansiReset, localCount, totalRepo)
+
+	if len(updates) > 0 {
+		fmt.Println()
+		fmt.Printf("%sℹ%s  Repo updates available:\n", ansiBlue, ansiReset)
+		for _, u := range updates {
+			fmt.Printf("  %s•%s %s%s%s: %s commit(s) behind\n",
+				ansiYellow, ansiReset, ansiBold, u.Name, ansiReset, u.Behind)
+		}
+		fmt.Printf("  %sRun %sai-env repo update%s%s to pull changes%s\n",
+			ansiDim, ansiCyan, ansiReset, ansiDim, ansiReset)
+	}
+
+	if len(shadowed) > 0 {
+		fmt.Println()
+		fmt.Printf("%s⚠%s  Local skills shadowing repo versions:\n", ansiYellow, ansiReset)
+		for _, s := range shadowed {
+			fmt.Printf("  %s•%s %s%s%s shadows repo '%s'\n",
+				ansiYellow, ansiReset, ansiBold, s.SkillName, ansiReset, s.RepoName)
+		}
+		fmt.Printf("  %sTo use the repo version, remove the local copy:%s\n", ansiDim, ansiReset)
+		fmt.Printf("  %s  rm -rf %s/<skill-name> && ai-env scan --force%s\n", ansiDim, store, ansiReset)
+	}
+
+	// Orphaned skill pattern warnings — scan every environment's `skills:`
+	// list for patterns that match zero store items.
+	envDir := config.EnvDir()
+	envEntries, err := os.ReadDir(envDir)
+	if err != nil {
+		return
+	}
+	hasWarn := false
+	for _, ef := range envEntries {
+		if ef.IsDir() || !strings.HasSuffix(ef.Name(), ".yaml") {
+			continue
+		}
+		envName := strings.TrimSuffix(ef.Name(), ".yaml")
+		patterns := config.ReadList(filepath.Join(envDir, ef.Name()), "skills")
+		for _, p := range patterns {
+			if p == "" {
+				continue
+			}
+			if skills.EnvPatternMatches(p) == 0 {
+				if !hasWarn {
+					fmt.Println()
+					hasWarn = true
+				}
+				fmt.Printf("%s⚠%s  Environment %s%s%s: pattern %s\"%s\"%s matches 0 skills — source may have been removed\n",
+					ansiYellow, ansiReset, ansiBold, envName, ansiReset, ansiCyan, p, ansiReset)
+			}
+		}
+	}
 }

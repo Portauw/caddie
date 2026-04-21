@@ -1206,3 +1206,204 @@ func TestResetContract(t *testing.T) {
 		}
 	})
 }
+
+// cloneBareInto runs `git clone <bare> <dest>` under a controlled environment.
+// Used by scan tests to stage a checked-out repo without network access.
+func cloneBareInto(t *testing.T, bare, dest string) {
+	t.Helper()
+	cmd := exec.Command("git", "clone", "-q", bare, dest)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("clone: %v\n%s", err, out)
+	}
+}
+
+// TestScanContract: Go-only asserts on scan's filesystem side-effects and key
+// stdout markers. Scan is not byte-diffed against bash because bash also scans
+// plugin sources (which the Go impl no longer does).
+func TestScanContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+
+	t.Run("no_repos", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "scan")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if !strings.Contains(r.stdout, "skills in canonical store") {
+			t.Errorf("expected counts line, got %q", r.stdout)
+		}
+		if !strings.Contains(r.stdout, "0 local, 0 from repos") {
+			t.Errorf("expected 0/0 split, got %q", r.stdout)
+		}
+	})
+
+	t.Run("single_repo_clone_and_sync", func(t *testing.T) {
+		bare := makeBareRepo(t)
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		cloneBareInto(t, bare, filepath.Join(aiEnvDir, "repos", "mine"))
+		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+			"sources:\n\nrepos:\n  - name: \"mine\"\n    url: \""+bare+"\"\n    skills_path: \"skills\"\n")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "scan")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
+		}
+		link := filepath.Join(aiEnvDir, "skills", "alpha")
+		li, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("expected symlink at %s: %v", link, err)
+		}
+		if li.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s is not a symlink", link)
+		}
+		if !strings.Contains(r.stdout, "0 local, 1 from repos") {
+			t.Errorf("expected 0/1 split, got %q", r.stdout)
+		}
+	})
+
+	t.Run("prefix_true", func(t *testing.T) {
+		bare := makeBareRepo(t)
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		cloneBareInto(t, bare, filepath.Join(aiEnvDir, "repos", "mine"))
+		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+			"repos:\n  - name: \"mine\"\n    url: \""+bare+"\"\n    skills_path: \"skills\"\n    prefix: \"true\"\n")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "scan")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if _, err := os.Lstat(filepath.Join(aiEnvDir, "skills", "mine-alpha")); err != nil {
+			t.Errorf("expected prefixed symlink mine-alpha: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(aiEnvDir, "skills", "alpha")); err == nil {
+			t.Errorf("unprefixed symlink should not exist")
+		}
+	})
+
+	t.Run("prefix_literal", func(t *testing.T) {
+		bare := makeBareRepo(t)
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		cloneBareInto(t, bare, filepath.Join(aiEnvDir, "repos", "mine"))
+		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+			"repos:\n  - name: \"mine\"\n    url: \""+bare+"\"\n    skills_path: \"skills\"\n    prefix: \"zz\"\n")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "scan")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if _, err := os.Lstat(filepath.Join(aiEnvDir, "skills", "zz-alpha")); err != nil {
+			t.Errorf("expected prefixed symlink zz-alpha: %v", err)
+		}
+	})
+
+	t.Run("local_shadow_warning", func(t *testing.T) {
+		bare := makeBareRepo(t)
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		cloneBareInto(t, bare, filepath.Join(aiEnvDir, "repos", "mine"))
+		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+			"repos:\n  - name: \"mine\"\n    url: \""+bare+"\"\n    skills_path: \"skills\"\n")
+		// Seed a real local dir at the same skill name.
+		localDir := filepath.Join(aiEnvDir, "skills", "alpha")
+		if err := os.MkdirAll(localDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(localDir, "SKILL.md"), "local version")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "scan")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if !strings.Contains(r.stdout, "shadowing repo versions") {
+			t.Errorf("expected shadow warning, got %q", r.stdout)
+		}
+		li, err := os.Lstat(localDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if li.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("local dir was replaced with symlink")
+		}
+	})
+
+	t.Run("broken_symlink_cleanup", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		store := filepath.Join(aiEnvDir, "skills")
+		if err := os.MkdirAll(store, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		broken := filepath.Join(store, "gone")
+		if err := os.Symlink("/does/not/exist/anywhere", broken); err != nil {
+			t.Fatal(err)
+		}
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "scan")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d", r.exitCode)
+		}
+		if _, err := os.Lstat(broken); !os.IsNotExist(err) {
+			t.Errorf("broken symlink not removed: %v", err)
+		}
+	})
+
+	t.Run("sweep_from_agent_dir", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		agentSkill := filepath.Join(home, ".agents", "skills", "dropped")
+		if err := os.MkdirAll(agentSkill, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(agentSkill, "SKILL.md"), "swept me")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "scan")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if _, err := os.Stat(filepath.Join(aiEnvDir, "skills", "dropped", "SKILL.md")); err != nil {
+			t.Errorf("swept skill missing in store: %v", err)
+		}
+		if _, err := os.Stat(agentSkill); !os.IsNotExist(err) {
+			t.Errorf("source dir still present after sweep: %v", err)
+		}
+	})
+
+	t.Run("cache_skip", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
+		r1 := runWith(t, goBin, opts, "scan")
+		if r1.exitCode != 0 {
+			t.Fatalf("first scan exit=%d", r1.exitCode)
+		}
+		r2 := runWith(t, goBin, opts, "scan", "-v")
+		if r2.exitCode != 0 {
+			t.Fatalf("second scan exit=%d", r2.exitCode)
+		}
+		if !strings.Contains(r2.stdout, "Scan cached") {
+			t.Errorf("expected cache skip, got %q", r2.stdout)
+		}
+	})
+
+	t.Run("force_rescan", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
+		r1 := runWith(t, goBin, opts, "scan", "-f")
+		if r1.exitCode != 0 {
+			t.Fatalf("first -f exit=%d", r1.exitCode)
+		}
+		r2 := runWith(t, goBin, opts, "scan", "-f")
+		if r2.exitCode != 0 {
+			t.Fatalf("second -f exit=%d", r2.exitCode)
+		}
+		if strings.Contains(r2.stdout, "Scan cached") {
+			t.Errorf("force should bypass cache: %q", r2.stdout)
+		}
+		if !strings.Contains(r2.stdout, "Scan complete") {
+			t.Errorf("expected scan complete marker: %q", r2.stdout)
+		}
+	})
+}
