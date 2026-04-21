@@ -982,6 +982,195 @@ func TestRepoUpdateContract(t *testing.T) {
 	})
 }
 
+// TestShowContract: native `show`/`info` must match bash across populated,
+// empty-patterns (exercises the `0\n0` grep quirk), and missing-env.
+func TestShowContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	t.Run("populated", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		mustWrite(t, filepath.Join(aiEnvDir, "environments", "demo.yaml"),
+			"name: \"Demo\"\ndescription: \"hello\"\ndirectory: \"~/Dev/demo\"\n\nskills:\n  - \"local:*\"\n  - \"other:*\"\n")
+		store := filepath.Join(aiEnvDir, "skills")
+		for _, d := range []string{"local-foo", "other-thing"} {
+			if err := os.MkdirAll(filepath.Join(store, d), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "show", "demo"), runWith(t, bashBin, opts, "show", "demo"))
+	})
+
+	t.Run("empty_skills_quirk", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		mustWrite(t, filepath.Join(aiEnvDir, "environments", "demo.yaml"),
+			"name: \"Empty\"\nskills:\n")
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "show", "demo"), runWith(t, bashBin, opts, "show", "demo"))
+	})
+
+	t.Run("info_alias", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		mustWrite(t, filepath.Join(aiEnvDir, "environments", "d.yaml"),
+			"name: \"D\"\nskills:\n  - \"*\"\n")
+		// Seed store so bash's python doesn't crash on missing dir.
+		if err := os.MkdirAll(filepath.Join(aiEnvDir, "skills"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "info", "d"), runWith(t, bashBin, opts, "info", "d"))
+	})
+
+	t.Run("not_found", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "show", "ghost"), runWith(t, bashBin, opts, "show", "ghost"))
+	})
+
+	t.Run("no_arg", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "show"), runWith(t, bashBin, opts, "show"))
+	})
+}
+
+// TestCreateContract: interactive `create`/`new` with piped stdin. Compare
+// the written YAML byte-for-byte and stdout modulo the AI_ENV_DIR path.
+func TestCreateContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	t.Run("full_input", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		stdin := "MyDisplay\nMy desc\n/tmp/myproj\nlocal:*\nsuperpowers:*\n\n"
+		got := runWith(t, goBin, runOpts{aiEnvDir: a, stdin: stdin}, "create", "proj")
+		want := runWith(t, bashBin, runOpts{aiEnvDir: b, stdin: stdin}, "create", "proj")
+		if got.exitCode != want.exitCode {
+			t.Errorf("exit code mismatch: go=%d bash=%d", got.exitCode, want.exitCode)
+		}
+		gotYAML, _ := os.ReadFile(filepath.Join(a, "environments", "proj.yaml"))
+		wantYAML, _ := os.ReadFile(filepath.Join(b, "environments", "proj.yaml"))
+		if string(gotYAML) != string(wantYAML) {
+			t.Errorf("yaml mismatch\n  go:   %q\n  bash: %q", string(gotYAML), string(wantYAML))
+		}
+		// Normalize tmpdirs in stdout — the Config: line prints the absolute path.
+		norm := func(s, dir string) string { return strings.ReplaceAll(s, dir, "/X") }
+		if norm(got.stdout, a) != norm(want.stdout, b) {
+			t.Errorf("stdout mismatch\n  go:   %q\n  bash: %q", norm(got.stdout, a), norm(want.stdout, b))
+		}
+	})
+
+	t.Run("defaults", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		stdin := "\n\n\n\n"
+		runWith(t, goBin, runOpts{aiEnvDir: a, stdin: stdin}, "create", "def")
+		runWith(t, bashBin, runOpts{aiEnvDir: b, stdin: stdin}, "create", "def")
+		gotYAML, _ := os.ReadFile(filepath.Join(a, "environments", "def.yaml"))
+		wantYAML, _ := os.ReadFile(filepath.Join(b, "environments", "def.yaml"))
+		if string(gotYAML) != string(wantYAML) {
+			t.Errorf("yaml mismatch\n  go:   %q\n  bash: %q", string(gotYAML), string(wantYAML))
+		}
+	})
+
+	t.Run("already_exists", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		mustWrite(t, filepath.Join(a, "environments", "dup.yaml"), "skills:\n  - \"*\"\n")
+		mustWrite(t, filepath.Join(b, "environments", "dup.yaml"), "skills:\n  - \"*\"\n")
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "create", "dup"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "create", "dup"),
+		)
+	})
+
+	t.Run("no_arg", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "create"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "create"),
+		)
+	})
+
+	t.Run("new_alias", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		stdin := "\n\n\n\n"
+		runWith(t, goBin, runOpts{aiEnvDir: a, stdin: stdin}, "new", "viaNew")
+		runWith(t, bashBin, runOpts{aiEnvDir: b, stdin: stdin}, "new", "viaNew")
+		if _, err := os.Stat(filepath.Join(a, "environments", "viaNew.yaml")); err != nil {
+			t.Errorf("go new alias didn't write file: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(b, "environments", "viaNew.yaml")); err != nil {
+			t.Errorf("bash new alias didn't write file: %v", err)
+		}
+	})
+}
+
+// TestInitContract: native `init` must match bash for the idempotent setup +
+// the auto-detected sources block. Scan output is included because init
+// delegates to legacy bash scan in both impls. HOME is overridden to keep
+// the user's real ~/.claude + ~/.agents untouched.
+func TestInitContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	t.Run("fresh", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		homeA := t.TempDir()
+		homeB := t.TempDir()
+		got := runWith(t, goBin, runOpts{aiEnvDir: a, home: homeA}, "init")
+		want := runWith(t, bashBin, runOpts{aiEnvDir: b, home: homeB}, "init")
+		// Normalize AI_ENV_DIR and HOME tmpdirs in stdout for comparison.
+		norm := func(s, envDir, home string) string {
+			s = strings.ReplaceAll(s, envDir, "/X")
+			return strings.ReplaceAll(s, home, "/H")
+		}
+		if norm(got.stdout, a, homeA) != norm(want.stdout, b, homeB) {
+			t.Errorf("stdout mismatch\n  go:   %q\n  bash: %q",
+				norm(got.stdout, a, homeA), norm(want.stdout, b, homeB))
+		}
+		if got.exitCode != want.exitCode {
+			t.Errorf("exit code mismatch: go=%d bash=%d", got.exitCode, want.exitCode)
+		}
+		// Both should have created the same state: sources.yaml, example env,
+		// ~/.claude/skills symlink.
+		for _, p := range []string{
+			filepath.Join(a, "sources.yaml"),
+			filepath.Join(a, "environments", "example.yaml"),
+			filepath.Join(a, "skills"),
+		} {
+			if _, err := os.Stat(p); err != nil {
+				t.Errorf("go init missing %s: %v", p, err)
+			}
+		}
+		if li, err := os.Lstat(filepath.Join(homeA, ".claude", "skills")); err != nil || li.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("go init didn't create ~/.claude/skills symlink: %v", err)
+		}
+	})
+
+	t.Run("idempotent_second_run", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
+		r1 := runWith(t, goBin, opts, "init")
+		if r1.exitCode != 0 {
+			t.Fatalf("first init exit=%d stderr=%q", r1.exitCode, r1.stderr)
+		}
+		r2 := runWith(t, goBin, opts, "init")
+		if r2.exitCode != 0 {
+			t.Fatalf("second init exit=%d stderr=%q", r2.exitCode, r2.stderr)
+		}
+		if !strings.Contains(r2.stdout, "Sources file already exists") {
+			t.Errorf("second init didn't report existing sources: %q", r2.stdout)
+		}
+	})
+}
+
 // TestResetContract: native `reset` must match bash across -f success, -f with
 // nothing to clean (idempotent), confirmation 'n' cancels, confirmation 'y'
 // proceeds. HOME is overridden to a temp dir so the real user's ~/.agents is

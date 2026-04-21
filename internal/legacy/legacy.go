@@ -43,6 +43,22 @@ func Exec(args []string) error {
 	return nil
 }
 
+// Run is like Exec but does not call os.Exit — it returns whether the bash
+// process succeeded so the caller (e.g. `init`, which wraps `scan`) can keep
+// running native Go code after delegation.
+func Run(args []string) error {
+	path, err := materialize()
+	if err != nil {
+		return fmt.Errorf("materialize legacy script: %w", err)
+	}
+	cmd := exec.Command("bash", append([]string{path}, args...)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	return cmd.Run()
+}
+
 func materialize() (string, error) {
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {

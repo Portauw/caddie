@@ -149,3 +149,103 @@ func StoreExists() bool {
 	info, err := os.Stat(Store())
 	return err == nil && info.IsDir()
 }
+
+// fnmatchMatch mirrors Python's fnmatch.fnmatch for the subset resolve_skills
+// patterns actually use (`*`, `?`, literals). Iterative two-pointer algorithm;
+// no regexp dep.
+func fnmatchMatch(s, p string) bool {
+	si, pi := 0, 0
+	star := -1
+	ss := 0
+	for si < len(s) {
+		if pi < len(p) && (p[pi] == '?' || p[pi] == s[si]) {
+			si++
+			pi++
+			continue
+		}
+		if pi < len(p) && p[pi] == '*' {
+			star = pi
+			ss = si
+			pi++
+			continue
+		}
+		if star != -1 {
+			pi = star + 1
+			ss++
+			si = ss
+			continue
+		}
+		return false
+	}
+	for pi < len(p) && p[pi] == '*' {
+		pi++
+	}
+	return pi == len(p)
+}
+
+// SkillID returns "<prefix>:<remainder>" — the form used to match against
+// user-supplied patterns in resolve_skills (python skill_map key).
+func (i Item) SkillID() string { return i.Prefix + ":" + i.Remainder }
+
+// DisplayID returns "<prefix>:<dirname>" — the form derive_skill_ids prints
+// (python `f'{prefix}:{dirname}'`). Slightly different from SkillID when the
+// dirname had a prefix stripped to form remainder.
+func (i Item) DisplayID() string { return i.Prefix + ":" + i.DirName }
+
+// Resolve mirrors bash resolve_skills: walk the store, derive each skill's ID
+// (prefix:remainder), and return the sorted literal dirnames of skills whose
+// ID fnmatch-matches at least one pattern. Empty patterns → empty result
+// (matches python `if not patterns: exit(0)`).
+func Resolve(patterns []string) ([]string, error) {
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+	items, err := Scan()
+	if err != nil {
+		return nil, err
+	}
+	matched := map[string]bool{}
+	for _, it := range items {
+		id := it.SkillID()
+		for _, p := range patterns {
+			if fnmatchMatch(id, p) {
+				matched[it.DirName] = true
+				break
+			}
+		}
+	}
+	out := make([]string, 0, len(matched))
+	for k := range matched {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// ResolveIDs returns skill IDs (prefix:remainder) for matched skills, sorted.
+// Mirrors `resolve_skills | derive_skill_ids | sort` in cmd_show.
+func ResolveIDs(patterns []string) ([]string, error) {
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+	items, err := Scan()
+	if err != nil {
+		return nil, err
+	}
+	byDir := map[string]Item{}
+	for _, it := range items {
+		byDir[it.DirName] = it
+	}
+	names, err := Resolve(patterns)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if it, ok := byDir[n]; ok {
+			out = append(out, it.DisplayID())
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}

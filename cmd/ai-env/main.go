@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Portauw/ai-env/internal/config"
 	"github.com/Portauw/ai-env/internal/legacy"
@@ -46,6 +47,11 @@ var nativeCommands = map[string]handler{
 	"--help":    cmdHelp,
 	"-h":        cmdHelp,
 	"reset":     cmdReset,
+	"show":      cmdShow,
+	"info":      cmdShow,
+	"create":    cmdCreate,
+	"new":       cmdCreate,
+	"init":      cmdInit,
 }
 
 // ANSI codes mirroring the bash helpers so stdout stays byte-identical.
@@ -1025,4 +1031,439 @@ func cmdWhich(_ []string) {
 		os.Exit(1)
 	}
 	fmt.Println(name)
+}
+
+// cmdShow mirrors bash cmd_show: print config file contents + resolved skills
+// derived from the store via resolve_skills. Byte-exact stdout vs bash.
+func cmdShow(args []string) {
+	if len(args) == 0 || args[0] == "" {
+		die("Usage: ai-env show <name>")
+	}
+	name := args[0]
+	if !config.EnvExists(name) {
+		die(fmt.Sprintf("Environment '%s' not found.", name))
+	}
+	file := config.EnvFile(name)
+	displayName := config.ReadScalar(file, "name")
+	directory := config.ReadScalar(file, "directory")
+
+	label := displayName
+	if label == "" {
+		label = name
+	}
+	fmt.Printf("%sEnvironment: %s%s%s\n\n", ansiBold, ansiCyan, label, ansiReset)
+
+	if directory != "" {
+		// Bash `${directory/#\~/$HOME}` expands a leading `~` only.
+		expanded := directory
+		if strings.HasPrefix(expanded, "~") {
+			home := os.Getenv("HOME")
+			if home == "" {
+				h, _ := os.UserHomeDir()
+				home = h
+			}
+			expanded = home + strings.TrimPrefix(expanded, "~")
+		}
+		fmt.Printf("  %sSkills managed in:%s\n", ansiDim, ansiReset)
+		fmt.Printf("    %s%s/.agents/skills/ (.claude/skills → symlink)%s\n", ansiDim, expanded, ansiReset)
+		if _, err := os.Stat(filepath.Join(expanded, ".claude", ".ai-env-fingerprint")); err == nil {
+			fmt.Printf("    %s(fingerprint: active)%s\n", ansiDim, ansiReset)
+		}
+		fmt.Println()
+	}
+
+	// Dump config verbatim — bash `cat "$file"`.
+	data, err := os.ReadFile(file)
+	if err != nil {
+		die(err.Error())
+	}
+	os.Stdout.Write(data)
+
+	fmt.Println()
+	fmt.Printf("%sResolved skills:%s\n", ansiBold, ansiReset)
+
+	patterns := config.ReadList(file, "skills")
+	// If the store doesn't exist (init not run), resolve_skills silently
+	// yields empty — match that instead of erroring out.
+	var ids []string
+	if skills.StoreExists() {
+		ids, _ = skills.ResolveIDs(patterns)
+	}
+	// Bash quirk: `count=$(echo "$resolved" | grep -c . || echo 0)`. When
+	// resolved is empty, grep -c . prints "0" and returns 1, so `|| echo 0`
+	// fires too — $count captures "0\n0". We mirror that exactly.
+	if len(ids) == 0 {
+		fmt.Printf("  0\n0 skills matched\n\n")
+	} else {
+		fmt.Printf("  %d skills matched\n\n", len(ids))
+	}
+	for _, id := range ids {
+		fmt.Printf("  %s\n", id)
+	}
+}
+
+// cmdCreate mirrors bash cmd_create: interactive prompts for display name,
+// description, directory, skill patterns; writes an environment YAML.
+// Prompt text gated on tty for piped-stdin contract tests (same pattern as
+// cmdDelete); bash `read -rp` natively suppresses the prompt when stdin is
+// not a tty.
+func cmdCreate(args []string) {
+	if len(args) == 0 || args[0] == "" {
+		die("Usage: ai-env create <name>")
+	}
+	name := args[0]
+	if config.EnvExists(name) {
+		die(fmt.Sprintf("Environment '%s' already exists. Use 'ai-env edit %s' to modify it.", name, name))
+	}
+	file := config.EnvFile(name)
+
+	fmt.Printf("%sCreating environment: %s%s%s\n\n", ansiBold, ansiCyan, name, ansiReset)
+
+	tty := isTerminal(os.Stdin)
+	br := bufio.NewReader(os.Stdin)
+	readLine := func(prompt string) string {
+		if tty {
+			fmt.Print(prompt)
+		}
+		line, err := br.ReadString('\n')
+		if err != nil && line == "" {
+			return ""
+		}
+		return strings.TrimRight(line, "\n")
+	}
+
+	displayName := readLine(fmt.Sprintf("Display name [%s]: ", name))
+	if displayName == "" {
+		displayName = name
+	}
+	description := readLine("Description: ")
+	directory := readLine(fmt.Sprintf("Working directory [~/Dev/%s]: ", name))
+	if directory == "" {
+		directory = "~/Dev/" + name
+	}
+
+	fmt.Println()
+	fmt.Println("Skill patterns (enter one per line, empty line to finish):")
+	fmt.Println(`  Examples: "gws:*", "superpowers:*", "local:*", "*" (all)`)
+	var patterns []string
+	for {
+		p := readLine("  - ")
+		if p == "" {
+			break
+		}
+		patterns = append(patterns, p)
+	}
+	if len(patterns) == 0 {
+		patterns = []string{"*"}
+		fmt.Printf("%sℹ%s  Defaulting to all skills (\"*\")\n", ansiBlue, ansiReset)
+	}
+
+	var body strings.Builder
+	fmt.Fprintf(&body, "name: \"%s\"\n", displayName)
+	fmt.Fprintf(&body, "description: \"%s\"\n", description)
+	fmt.Fprintf(&body, "directory: \"%s\"\n", directory)
+	body.WriteString("\n")
+	body.WriteString("skills:\n")
+	for _, p := range patterns {
+		fmt.Fprintf(&body, "  - \"%s\"\n", p)
+	}
+	body.WriteString("\n")
+	body.WriteString("# agents:\n")
+	body.WriteString("#   claude:\n")
+	body.WriteString("#     model: \"claude-sonnet-4-6\"\n")
+	body.WriteString("#     permission_mode: \"plan\"\n")
+	body.WriteString("#     system_prompt_file: \"./CLAUDE.md\"\n")
+
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		die(err.Error())
+	}
+	if err := os.WriteFile(file, []byte(body.String()), 0o644); err != nil {
+		die(err.Error())
+	}
+
+	fmt.Println()
+	fmt.Printf("%s✓%s  Created environment: %s%s%s\n", ansiGreen, ansiReset, ansiBold, name, ansiReset)
+	fmt.Printf("%sℹ%s  Config: %s%s%s\n", ansiBlue, ansiReset, ansiDim, file, ansiReset)
+	fmt.Printf("  Edit:     %sai-env edit %s%s\n", ansiCyan, name, ansiReset)
+	fmt.Printf("  Preview:  %sai-env activate %s --dry-run%s\n", ansiCyan, name, ansiReset)
+	fmt.Printf("  Activate: %sai-env activate %s%s\n", ansiCyan, name, ansiReset)
+}
+
+// cmdInit mirrors bash cmd_init: idempotent filesystem setup (config dirs,
+// skill store, backups, migrations, ~/.claude/skills symlink, auto-detected
+// plugin sources, example env). Delegates the final `cmd_scan` step to the
+// legacy bash script because scan hasn't been ported yet.
+func cmdInit(args []string) {
+	fmt.Printf("%sInitializing ai-env skill profile manager...%s\n\n", ansiBold, ansiReset)
+
+	home := os.Getenv("HOME")
+	if home == "" {
+		h, _ := os.UserHomeDir()
+		home = h
+	}
+	configDir := config.Dir()
+	envDir := config.EnvDir()
+	skillStore := skills.Store()
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	agentSkills := filepath.Join(home, ".agents", "skills")
+	sourcesFile := filepath.Join(configDir, "sources.yaml")
+
+	// 1. Create config directories.
+	_ = os.MkdirAll(configDir, 0o755)
+	_ = os.MkdirAll(envDir, 0o755)
+	_ = os.MkdirAll(skillStore, 0o755)
+	fmt.Printf("%s✓%s  Config directory: %s\n", ansiGreen, ansiReset, configDir)
+	fmt.Printf("%s✓%s  Environments: %s\n", ansiGreen, ansiReset, envDir)
+	fmt.Printf("%s✓%s  Skill store: %s\n", ansiGreen, ansiReset, skillStore)
+
+	// 2. Backup existing skill directories (only if non-empty).
+	date := time.Now().Format("2006-01-02")
+	for _, d := range []string{claudeSkills, agentSkills} {
+		info, err := os.Stat(d)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		entries, err := os.ReadDir(d)
+		if err != nil || len(entries) == 0 {
+			continue
+		}
+		backup := d + ".bak." + date
+		if _, err := os.Stat(backup); err == nil {
+			fmt.Printf("%sℹ%s  Backup already exists: %s\n", ansiBlue, ansiReset, backup)
+			continue
+		}
+		// `cp -a` preserves attrs; use an external cp to keep semantics identical.
+		cmd := exec.Command("cp", "-a", d, backup)
+		if cmd.Run() == nil {
+			fmt.Printf("%s✓%s  Backed up %s to %s\n", ansiGreen, ansiReset, d, backup)
+		}
+	}
+
+	// 3. Migrate bare skills from ~/.claude/skills + ~/.agents/skills → store.
+	migrated := 0
+	for _, src := range []string{claudeSkills, agentSkills} {
+		info, err := os.Stat(src)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			full := filepath.Join(src, e.Name())
+			li, err := os.Lstat(full)
+			if err != nil {
+				continue
+			}
+			if li.Mode()&os.ModeSymlink != 0 {
+				continue // skip symlinks (already managed)
+			}
+			base := e.Name()
+			if !li.IsDir() && strings.HasSuffix(base, ".md") {
+				// Bare .md — wrap into <name>/SKILL.md.
+				skillName := strings.TrimSuffix(base, ".md")
+				skillDir := filepath.Join(skillStore, skillName)
+				if _, err := os.Stat(skillDir); err == nil {
+					continue
+				}
+				if err := os.MkdirAll(skillDir, 0o755); err != nil {
+					continue
+				}
+				data, err := os.ReadFile(full)
+				if err != nil {
+					continue
+				}
+				if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), data, 0o644); err != nil {
+					continue
+				}
+				_ = os.Remove(full)
+				fmt.Printf("%sℹ%s  Migrated file: %s -> %s/SKILL.md (from %s)\n", ansiBlue, ansiReset, base, skillName, src)
+				migrated++
+			} else if li.IsDir() {
+				target := filepath.Join(skillStore, base)
+				if _, err := os.Stat(target); err == nil {
+					continue
+				}
+				if err := os.Rename(full, target); err != nil {
+					continue
+				}
+				fmt.Printf("%sℹ%s  Migrated dir: %s (from %s)\n", ansiBlue, ansiReset, base, src)
+				migrated++
+			}
+		}
+	}
+	if migrated > 0 {
+		fmt.Printf("%s✓%s  Migrated %d items to skill store\n", ansiGreen, ansiReset, migrated)
+	} else {
+		fmt.Printf("%sℹ%s  No bare files/dirs to migrate\n", ansiBlue, ansiReset)
+	}
+
+	// 3b. Ensure ~/.claude/skills is a symlink to ~/.agents/skills.
+	ensureClaudeSkillsSymlink(claudeSkills, agentSkills)
+	fmt.Printf("%s✓%s  Set up ~/.claude/skills → ~/.agents/skills\n", ansiGreen, ansiReset)
+
+	// 4. Auto-detect plugin sources (only if sources.yaml is absent).
+	if _, err := os.Stat(sourcesFile); os.IsNotExist(err) {
+		// Start file with "sources:\n".
+		f, err := os.Create(sourcesFile)
+		if err != nil {
+			die(err.Error())
+		}
+		f.WriteString("sources:\n")
+		detected := 0
+		pluginCache := filepath.Join(home, ".claude", "plugins", "cache")
+		if mktEntries, err := os.ReadDir(pluginCache); err == nil {
+			sort.Slice(mktEntries, func(i, j int) bool { return mktEntries[i].Name() < mktEntries[j].Name() })
+			for _, mkt := range mktEntries {
+				if !mkt.IsDir() {
+					continue
+				}
+				mktDir := filepath.Join(pluginCache, mkt.Name())
+				plugEntries, err := os.ReadDir(mktDir)
+				if err != nil {
+					continue
+				}
+				sort.Slice(plugEntries, func(i, j int) bool { return plugEntries[i].Name() < plugEntries[j].Name() })
+				for _, plg := range plugEntries {
+					if !plg.IsDir() {
+						continue
+					}
+					plgDir := filepath.Join(mktDir, plg.Name())
+					hasSkills := false
+					if verEntries, err := os.ReadDir(plgDir); err == nil {
+						for _, v := range verEntries {
+							if !v.IsDir() {
+								continue
+							}
+							vdir := filepath.Join(plgDir, v.Name())
+							if info, err := os.Stat(filepath.Join(vdir, "skills")); err == nil && info.IsDir() {
+								hasSkills = true
+								break
+							}
+							if info, err := os.Stat(filepath.Join(vdir, ".claude", "skills")); err == nil && info.IsDir() {
+								hasSkills = true
+								break
+							}
+						}
+					}
+					if !hasSkills {
+						continue
+					}
+					sourceName := strings.Replace(plg.Name(), "itp-engineering-", "itp-eng-", 1)
+					fmt.Fprintf(f, "  - name: \"%s\"\n    marketplace: \"%s\"\n    plugin: \"%s\"\n", sourceName, mkt.Name(), plg.Name())
+					detected++
+					fmt.Printf("%sℹ%s  Detected source: %s (%s/%s)\n", ansiBlue, ansiReset, sourceName, mkt.Name(), plg.Name())
+				}
+			}
+		}
+		f.Close()
+		if detected > 0 {
+			fmt.Printf("%s✓%s  Auto-registered %d plugin sources\n", ansiGreen, ansiReset, detected)
+		}
+		fmt.Printf("%sℹ%s  Edit sources with: %sai-env source list%s / %sai-env source add%s\n",
+			ansiBlue, ansiReset, ansiCyan, ansiReset, ansiCyan, ansiReset)
+	} else {
+		fmt.Printf("%sℹ%s  Sources file already exists: %s\n", ansiBlue, ansiReset, sourcesFile)
+	}
+
+	// 5. Create example environment if no envs exist.
+	if entries, err := os.ReadDir(envDir); err == nil && len(entries) == 0 {
+		example := filepath.Join(envDir, "example.yaml")
+		exampleBody := `name: "Example"
+description: "An example environment -- edit or delete me"
+directory: "~/projects/example"
+
+skills:
+  - "*"
+
+# agents:
+#   claude:
+#     model: "claude-sonnet-4-6"
+#     permission_mode: "plan"
+`
+		_ = os.WriteFile(example, []byte(exampleBody), 0o644)
+		fmt.Printf("%sℹ%s  Created example environment: %sai-env show example%s\n",
+			ansiBlue, ansiReset, ansiCyan, ansiReset)
+	}
+
+	// 6. Delegate the scan step to the legacy bash script. scan hasn't been
+	// ported yet, and init always follows its native setup with scan + a
+	// "Next steps" block. We run `bash legacy.sh scan` which emits scan's
+	// own stdout plus the tail block defined in cmd_init AFTER the scan.
+	// To match exactly, we call the legacy `init` command for the tail —
+	// but that would redo setup. Instead emit the fixed tail ourselves and
+	// run scan via legacy.
+	fmt.Println()
+	if err := runLegacyScan(); err != nil {
+		// Scan errors aren't fatal for init — log and continue.
+		fmt.Fprintln(os.Stderr, err)
+	}
+
+	fmt.Println()
+	fmt.Printf("%sℹ%s  Next steps:\n", ansiBlue, ansiReset)
+	fmt.Printf("  %sai-env source list%s           Review detected sources\n", ansiCyan, ansiReset)
+	fmt.Printf("  %sai-env inventory%s             See all discovered skills\n", ansiCyan, ansiReset)
+	fmt.Printf("  %sai-env create my-project%s     Create your first environment\n", ansiCyan, ansiReset)
+	fmt.Println()
+	fmt.Printf("%sℹ%s  Shell integration (add to ~/.zshrc):\n", ansiBlue, ansiReset)
+	fmt.Println()
+	fmt.Printf("  %sclaude() {\n", ansiDim)
+	fmt.Printf("    ai-env activate && command claude \"\\$@\"\n")
+	fmt.Printf("  }%s\n", ansiReset)
+}
+
+// runLegacyScan invokes the embedded bash script with `scan`, streaming stdio.
+// Doesn't os.Exit on completion (unlike legacy.Exec) so init can keep going.
+func runLegacyScan() error {
+	// Build a minimal exec via legacy — but legacy.Exec calls os.Exit, so
+	// we replicate the narrow path: just run `bash <embedded> scan`.
+	// Reach through by asking legacy to materialize + exec with no Exit.
+	return legacy.Run([]string{"scan"})
+}
+
+// ensureClaudeSkillsSymlink mirrors bash ensure_claude_skills_symlink for the
+// home case: if ~/.claude/skills is already the right symlink, no-op;
+// otherwise remove (migrating contents into ~/.agents/skills if it was a
+// real directory) and recreate as a relative symlink to "../.agents/skills".
+func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) {
+	if li, err := os.Lstat(claudeDir); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		target, _ := os.Readlink(claudeDir)
+		if target == "../.agents/skills" {
+			return
+		}
+		// Check whether it resolves to agentsDir.
+		resolved, err1 := filepath.EvalSymlinks(claudeDir)
+		absAgents, err2 := filepath.EvalSymlinks(agentsDir)
+		if err1 == nil && err2 == nil && resolved == absAgents {
+			return
+		}
+		_ = os.Remove(claudeDir)
+	}
+	if info, err := os.Stat(claudeDir); err == nil && info.IsDir() {
+		_ = os.MkdirAll(agentsDir, 0o755)
+		if entries, err := os.ReadDir(claudeDir); err == nil {
+			for _, e := range entries {
+				src := filepath.Join(claudeDir, e.Name())
+				dst := filepath.Join(agentsDir, e.Name())
+				li, err := os.Lstat(src)
+				if err != nil {
+					continue
+				}
+				if li.Mode()&os.ModeSymlink == 0 && li.IsDir() {
+					if _, err := os.Stat(dst); os.IsNotExist(err) {
+						_ = os.Rename(src, dst)
+					}
+				} else if li.Mode()&os.ModeSymlink != 0 {
+					if _, err := os.Lstat(dst); os.IsNotExist(err) {
+						target, _ := os.Readlink(src)
+						_ = os.Symlink(target, dst)
+					}
+				}
+			}
+		}
+		_ = os.RemoveAll(claudeDir)
+	}
+	_ = os.MkdirAll(filepath.Dir(claudeDir), 0o755)
+	_ = os.Symlink("../.agents/skills", claudeDir)
 }
