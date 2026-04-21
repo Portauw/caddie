@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -1581,5 +1582,178 @@ func TestActivateContract(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(projectDir, ".agents", "skills", "bravo")); err != nil {
 			t.Errorf("new skill 'bravo' not linked after second activate: %v", err)
 		}
+	})
+}
+
+// makeExportStore populates an AI_ENV_DIR's skill store with the given
+// skills. Each name becomes `skills/<name>/` containing SKILL.md (required
+// by bash's resolve pipeline) plus a content.txt file so the copy step has
+// something to move.
+func makeExportStore(t *testing.T, aiEnvDir string, names ...string) {
+	t.Helper()
+	store := filepath.Join(aiEnvDir, "skills")
+	for _, n := range names {
+		dir := filepath.Join(store, n)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(dir, "SKILL.md"), "# "+n+"\n")
+		mustWrite(t, filepath.Join(dir, "content.txt"), n+" content\n")
+	}
+}
+
+// TestExportContract verifies the native export implementation byte-matches
+// bash for the local-dir modes and error paths. S3 subtests are deferred
+// (see NOTE at bottom) because they require a live aws CLI + S3 endpoint.
+func TestExportContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	// diffPathNormalized compares two runResults after substituting per-side
+	// path variables (target dir, AI_ENV_DIR) with stable placeholders. The go
+	// and bash runs must write to independent directories, so verbatim stdout
+	// will never match — but after substitution, the structure of the output
+	// (counts, colors, ordering) must be identical.
+	diffPathNormalized := func(t *testing.T, got, want runResult, goPaths, bashPaths []string) {
+		t.Helper()
+		norm := func(s string, paths []string) string {
+			// Replace longest-first so nested paths don't leave fragments.
+			sorted := make([]string, len(paths))
+			copy(sorted, paths)
+			sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+			for i, p := range sorted {
+				// Also handle /private prefix darwin adds via realpath — bash
+				// resolves symlinks when printing real_dir, so /var/.. → /private/var/..
+				s = strings.ReplaceAll(s, p, fmt.Sprintf("<P%d>", i))
+				if strings.HasPrefix(p, "/var/") {
+					s = strings.ReplaceAll(s, "/private"+p, fmt.Sprintf("<P%d>", i))
+				}
+			}
+			return s
+		}
+		g := runResult{stdout: norm(got.stdout, goPaths), stderr: norm(got.stderr, goPaths), exitCode: got.exitCode}
+		w := runResult{stdout: norm(want.stdout, bashPaths), stderr: norm(want.stderr, bashPaths), exitCode: want.exitCode}
+		diffResult(t, g, w)
+	}
+
+	// Common fixture: two-skill store with env patterns matching both.
+	setupStore := func(t *testing.T) (a, b string) {
+		a = setupEnvDir(t)
+		b = setupEnvDir(t)
+		for _, d := range []string{a, b} {
+			makeExportStore(t, d, "foo-one", "foo-two")
+			mustWrite(t, filepath.Join(d, "environments", "demo.yaml"),
+				"skills:\n  - \"foo:*\"\n")
+		}
+		return
+	}
+
+	t.Run("dir_basic", func(t *testing.T) {
+		a, b := setupStore(t)
+		ta := filepath.Join(t.TempDir(), "out-a")
+		tb := filepath.Join(t.TempDir(), "out-b")
+		got := runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "demo", "--to", ta)
+		want := runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "demo", "--to", tb)
+		diffPathNormalized(t, got, want, []string{ta, a}, []string{tb, b})
+		// Both should have copied the two skills.
+		for _, tgt := range []string{ta, tb} {
+			for _, n := range []string{"foo-one", "foo-two"} {
+				if _, err := os.Stat(filepath.Join(tgt, n, "SKILL.md")); err != nil {
+					t.Errorf("%s/%s/SKILL.md missing: %v", tgt, n, err)
+				}
+			}
+		}
+	})
+
+	t.Run("dir_all_flag", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		makeExportStore(t, a, "foo-one", "bar-two", "baz")
+		makeExportStore(t, b, "foo-one", "bar-two", "baz")
+		ta := filepath.Join(t.TempDir(), "out-a")
+		tb := filepath.Join(t.TempDir(), "out-b")
+		got := runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "--all", "--to", ta)
+		want := runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "--all", "--to", tb)
+		diffPathNormalized(t, got, want, []string{ta, a}, []string{tb, b})
+	})
+
+	t.Run("dir_clean", func(t *testing.T) {
+		a, b := setupStore(t)
+		ta := filepath.Join(t.TempDir(), "out-a")
+		tb := filepath.Join(t.TempDir(), "out-b")
+		// Pre-populate targets with a stale directory that should be removed.
+		for _, tgt := range []string{ta, tb} {
+			if err := os.MkdirAll(filepath.Join(tgt, "stale"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			mustWrite(t, filepath.Join(tgt, "stale", "old.txt"), "old\n")
+		}
+		got := runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "demo", "--to", ta, "--clean")
+		want := runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "demo", "--to", tb, "--clean")
+		diffPathNormalized(t, got, want, []string{ta, a}, []string{tb, b})
+		for _, tgt := range []string{ta, tb} {
+			if _, err := os.Stat(filepath.Join(tgt, "stale")); !os.IsNotExist(err) {
+				t.Errorf("%s/stale should be removed: %v", tgt, err)
+			}
+		}
+	})
+
+	t.Run("dir_dry_run", func(t *testing.T) {
+		a, b := setupStore(t)
+		ta := filepath.Join(t.TempDir(), "out-a")
+		tb := filepath.Join(t.TempDir(), "out-b")
+		got := runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "demo", "--to", ta, "--dry-run")
+		want := runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "demo", "--to", tb, "--dry-run")
+		diffPathNormalized(t, got, want, []string{ta, a}, []string{tb, b})
+		// Dry run must not create the target.
+		for _, tgt := range []string{ta, tb} {
+			if _, err := os.Stat(tgt); !os.IsNotExist(err) {
+				t.Errorf("%s should not exist after dry-run: %v", tgt, err)
+			}
+		}
+	})
+
+	t.Run("no_env_no_all", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "--to", "/tmp/x"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "--to", "/tmp/x"),
+		)
+	})
+
+	t.Run("missing_to_flag", func(t *testing.T) {
+		a, b := setupStore(t)
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "demo"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "demo"),
+		)
+	})
+
+	t.Run("no_match_warns", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		// Populated store, but patterns select nothing.
+		for _, d := range []string{a, b} {
+			makeExportStore(t, d, "foo-one")
+			mustWrite(t, filepath.Join(d, "environments", "demo.yaml"),
+				"skills:\n  - \"nonexistent:*\"\n")
+		}
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "demo", "--to", "/tmp/nomatch"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "demo", "--to", "/tmp/nomatch"),
+		)
+	})
+
+	// NOTE: S3 subtests are deferred. They would require a live aws CLI plus
+	// either a real bucket or a local emulator (minio/moto). Skipping here
+	// keeps `go test` hermetic. When run with a reachable endpoint, the
+	// subtests would exercise:
+	//   - s3_basic:   export to s3:// URI, verify objects uploaded
+	//   - s3_clean:   stale prefixes removed via `aws s3 rm --recursive`
+	//   - s3_dry_run: "upload" plan lines without any aws calls
+	//   - s3_aws_env: AWS_PROFILE / AWS_ENDPOINT_URL threaded as flags
+	t.Run("s3_deferred", func(t *testing.T) {
+		t.Skip("requires aws CLI + S3 endpoint (see NOTE in source)")
 	})
 }

@@ -1,9 +1,9 @@
 // Command ai-env is the Go entry point for the ai-env tool.
 //
-// Strangler-pattern migration: subcommands listed in nativeCommands run the
-// Go implementation; everything else falls through to the embedded frozen
-// bash script. Each ported command must be byte-compatible with the bash
-// output — see tests/contract.
+// Strangler-pattern migration: the port is complete — every subcommand is
+// handled by nativeCommands. internal/legacy remains in-tree as an emergency
+// rollback escape hatch but is no longer wired into dispatch. Each native
+// handler must be byte-compatible with the frozen bash — see tests/contract.
 package main
 
 import (
@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/Portauw/ai-env/internal/config"
-	"github.com/Portauw/ai-env/internal/legacy"
+	"github.com/Portauw/ai-env/internal/export"
 	"github.com/Portauw/ai-env/internal/repos"
 	"github.com/Portauw/ai-env/internal/skills"
 	"github.com/Portauw/ai-env/internal/version"
@@ -53,6 +53,7 @@ var nativeCommands = map[string]handler{
 	"scan":      cmdScan,
 	"activate":  cmdActivate,
 	"use":       cmdActivate,
+	"export":    cmdExport,
 }
 
 // ANSI codes mirroring the bash helpers so stdout stays byte-identical.
@@ -84,11 +85,10 @@ func die(msg string) {
 
 func main() {
 	args := os.Args[1:]
+	// With export ported, every bash subcommand has a native Go handler.
+	// No command: bash printed usage; match that via the help handler.
 	if len(args) == 0 {
-		if err := legacy.Exec(args); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
+		cmdHelp(nil)
 		return
 	}
 
@@ -97,10 +97,10 @@ func main() {
 		return
 	}
 
-	if err := legacy.Exec(args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	// internal/legacy is kept in-tree as an emergency rollback escape hatch,
+	// but the normal dispatch path no longer falls through to bash — an
+	// unknown subcommand is a hard error, matching bash main()'s `die`.
+	die(fmt.Sprintf("Unknown command: %s\nRun 'ai-env --help' for usage.", args[0]))
 }
 
 func cmdVersion(_ []string) {
@@ -1616,4 +1616,100 @@ func ensureProjectGitignore(projectDir string) {
 		}
 	}
 	_ = os.WriteFile(gitignore, []byte(out.String()), 0o644)
+}
+
+// cmdExport mirrors bash cmd_export: parse flags, resolve skills via the
+// same patterns path that activate uses, then hand off to internal/export
+// for either local-dir or s3 delivery. Keeps the bash quirks:
+//   - `--clean` runs before copy (so a stale matched name still gets
+//     re-copied fresh)
+//   - missing `--to` is a usage error that includes the expected syntax
+//   - empty match set emits the "No skills matched." warning and returns 0
+func cmdExport(args []string) {
+	var (
+		name   string
+		target string
+		dryRun bool
+		clean  bool
+		all    bool
+	)
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch a {
+		case "--to":
+			if i+1 >= len(args) {
+				die("Unknown flag: --to")
+			}
+			target = args[i+1]
+			i++
+		case "--dry-run", "-n":
+			dryRun = true
+		case "--clean":
+			clean = true
+		case "--all":
+			all = true
+		default:
+			if strings.HasPrefix(a, "-") {
+				die("Unknown flag: " + a)
+			}
+			name = a
+		}
+	}
+
+	if target == "" {
+		die("Usage: ai-env export [<env>|--all] --to <dir-or-s3> [--clean] [--dry-run]")
+	}
+	if !all && name == "" {
+		die("Specify an environment name or use --all.\nUsage: ai-env export [<env>|--all] --to <target> [--clean] [--dry-run]")
+	}
+	if !all && !config.EnvExists(name) {
+		die(fmt.Sprintf("Environment '%s' not found.", name))
+	}
+
+	// Resolve patterns → matched store dirs (same logic as activate/show).
+	var patterns []string
+	if all {
+		patterns = []string{"*:*"}
+	} else {
+		patterns = config.ReadList(config.EnvFile(name), "skills")
+	}
+
+	matched, err := skills.Resolve(patterns)
+	if err != nil {
+		die(err.Error())
+	}
+
+	// Build entries with the real (symlink-resolved) directory. Matches
+	// bash's `real_path = skill_md.resolve(); real_path.parent` semantics by
+	// EvalSymlinks'ing the store dir itself — our store entries are
+	// directories (real or symlinked), not the SKILL.md file.
+	store := skills.Store()
+	var entries []export.Entry
+	for _, dir := range matched {
+		full := filepath.Join(store, dir)
+		real, err := filepath.EvalSymlinks(full)
+		if err != nil {
+			// Skip orphan symlinks — bash's python silently exits the loop
+			// if skill_md doesn't exist after resolve().
+			continue
+		}
+		entries = append(entries, export.Entry{Name: dir, RealDir: real})
+	}
+
+	if len(entries) == 0 {
+		fmt.Printf("%s⚠%s  No skills matched.\n", ansiYellow, ansiReset)
+		return
+	}
+
+	opts := export.Options{Clean: clean, DryRun: dryRun}
+	if strings.HasPrefix(target, "s3://") {
+		if err := export.S3(target, entries, opts); err != nil {
+			die(err.Error())
+		}
+		return
+	}
+	if err := export.Local(target, entries, opts); err != nil {
+		die(err.Error())
+	}
 }
