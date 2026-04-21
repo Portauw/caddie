@@ -13,58 +13,44 @@ import (
 
 	"github.com/Portauw/ai-env/internal/config"
 	"github.com/Portauw/ai-env/internal/repos"
-	"github.com/Portauw/ai-env/internal/sources"
 )
 
 // Store returns the canonical skill store path ($CONFIG_DIR/skills).
 func Store() string { return filepath.Join(config.Dir(), "skills") }
 
-// SourceType is the classification printed next to each skill in `inventory`:
-// "plugin" for symlinks into the plugin cache, "repo" for symlinks into a
-// registered repo, "local" for non-symlink directories (no marker).
+// SourceType classifies each store entry: "repo" for symlinks into a
+// registered repo, "local" for everything else (plain dirs or symlinks that
+// don't resolve into a known repo).
 type SourceType string
 
 const (
-	TypeLocal  SourceType = "local"
-	TypePlugin SourceType = "plugin"
-	TypeRepo   SourceType = "repo"
+	TypeLocal SourceType = "local"
+	TypeRepo  SourceType = "repo"
 )
 
 // Item is one resolved skill entry from the store.
 type Item struct {
-	Prefix    string     // "local", "plugin", a source name, or a repo prefix
-	Remainder string     // portion after the prefix in the display ID
-	DirName   string     // literal basename in the store
-	Type      SourceType // how the inventory classifies it
+	Prefix    string
+	Remainder string
+	DirName   string
+	Type      SourceType
 }
 
-// BuildMaps returns (source_map, repo_map) exactly like PY_PREFIX_HELPER
-// _build_maps does. source_map key is "marketplace/plugin" -> source name.
-// repo_map key is "repos/<name>" -> effective prefix (see repos.Entry.RepoName).
-func BuildMaps() (sourceMap, repoMap map[string]string, err error) {
-	srcs, err := sources.Parse()
-	if err != nil {
-		return nil, nil, err
-	}
+// BuildRepoMap returns a map of "repos/<name>" -> effective prefix
+// (see repos.Entry.RepoName) for every registered repo.
+func BuildRepoMap() (map[string]string, error) {
 	rps, err := repos.Parse()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	sourceMap = make(map[string]string)
-	repoMap = make(map[string]string)
-	for _, s := range srcs {
-		if s.Name == "" || s.Marketplace == "" || s.Plugin == "" {
-			continue
-		}
-		sourceMap[s.Marketplace+"/"+s.Plugin] = s.Name
-	}
+	out := make(map[string]string)
 	for _, r := range rps {
 		if r.Name == "" {
 			continue
 		}
-		repoMap["repos/"+r.Name] = r.RepoName()
+		out["repos/"+r.Name] = r.RepoName()
 	}
-	return sourceMap, repoMap, nil
+	return out, nil
 }
 
 // sortedKeys returns the map's keys in sorted order. Needed because Go map
@@ -80,28 +66,21 @@ func sortedKeys(m map[string]string) []string {
 	return ks
 }
 
-// resolve mirrors PY_PREFIX_HELPER._get_prefix + inventory's get_source_type
-// in a single pass. For symlinks, resolves the target once and substring-
-// matches against sourceMap (→ prefix = source name, type = plugin) then
-// repoMap (→ prefix = repo prefix, type = repo), fallback ("plugin", plugin).
-// For plain dirs, splits on first "-"; "local" if no hyphen.
-func resolve(full, dirName string, isSymlink bool, sourceMap, repoMap map[string]string) (prefix, remainder string, typ SourceType) {
+// resolve classifies one store entry. Symlinks that resolve into a registered
+// repo get the repo's prefix and TypeRepo; everything else (plain dirs, orphan
+// symlinks) is TypeLocal — "local" if there's no prefix hyphen, otherwise the
+// prefix is the portion before the first "-".
+func resolve(full, dirName string, isSymlink bool, repoMap map[string]string) (prefix, remainder string, typ SourceType) {
 	if isSymlink {
 		target, err := filepath.EvalSymlinks(full)
 		if err != nil {
 			target = full
-		}
-		for _, k := range sortedKeys(sourceMap) {
-			if strings.Contains(target, k) {
-				return sourceMap[k], dirName, TypePlugin
-			}
 		}
 		for _, k := range sortedKeys(repoMap) {
 			if strings.Contains(target, k) {
 				return repoMap[k], dirName, TypeRepo
 			}
 		}
-		return "plugin", dirName, TypePlugin
 	}
 	if i := strings.Index(dirName, "-"); i >= 0 {
 		return dirName[:i], dirName[i+1:], TypeLocal
@@ -118,7 +97,7 @@ func Scan() ([]Item, error) {
 	if err != nil {
 		return nil, err
 	}
-	sourceMap, repoMap, err := BuildMaps()
+	repoMap, err := BuildRepoMap()
 	if err != nil {
 		return nil, err
 	}
@@ -126,14 +105,13 @@ func Scan() ([]Item, error) {
 	var items []Item
 	for _, e := range entries {
 		full := filepath.Join(storeDir, e.Name())
-		// DirEntry.Type() uses the cached syscall from ReadDir — cheap.
-		// Follow symlinks before classifying as dir, matching is_dir().
+		// Follow symlinks before classifying as dir (matches python is_dir()).
 		info, err := os.Stat(full)
 		if err != nil || !info.IsDir() {
 			continue
 		}
 		isSymlink := e.Type()&os.ModeSymlink != 0
-		prefix, remainder, typ := resolve(full, e.Name(), isSymlink, sourceMap, repoMap)
+		prefix, remainder, typ := resolve(full, e.Name(), isSymlink, repoMap)
 		items = append(items, Item{
 			Prefix:    prefix,
 			Remainder: remainder,

@@ -8,7 +8,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -22,7 +21,6 @@ import (
 	"github.com/Portauw/ai-env/internal/legacy"
 	"github.com/Portauw/ai-env/internal/repos"
 	"github.com/Portauw/ai-env/internal/skills"
-	"github.com/Portauw/ai-env/internal/sources"
 	"github.com/Portauw/ai-env/internal/version"
 )
 
@@ -138,96 +136,10 @@ func cmdList(_ []string) {
 		ansiDim, ansiCyan, ansiReset, ansiDim, ansiReset)
 }
 
-func cmdSource(args []string) {
-	if len(args) == 0 {
-		die("Usage: ai-env source <list|add|remove>")
-	}
-	sub := args[0]
-	rest := args[1:]
-	switch sub {
-	case "list", "ls":
-		cmdSourceList(rest)
-	case "add":
-		cmdSourceAdd(rest)
-	case "remove", "rm":
-		cmdSourceRemove(rest)
-	default:
-		die("Unknown source command: " + sub)
-	}
-}
-
-func cmdSourceList(_ []string) {
-	path := filepath.Join(config.Dir(), "sources.yaml")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		fmt.Printf("%s⚠%s  No sources registered. Run %sai-env init%s or %sai-env source add%s.\n",
-			ansiYellow, ansiReset, ansiCyan, ansiReset, ansiCyan, ansiReset)
-		return
-	}
-	fmt.Printf("%sRegistered plugin sources:%s\n\n", ansiBold, ansiReset)
-	fmt.Printf("  %s(~/.config/ai-env/skills/ is always scanned implicitly)%s\n\n", ansiDim, ansiReset)
-
-	entries, err := sources.Parse()
-	if err != nil {
-		die(err.Error())
-	}
-	for _, e := range entries {
-		name := e.Name
-		if name == "" {
-			name = "?"
-		}
-		mkt := e.Marketplace
-		if mkt == "" {
-			mkt = "?"
-		}
-		plg := e.Plugin
-		if plg == "" {
-			plg = "?"
-		}
-		fmt.Printf("  %-20s %s/%s\n", name, mkt, plg)
-	}
-}
-
-func cmdSourceAdd(args []string) {
-	if len(args) < 3 || args[0] == "" || args[1] == "" || args[2] == "" {
-		die("Usage: ai-env source add <name> <marketplace> <plugin>\n  Example: ai-env source add superpowers superpowers-dev superpowers")
-	}
-	name, mkt, plg := args[0], args[1], args[2]
-
-	cachePath := filepath.Join(sources.PluginCacheDir(), mkt, plg)
-	if info, err := os.Stat(cachePath); err != nil || !info.IsDir() {
-		die(fmt.Sprintf("Plugin cache not found: %s\n  Available marketplaces: %s", cachePath, sources.AvailableMarketplaces()))
-	}
-
-	exists, err := sources.ExistsStrict(name)
-	if err != nil {
-		die(err.Error())
-	}
-	if exists {
-		die(fmt.Sprintf("Source '%s' already registered. Remove it first with: ai-env source remove %s", name, name))
-	}
-
-	if err := sources.Append(sources.Entry{Name: name, Marketplace: mkt, Plugin: plg}); err != nil {
-		die(err.Error())
-	}
-	fmt.Printf("%s✓%s  Registered source: %s%s%s (%s/%s)\n", ansiGreen, ansiReset, ansiBold, name, ansiReset, mkt, plg)
-}
-
-func cmdSourceRemove(args []string) {
-	if len(args) == 0 || args[0] == "" {
-		die("Usage: ai-env source remove <name>")
-	}
-	name := args[0]
-	exists, err := sources.ExistsLoose(name)
-	if err != nil {
-		die(err.Error())
-	}
-	if !exists {
-		die(fmt.Sprintf("Source '%s' not found.", name))
-	}
-	if err := sources.Remove(name); err != nil {
-		die(err.Error())
-	}
-	fmt.Printf("%s✓%s  Removed source: %s%s%s\n", ansiGreen, ansiReset, ansiBold, name, ansiReset)
+// cmdSource rejects the removed source subcommand family. Plugin sources
+// were dropped in favor of git repos as the only skill origin.
+func cmdSource(_ []string) {
+	die("`ai-env source` has been removed. Use `ai-env repo` to manage skill sources.")
 }
 
 func cmdEdit(args []string) {
@@ -530,14 +442,7 @@ func cmdInventory(args []string) {
 			if filter != "" && !strings.Contains(skillID, filter) {
 				continue
 			}
-			marker := ""
-			switch it.Type {
-			case skills.TypePlugin:
-				marker = fmt.Sprintf("  %s(plugin)%s", ansiDim, ansiReset)
-			case skills.TypeRepo:
-				marker = fmt.Sprintf("  %s(repo)%s", ansiDim, ansiReset)
-			}
-			fmt.Printf("    %s%s\n", skillID, marker)
+			fmt.Printf("    %s\n", skillID)
 		}
 		fmt.Println()
 	}
@@ -558,10 +463,7 @@ func cmdHelp(_ []string) {
 			"  ai-env <command> [arguments] [flags]\n" +
 			"\n" +
 			B + "SETUP" + R + "\n" +
-			"  " + C + "init" + R + "                        Initialize: migrate skills, detect sources, first scan\n" +
-			"  " + C + "source" + R + " list                  Show registered plugin sources\n" +
-			"  " + C + "source" + R + " add <name> <mkt> <p>  Register a plugin source\n" +
-			"  " + C + "source" + R + " remove <name>         Unregister a plugin source\n" +
+			"  " + C + "init" + R + "                        Initialize: migrate skills, first scan\n" +
 			"\n" +
 			B + "GIT REPOS" + R + "\n" +
 			"  " + C + "repo" + R + " list                    Show registered git repos + status\n" +
@@ -570,7 +472,7 @@ func cmdHelp(_ []string) {
 			"  " + C + "repo" + R + " update [name]           Pull latest changes (all or specific)\n" +
 			"\n" +
 			B + "DISCOVERY" + R + "\n" +
-			"  " + C + "scan" + R + "    [-v]                 Scan sources + repos, sync to skill store\n" +
+			"  " + C + "scan" + R + "    [-v]                 Scan repos, sync to skill store\n" +
 			"  " + C + "inventory" + R + "                    List all skills with prefix grouping\n" +
 			"\n" +
 			B + "ENVIRONMENTS" + R + "\n" +
@@ -598,11 +500,9 @@ func cmdHelp(_ []string) {
 			"\n" +
 			B + "SKILL PATTERNS" + R + "\n" +
 			"  Patterns use prefix:name format with glob wildcards:\n" +
-			"    \"gws:*\"            all gws skills\n" +
-			"    \"gws:gmail*\"       gws-gmail, gws-gmail-send, etc.\n" +
-			"    \"local:*\"          all hand-written skills (no prefix dash)\n" +
-			"    \"superpowers:*\"    all superpowers plugin skills\n" +
+			"    \"lenny:*\"          all skills from the lenny repo\n" +
 			"    \"lenny:ai-*\"       repo skills matching ai-* (e.g. ai-evals)\n" +
+			"    \"local:*\"          all hand-written skills (no prefix dash)\n" +
 			"    \"*\"                everything\n" +
 			"\n" +
 			B + "EXAMPLES" + R + "\n" +
@@ -611,7 +511,6 @@ func cmdHelp(_ []string) {
 			"  ai-env activate                          # Auto-detect profile from cwd\n" +
 			"  ai-env activate my-project               # Explicit profile activation\n" +
 			"  ai-env activate --dry-run                # Preview what would change\n" +
-			"  ai-env source add sp superpowers-dev superpowers  # Register plugin source\n" +
 			"  ai-env repo add lenny https://github.com/RefoundAI/lenny-skills  # Add git repo\n" +
 			"  ai-env inventory                         # See all available skills\n" +
 			"\n" +
@@ -635,7 +534,7 @@ func cmdHelp(_ []string) {
 			"  " + D + "<project>/.claude/skills" + R + "             Symlink to .agents/skills\n" +
 			"  " + D + "<project>/.ai-env.yaml" + R + "              Project profile binding\n" +
 			"  " + D + "~/.config/ai-env/environments/" + R + "       Environment YAML files\n" +
-			"  " + D + "~/.config/ai-env/sources.yaml" + R + "        Source + repo registry\n",
+			"  " + D + "~/.config/ai-env/sources.yaml" + R + "        Repo registry\n",
 	)
 	// Bash `$(cat << EOF)` strips trailing newlines from the heredoc body;
 	// `printf '%b\n'` then adds one. Net tail is a single "\n" — matched above.
@@ -756,7 +655,6 @@ func cmdReset(args []string) {
 	agentSkills := filepath.Join(home, ".agents", "skills")
 	claudeSkills := filepath.Join(home, ".claude", "skills")
 	skillStore := filepath.Join(config.Dir(), "skills")
-	settingsFile := filepath.Join(home, ".claude", "settings.json")
 
 	symlinkCountAgents := 0
 	storeCount := 0
@@ -780,58 +678,6 @@ func cmdReset(args []string) {
 		}
 	}
 
-	managed := []string{}
-	if info, err := os.Stat(skillStore); err == nil && info.IsDir() {
-		seen := map[string]bool{}
-		if entries, err := os.ReadDir(skillStore); err == nil {
-			sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-			for _, e := range entries {
-				full := filepath.Join(skillStore, e.Name())
-				li, err := os.Lstat(full)
-				if err != nil || li.Mode()&os.ModeSymlink == 0 {
-					continue
-				}
-				target, err := os.Readlink(full)
-				if err != nil {
-					continue
-				}
-				// Pattern: .../.claude/plugins/cache/<marketplace>/<plugin>/...
-				needle := "/.claude/plugins/cache/"
-				idx := strings.Index(target, needle)
-				if idx < 0 {
-					continue
-				}
-				rest := target[idx+len(needle):]
-				parts := strings.SplitN(rest, "/", 3)
-				if len(parts) < 2 {
-					continue
-				}
-				key := parts[1] + "@" + parts[0]
-				if !seen[key] {
-					seen[key] = true
-					managed = append(managed, key)
-				}
-			}
-		}
-	}
-
-	// Cross-reference with disabled plugins in settings.json.
-	pluginsToEnable := []string{}
-	if len(managed) > 0 {
-		if disabled, ok := readDisabledPlugins(settingsFile); ok {
-			managedSet := map[string]bool{}
-			for _, m := range managed {
-				managedSet[m] = true
-			}
-			for _, k := range disabled {
-				if managedSet[k] {
-					pluginsToEnable = append(pluginsToEnable, k)
-				}
-			}
-		}
-	}
-	enableCount := len(pluginsToEnable)
-
 	fmt.Printf("%sWill remove:%s\n", ansiBold, ansiReset)
 	fmt.Printf("  %d managed symlink(s) in ~/.agents/skills/\n", symlinkCountAgents)
 	if claudeIsSymlink {
@@ -841,18 +687,9 @@ func cmdReset(args []string) {
 	fmt.Printf("  State files (.last-scan)\n")
 	fmt.Printf("  Project-local skill symlinks (for all environments with directory: set)\n")
 	fmt.Println()
-	fmt.Printf("%sWill re-enable (plugins with skills in store):%s\n", ansiBold, ansiReset)
-	if enableCount > 0 {
-		for _, p := range pluginsToEnable {
-			fmt.Printf("  %s%s%s\n", ansiCyan, p, ansiReset)
-		}
-	} else {
-		fmt.Printf("  %s(no managed plugins to re-enable)%s\n", ansiDim, ansiReset)
-	}
-	fmt.Println()
 	fmt.Printf("%sWill keep:%s\n", ansiBold, ansiReset)
 	fmt.Printf("  Environment configs (~/.config/ai-env/environments/)\n")
-	fmt.Printf("  Source registry (~/.config/ai-env/sources.yaml)\n")
+	fmt.Printf("  Repo registry (~/.config/ai-env/sources.yaml)\n")
 	fmt.Println()
 
 	// Bash uses `echo -n "Proceed?..."; read -r confirm` here — an echo, not
@@ -937,83 +774,9 @@ func cmdReset(args []string) {
 	_ = os.Remove(filepath.Join(config.Dir(), ".last-scan"))
 	fmt.Printf("%sℹ%s  Removed state files\n", ansiBlue, ansiReset)
 
-	if enableCount > 0 {
-		if _, err := os.Stat(settingsFile); err == nil {
-			enabled := enablePlugins(settingsFile, pluginsToEnable)
-			fmt.Printf("%sℹ%s  Re-enabled %d plugin(s) in settings.json\n", ansiBlue, ansiReset, enabled)
-		}
-	}
-
 	fmt.Println()
 	fmt.Printf("%s✓%s  Reset complete. To rebuild, run: %sai-env scan && ai-env activate <env>%s\n",
 		ansiGreen, ansiReset, ansiCyan, ansiReset)
-}
-
-// readDisabledPlugins returns the list of plugin keys under enabledPlugins
-// whose value is false. Uses encoding/json. Returns (nil, false) if the file
-// can't be read/parsed (matching bash's `2>/dev/null || true`).
-func readDisabledPlugins(path string) ([]string, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, false
-	}
-	plugins, ok := doc["enabledPlugins"].(map[string]any)
-	if !ok {
-		return nil, true
-	}
-	var out []string
-	for k, v := range plugins {
-		if b, ok := v.(bool); ok && !b {
-			out = append(out, k)
-		}
-	}
-	sort.Strings(out)
-	return out, true
-}
-
-// enablePlugins flips keys in enabledPlugins from false to true. Returns
-// the count that were flipped. Writes back with 2-space indent + trailing
-// newline to match python's json.dump(indent=2) + f.write('\n').
-func enablePlugins(path string, toEnable []string) int {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return 0
-	}
-	plugins, ok := doc["enabledPlugins"].(map[string]any)
-	if !ok {
-		return 0
-	}
-	set := map[string]bool{}
-	for _, k := range toEnable {
-		set[k] = true
-	}
-	count := 0
-	for k, v := range plugins {
-		if !set[k] {
-			continue
-		}
-		if b, ok := v.(bool); ok && !b {
-			plugins[k] = true
-			count++
-		}
-	}
-	if count == 0 {
-		return 0
-	}
-	out, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return 0
-	}
-	_ = os.WriteFile(path, append(out, '\n'), 0o644)
-	return count
 }
 
 func cmdWhich(_ []string) {
@@ -1301,64 +1064,11 @@ func cmdInit(args []string) {
 	fmt.Printf("%s✓%s  Set up ~/.claude/skills → ~/.agents/skills\n", ansiGreen, ansiReset)
 
 	if _, err := os.Stat(sourcesFile); os.IsNotExist(err) {
-		// Start file with "sources:\n".
-		f, err := os.Create(sourcesFile)
-		if err != nil {
+		if err := os.WriteFile(sourcesFile, []byte("sources:\n"), 0o644); err != nil {
 			die(err.Error())
 		}
-		f.WriteString("sources:\n")
-		detected := 0
-		pluginCache := filepath.Join(home, ".claude", "plugins", "cache")
-		if mktEntries, err := os.ReadDir(pluginCache); err == nil {
-			sort.Slice(mktEntries, func(i, j int) bool { return mktEntries[i].Name() < mktEntries[j].Name() })
-			for _, mkt := range mktEntries {
-				if !mkt.IsDir() {
-					continue
-				}
-				mktDir := filepath.Join(pluginCache, mkt.Name())
-				plugEntries, err := os.ReadDir(mktDir)
-				if err != nil {
-					continue
-				}
-				sort.Slice(plugEntries, func(i, j int) bool { return plugEntries[i].Name() < plugEntries[j].Name() })
-				for _, plg := range plugEntries {
-					if !plg.IsDir() {
-						continue
-					}
-					plgDir := filepath.Join(mktDir, plg.Name())
-					hasSkills := false
-					if verEntries, err := os.ReadDir(plgDir); err == nil {
-						for _, v := range verEntries {
-							if !v.IsDir() {
-								continue
-							}
-							vdir := filepath.Join(plgDir, v.Name())
-							if info, err := os.Stat(filepath.Join(vdir, "skills")); err == nil && info.IsDir() {
-								hasSkills = true
-								break
-							}
-							if info, err := os.Stat(filepath.Join(vdir, ".claude", "skills")); err == nil && info.IsDir() {
-								hasSkills = true
-								break
-							}
-						}
-					}
-					if !hasSkills {
-						continue
-					}
-					sourceName := strings.Replace(plg.Name(), "itp-engineering-", "itp-eng-", 1)
-					fmt.Fprintf(f, "  - name: \"%s\"\n    marketplace: \"%s\"\n    plugin: \"%s\"\n", sourceName, mkt.Name(), plg.Name())
-					detected++
-					fmt.Printf("%sℹ%s  Detected source: %s (%s/%s)\n", ansiBlue, ansiReset, sourceName, mkt.Name(), plg.Name())
-				}
-			}
-		}
-		f.Close()
-		if detected > 0 {
-			fmt.Printf("%s✓%s  Auto-registered %d plugin sources\n", ansiGreen, ansiReset, detected)
-		}
-		fmt.Printf("%sℹ%s  Edit sources with: %sai-env source list%s / %sai-env source add%s\n",
-			ansiBlue, ansiReset, ansiCyan, ansiReset, ansiCyan, ansiReset)
+		fmt.Printf("%sℹ%s  Add repos with: %sai-env repo add <name> <url>%s\n",
+			ansiBlue, ansiReset, ansiCyan, ansiReset)
 	} else {
 		fmt.Printf("%sℹ%s  Sources file already exists: %s\n", ansiBlue, ansiReset, sourcesFile)
 	}
@@ -1391,7 +1101,7 @@ skills:
 
 	fmt.Println()
 	fmt.Printf("%sℹ%s  Next steps:\n", ansiBlue, ansiReset)
-	fmt.Printf("  %sai-env source list%s           Review detected sources\n", ansiCyan, ansiReset)
+	fmt.Printf("  %sai-env repo list%s             Review registered repos\n", ansiCyan, ansiReset)
 	fmt.Printf("  %sai-env inventory%s             See all discovered skills\n", ansiCyan, ansiReset)
 	fmt.Printf("  %sai-env create my-project%s     Create your first environment\n", ansiCyan, ansiReset)
 	fmt.Println()

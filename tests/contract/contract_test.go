@@ -297,110 +297,22 @@ func TestListContract(t *testing.T) {
 	})
 }
 
-// TestSourceContract covers list (empty + populated), add (success + dup + missing cache),
-// remove (success + missing).
-func TestSourceContract(t *testing.T) {
+// TestSourceRejected verifies that the removed `source` subcommand dies
+// with a clear message instead of falling through to legacy. This is the
+// user-facing "plugin sources are gone" contract.
+func TestSourceRejected(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
-
-	setup := func(t *testing.T) (aiEnvDir, home string) {
-		t.Helper()
-		aiEnvDir = t.TempDir()
-		home = t.TempDir()
-		mustWrite(t, filepath.Join(home, ".claude/plugins/cache/mkt/plg/.keep"), "")
-		return
+	for _, sub := range []string{"list", "add", "remove"} {
+		t.Run(sub, func(t *testing.T) {
+			r := runWith(t, goBin, runOpts{aiEnvDir: t.TempDir()}, "source", sub)
+			if r.exitCode == 0 {
+				t.Fatalf("expected non-zero exit, got stdout=%q", r.stdout)
+			}
+			if !strings.Contains(r.stderr, "has been removed") {
+				t.Errorf("stderr should mention removal, got %q", r.stderr)
+			}
+		})
 	}
-
-	t.Run("list_empty", func(t *testing.T) {
-		aiEnvDir, home := setup(t)
-		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
-		diffResult(t, runWith(t, goBin, opts, "source", "list"), runWith(t, bashBin, opts, "source", "list"))
-	})
-
-	t.Run("list_populated", func(t *testing.T) {
-		aiEnvDir, home := setup(t)
-		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
-			"sources:\n"+
-				"  - name: \"foo\"\n    marketplace: \"m1\"\n    plugin: \"p1\"\n"+
-				"  - name: \"bar\"\n    marketplace: \"m2\"\n    plugin: \"p2\"\n")
-		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
-		diffResult(t, runWith(t, goBin, opts, "source", "list"), runWith(t, bashBin, opts, "source", "list"))
-	})
-
-	t.Run("add_success", func(t *testing.T) {
-		for _, bin := range []string{goBin, bashBin} {
-			aiEnvDir, home := setup(t)
-			opts := runOpts{aiEnvDir: aiEnvDir, home: home}
-			r := runWith(t, bin, opts, "source", "add", "foo", "mkt", "plg")
-			if r.exitCode != 0 {
-				t.Fatalf("add with %s: exit=%d stderr=%q", bin, r.exitCode, r.stderr)
-			}
-			got, _ := os.ReadFile(filepath.Join(aiEnvDir, "sources.yaml"))
-			want := "sources:\n  - name: \"foo\"\n    marketplace: \"mkt\"\n    plugin: \"plg\"\n"
-			if string(got) != want {
-				t.Errorf("%s wrote %q, want %q", bin, string(got), want)
-			}
-		}
-	})
-
-	t.Run("add_duplicate", func(t *testing.T) {
-		aiEnvDir, home := setup(t)
-		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
-			"sources:\n  - name: \"foo\"\n    marketplace: \"mkt\"\n    plugin: \"plg\"\n")
-		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
-		diffResult(t,
-			runWith(t, goBin, opts, "source", "add", "foo", "mkt", "plg"),
-			runWith(t, bashBin, opts, "source", "add", "foo", "mkt", "plg"),
-		)
-	})
-
-	t.Run("add_missing_cache", func(t *testing.T) {
-		aiEnvDir, home := setup(t)
-		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
-		got := runWith(t, goBin, opts, "source", "add", "foo", "nope", "gone")
-		want := runWith(t, bashBin, opts, "source", "add", "foo", "nope", "gone")
-		// AvailableMarketplaces listing order may vary; compare first line + exit.
-		gotLine := strings.SplitN(got.stderr, "\n", 2)[0]
-		wantLine := strings.SplitN(want.stderr, "\n", 2)[0]
-		if gotLine != wantLine {
-			t.Errorf("first stderr line mismatch\n  go:   %q\n  bash: %q", gotLine, wantLine)
-		}
-		if got.exitCode != want.exitCode {
-			t.Errorf("exit code mismatch: go=%d bash=%d", got.exitCode, want.exitCode)
-		}
-	})
-
-	t.Run("remove_success", func(t *testing.T) {
-		for _, bin := range []string{goBin, bashBin} {
-			aiEnvDir, home := setup(t)
-			mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
-				"sources:\n"+
-					"  - name: \"foo\"\n    marketplace: \"m1\"\n    plugin: \"p1\"\n"+
-					"  - name: \"bar\"\n    marketplace: \"m2\"\n    plugin: \"p2\"\n")
-			opts := runOpts{aiEnvDir: aiEnvDir, home: home}
-			r := runWith(t, bin, opts, "source", "remove", "foo")
-			if r.exitCode != 0 {
-				t.Fatalf("%s: exit=%d stderr=%q", bin, r.exitCode, r.stderr)
-			}
-			got, _ := os.ReadFile(filepath.Join(aiEnvDir, "sources.yaml"))
-			if strings.Contains(string(got), "foo") {
-				t.Errorf("%s: foo still present after remove: %q", bin, string(got))
-			}
-			if !strings.Contains(string(got), "bar") {
-				t.Errorf("%s: bar accidentally removed: %q", bin, string(got))
-			}
-		}
-	})
-
-	t.Run("remove_not_found", func(t *testing.T) {
-		aiEnvDir, home := setup(t)
-		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"), "sources:\n")
-		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
-		diffResult(t,
-			runWith(t, goBin, opts, "source", "remove", "ghost"),
-			runWith(t, bashBin, opts, "source", "remove", "ghost"),
-		)
-	})
 }
 
 // TestEditContract: edit invokes $EDITOR on the env file and prints "Updated: <name>".
@@ -820,27 +732,20 @@ func TestInventoryContract(t *testing.T) {
 		diffResult(t, runWith(t, goBin, opts, "inventory"), runWith(t, bashBin, opts, "inventory"))
 	})
 
-	t.Run("symlinks_plugin_and_repo", func(t *testing.T) {
+	t.Run("repo_symlink_and_plain_dirs", func(t *testing.T) {
+		// Go-only assertion: after dropping plugin sources, symlinks into a
+		// registered repo get the repo's prefix + "(repo)" is no longer
+		// printed; everything else (plain dirs, orphan symlinks) is TypeLocal.
 		aiEnvDir := setupEnvDir(t)
 		store := filepath.Join(aiEnvDir, "skills")
 		if err := os.MkdirAll(store, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		// Plain local skills: one hyphenated, one without.
 		for _, d := range []string{"local-foo", "standalone"} {
 			if err := os.MkdirAll(filepath.Join(store, d), 0o755); err != nil {
 				t.Fatal(err)
 			}
 		}
-		// A "plugin" symlink: target path contains "mkt/plg" (from sources).
-		pluginTarget := filepath.Join(aiEnvDir, "mkt/plg/skills/plug-skill")
-		if err := os.MkdirAll(pluginTarget, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(pluginTarget, filepath.Join(store, "plug-skill")); err != nil {
-			t.Fatal(err)
-		}
-		// A "repo" symlink: target path contains "repos/lenny".
 		repoTarget := filepath.Join(aiEnvDir, "repos/lenny/skills/lenny-thing")
 		if err := os.MkdirAll(repoTarget, 0o755); err != nil {
 			t.Fatal(err)
@@ -848,23 +753,30 @@ func TestInventoryContract(t *testing.T) {
 		if err := os.Symlink(repoTarget, filepath.Join(store, "lenny-thing")); err != nil {
 			t.Fatal(err)
 		}
-		// An unclassified symlink (no match) -> "plugin" fallback.
-		unknownTarget := filepath.Join(aiEnvDir, "somewhere/else/lonely")
-		if err := os.MkdirAll(unknownTarget, 0o755); err != nil {
+		orphanTarget := filepath.Join(aiEnvDir, "somewhere/else/lonely")
+		if err := os.MkdirAll(orphanTarget, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(unknownTarget, filepath.Join(store, "lonely")); err != nil {
+		if err := os.Symlink(orphanTarget, filepath.Join(store, "lonely")); err != nil {
 			t.Fatal(err)
 		}
-
 		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
-			"sources:\n"+
-				"  - name: \"mysrc\"\n    marketplace: \"mkt\"\n    plugin: \"plg\"\n"+
-				"repos:\n"+
-				"  - name: \"lenny\"\n    url: \"u\"\n    skills_path: \"skills\"\n    prefix: \"true\"\n")
+			"sources:\nrepos:\n  - name: \"lenny\"\n    url: \"u\"\n    skills_path: \"skills\"\n    prefix: \"true\"\n")
 
-		opts := runOpts{aiEnvDir: aiEnvDir}
-		diffResult(t, runWith(t, goBin, opts, "inventory"), runWith(t, bashBin, opts, "inventory"))
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir}, "inventory")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		for _, want := range []string{"lenny:lenny-thing", "local:foo", "local:standalone", "local:lonely"} {
+			if !strings.Contains(r.stdout, want) {
+				t.Errorf("missing %q in inventory:\n%s", want, r.stdout)
+			}
+		}
+		for _, banned := range []string{"(plugin)", "(repo)", "mysrc"} {
+			if strings.Contains(r.stdout, banned) {
+				t.Errorf("inventory still contains removed marker %q:\n%s", banned, r.stdout)
+			}
+		}
 	})
 
 	t.Run("filter_argument", func(t *testing.T) {
@@ -880,16 +792,28 @@ func TestInventoryContract(t *testing.T) {
 	})
 }
 
-// TestHelpContract: `help`, `--help`, `-h` are native — must match bash byte-for-byte.
+// TestHelpContract: `help`, `--help`, `-h` all print the Go-native help.
+// After removing plugin-source commands the help diverges from bash — so this
+// is a Go-only assertion rather than a byte-diff against the frozen bash.
 func TestHelpContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
 
 	for _, flag := range []string{"help", "--help", "-h"} {
 		t.Run(strings.TrimLeft(flag, "-"), func(t *testing.T) {
-			got := run(t, goBin, flag)
-			want := run(t, bashBin, flag)
-			diffResult(t, got, want)
+			r := run(t, goBin, flag)
+			if r.exitCode != 0 {
+				t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+			}
+			for _, must := range []string{"USAGE", "SETUP", "GIT REPOS", "ENVIRONMENTS", "ai-env repo add"} {
+				if !strings.Contains(r.stdout, must) {
+					t.Errorf("help missing %q:\n%s", must, r.stdout)
+				}
+			}
+			for _, banned := range []string{"source list", "source add", "source remove", "plugin source"} {
+				if strings.Contains(r.stdout, banned) {
+					t.Errorf("help still mentions removed %q:\n%s", banned, r.stdout)
+				}
+			}
 		})
 	}
 }
@@ -1116,40 +1040,33 @@ func TestCreateContract(t *testing.T) {
 // the user's real ~/.claude + ~/.agents untouched.
 func TestInitContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
 
 	t.Run("fresh", func(t *testing.T) {
-		a := setupEnvDir(t)
-		b := setupEnvDir(t)
-		homeA := t.TempDir()
-		homeB := t.TempDir()
-		got := runWith(t, goBin, runOpts{aiEnvDir: a, home: homeA}, "init")
-		want := runWith(t, bashBin, runOpts{aiEnvDir: b, home: homeB}, "init")
-		// Normalize AI_ENV_DIR and HOME tmpdirs in stdout for comparison.
-		norm := func(s, envDir, home string) string {
-			s = strings.ReplaceAll(s, envDir, "/X")
-			return strings.ReplaceAll(s, home, "/H")
+		// Go-only: bash init auto-detects plugin sources which we no longer
+		// do, so the diff against bash is expected. Assert the filesystem
+		// side-effects and the key stdout markers.
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "init")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
 		}
-		if norm(got.stdout, a, homeA) != norm(want.stdout, b, homeB) {
-			t.Errorf("stdout mismatch\n  go:   %q\n  bash: %q",
-				norm(got.stdout, a, homeA), norm(want.stdout, b, homeB))
-		}
-		if got.exitCode != want.exitCode {
-			t.Errorf("exit code mismatch: go=%d bash=%d", got.exitCode, want.exitCode)
-		}
-		// Both should have created the same state: sources.yaml, example env,
-		// ~/.claude/skills symlink.
 		for _, p := range []string{
-			filepath.Join(a, "sources.yaml"),
-			filepath.Join(a, "environments", "example.yaml"),
-			filepath.Join(a, "skills"),
+			filepath.Join(aiEnvDir, "sources.yaml"),
+			filepath.Join(aiEnvDir, "environments", "example.yaml"),
+			filepath.Join(aiEnvDir, "skills"),
 		} {
 			if _, err := os.Stat(p); err != nil {
-				t.Errorf("go init missing %s: %v", p, err)
+				t.Errorf("init missing %s: %v", p, err)
 			}
 		}
-		if li, err := os.Lstat(filepath.Join(homeA, ".claude", "skills")); err != nil || li.Mode()&os.ModeSymlink == 0 {
-			t.Errorf("go init didn't create ~/.claude/skills symlink: %v", err)
+		if li, err := os.Lstat(filepath.Join(home, ".claude", "skills")); err != nil || li.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("init didn't create ~/.claude/skills symlink: %v", err)
+		}
+		for _, banned := range []string{"Detected source", "Auto-registered", "plugin source"} {
+			if strings.Contains(r.stdout, banned) {
+				t.Errorf("init still references removed plugin-source flow %q:\n%s", banned, r.stdout)
+			}
 		}
 	})
 
@@ -1226,20 +1143,19 @@ func TestResetContract(t *testing.T) {
 	})
 
 	t.Run("force_idempotent_empty", func(t *testing.T) {
+		// Go-only: bash reset scans for plugin re-enables which we removed.
+		// Just assert the Go handler succeeds on an empty layout and doesn't
+		// reference plugin state.
 		a := setupEnvDir(t)
-		homeA := t.TempDir()
-		b := setupEnvDir(t)
-		homeB := t.TempDir()
-		got := runWith(t, goBin, runOpts{aiEnvDir: a, home: homeA}, "reset", "-f")
-		want := runWith(t, bashBin, runOpts{aiEnvDir: b, home: homeB}, "reset", "-f")
-		// Bash has a `[[: 0\n0: arithmetic syntax error` quirk when
-		// $plugins_to_enable is empty (grep -c . returns "0\n0"); we don't
-		// reproduce that noise. Compare stdout + exit only.
-		if got.stdout != want.stdout {
-			t.Errorf("stdout mismatch\n  go:   %q\n  bash: %q", got.stdout, want.stdout)
+		home := t.TempDir()
+		r := runWith(t, goBin, runOpts{aiEnvDir: a, home: home}, "reset", "-f")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
 		}
-		if got.exitCode != want.exitCode {
-			t.Errorf("exit code mismatch: go=%d bash=%d", got.exitCode, want.exitCode)
+		for _, banned := range []string{"re-enable", "plugin", "enabledPlugins"} {
+			if strings.Contains(r.stdout, banned) {
+				t.Errorf("reset output still mentions plugins %q:\n%s", banned, r.stdout)
+			}
 		}
 	})
 
@@ -1275,16 +1191,18 @@ func TestResetContract(t *testing.T) {
 		}
 	})
 
-	t.Run("force_stdout_parity_seeded", func(t *testing.T) {
-		a, homeA := setup(t)
-		b, homeB := setup(t)
-		got := runWith(t, goBin, runOpts{aiEnvDir: a, home: homeA}, "reset", "-f")
-		want := runWith(t, bashBin, runOpts{aiEnvDir: b, home: homeB}, "reset", "-f")
-		if got.stdout != want.stdout {
-			t.Errorf("stdout mismatch\n  go:   %q\n  bash: %q", got.stdout, want.stdout)
+	t.Run("force_seeded_cleanup", func(t *testing.T) {
+		// Go-only: verify reset -f cleans the seeded managed layout end-to-end.
+		aiEnvDir, home := setup(t)
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "reset", "-f")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
 		}
-		if got.exitCode != want.exitCode {
-			t.Errorf("exit code mismatch: go=%d bash=%d", got.exitCode, want.exitCode)
+		if _, err := os.Stat(filepath.Join(aiEnvDir, "skills")); !os.IsNotExist(err) {
+			t.Errorf("skill store not removed: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(home, ".agents", "skills", "linked-skill")); !os.IsNotExist(err) {
+			t.Errorf("managed symlink not cleaned: %v", err)
 		}
 	})
 }
