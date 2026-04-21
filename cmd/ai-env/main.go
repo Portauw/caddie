@@ -383,34 +383,29 @@ func cmdRepoAdd(args []string) {
 		skillsPath = args[2]
 	}
 
-	// Check for duplicate name only when a repos: section already exists.
-	hasRepos, err := repos.HasReposSection()
+	// repos.Exists already returns false for a missing file or missing
+	// `repos:` section, so no pre-check is needed.
+	exists, err := repos.Exists(name)
 	if err != nil {
 		die(err.Error())
 	}
-	if hasRepos {
-		exists, err := repos.Exists(name)
-		if err != nil {
-			die(err.Error())
-		}
-		if exists {
-			die(fmt.Sprintf("Repo '%s' already registered. Remove it first with: ai-env repo remove %s", name, name))
-		}
+	if exists {
+		die(fmt.Sprintf("Repo '%s' already registered. Remove it first with: ai-env repo remove %s", name, name))
 	}
 
-	if err := repos.Append(name, url, skillsPath); err != nil {
+	if err := repos.Append(repos.Entry{Name: name, URL: url, SkillsPath: skillsPath}); err != nil {
 		die(err.Error())
 	}
 
-	// Clone the repo. Bash only clones when $REPOS_DIR/$name does not exist.
 	if err := os.MkdirAll(repos.Dir(), 0o755); err != nil {
 		die(err.Error())
 	}
 	repoDir := filepath.Join(repos.Dir(), name)
+	// Bash only clones when $REPOS_DIR/$name doesn't exist — match that.
 	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
 		fmt.Printf("%sℹ%s  Cloning %s...\n", ansiBlue, ansiReset, url)
 		clone := exec.Command("git", "clone", "--depth", "1", url, repoDir)
-		// Bash redirects stderr to /dev/null; we do the same (suppress git noise).
+		// Stderr intentionally dropped to match bash's 2>/dev/null.
 		if err := clone.Run(); err == nil {
 			skillCount := 0
 			skillsDir := filepath.Join(repoDir, skillsPath)
@@ -459,7 +454,6 @@ func cmdRepoRemove(args []string) {
 		die(err.Error())
 	}
 
-	// Clean symlinks in the skill store that point into this repo's checkout.
 	removed := 0
 	store := skills.Store()
 	repoDir := filepath.Join(repos.Dir(), name)
@@ -483,7 +477,6 @@ func cmdRepoRemove(args []string) {
 		}
 	}
 
-	// Remove cloned repo directory.
 	if info, err := os.Stat(repoDir); err == nil && info.IsDir() {
 		if err := os.RemoveAll(repoDir); err != nil {
 			die(err.Error())

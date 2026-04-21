@@ -5,6 +5,7 @@ package repos
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -165,7 +166,7 @@ func Exists(name string) (bool, error) {
 // Append adds a new repo entry to sources.yaml. Creates the file with
 // `sources:` header if missing, and appends a `repos:` header section if
 // absent. Byte-compatible with the bash HEREDOC.
-func Append(name, url, skillsPath string) error {
+func Append(e Entry) error {
 	path := File()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -189,7 +190,7 @@ func Append(name, url, skillsPath string) error {
 			return err
 		}
 	}
-	_, err = f.WriteString("  - name: \"" + name + "\"\n    url: \"" + url + "\"\n    skills_path: \"" + skillsPath + "\"\n")
+	_, err = fmt.Fprintf(f, "  - name: \"%s\"\n    url: \"%s\"\n    skills_path: \"%s\"\n", e.Name, e.URL, e.SkillsPath)
 	return err
 }
 
