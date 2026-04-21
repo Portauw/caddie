@@ -571,6 +571,169 @@ func TestCloneContract(t *testing.T) {
 	})
 }
 
+// TestRepoListContract: native `repo list` must match bash across empty (no
+// sources file), no-repos-section, single, and multi-repo fixtures. Status
+// column depends on whether `repo_dir/.git` exists; we skip the status path
+// since neither impl clones, so both emit `(not cloned)`.
+func TestRepoListContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	t.Run("no_sources_file", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "repo", "list"), runWith(t, bashBin, opts, "repo", "list"))
+	})
+
+	t.Run("sources_without_repos_section", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+			"sources:\n  - name: \"x\"\n    marketplace: \"m\"\n    plugin: \"p\"\n")
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "repo", "list"), runWith(t, bashBin, opts, "repo", "list"))
+	})
+
+	t.Run("single_repo", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+			"sources:\nrepos:\n  - name: \"lenny\"\n    url: \"https://example.com/lenny\"\n    skills_path: \"skills\"\n    prefix: \"true\"\n")
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "repo", "list"), runWith(t, bashBin, opts, "repo", "list"))
+	})
+
+	t.Run("multi_repo_prefix_variants", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		// Four prefix variants: explicit, true, false, (absent).
+		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+			"repos:\n"+
+				"  - name: \"alpha\"\n    url: \"u1\"\n    skills_path: \"skills\"\n    prefix: \"custom\"\n"+
+				"  - name: \"bravo\"\n    url: \"u2\"\n    skills_path: \"s\"\n    prefix: \"true\"\n"+
+				"  - name: \"charlie\"\n    url: \"u3\"\n    skills_path: \"skills\"\n    prefix: \"false\"\n"+
+				"  - name: \"delta\"\n    url: \"u4\"\n    skills_path: \"skills\"\n")
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "repo", "list"), runWith(t, bashBin, opts, "repo", "list"))
+	})
+
+	t.Run("ls_alias", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+			"repos:\n  - name: \"alpha\"\n    url: \"u1\"\n    skills_path: \"skills\"\n    prefix: \"true\"\n")
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "repo", "ls"), runWith(t, bashBin, opts, "repo", "ls"))
+	})
+}
+
+// TestRepoAddFallthrough: `repo add` is NOT ported natively — the Go binary
+// must delegate to the frozen bash script. We assert that Go-vs-bash produce
+// identical output for an invocation that hits the bash error path.
+func TestRepoAddFallthrough(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	t.Run("missing_args", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "repo", "add"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "repo", "add"),
+		)
+	})
+}
+
+// TestInventoryContract: native `inventory` must match bash across an empty
+// store, mixed-prefix plain dirs, and dirs + symlinks that resolve to the
+// sources/repos cache (to exercise plugin/repo classification).
+func TestInventoryContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	t.Run("no_store", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "inventory"), runWith(t, bashBin, opts, "inventory"))
+	})
+
+	t.Run("empty_store", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		if err := os.MkdirAll(filepath.Join(aiEnvDir, "skills"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "inventory"), runWith(t, bashBin, opts, "inventory"))
+	})
+
+	t.Run("mixed_plain_dirs", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		store := filepath.Join(aiEnvDir, "skills")
+		for _, d := range []string{"foo-bar", "foo-baz", "standalone", "other-thing"} {
+			if err := os.MkdirAll(filepath.Join(store, d), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "inventory"), runWith(t, bashBin, opts, "inventory"))
+	})
+
+	t.Run("symlinks_plugin_and_repo", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		store := filepath.Join(aiEnvDir, "skills")
+		if err := os.MkdirAll(store, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Plain local skills: one hyphenated, one without.
+		for _, d := range []string{"local-foo", "standalone"} {
+			if err := os.MkdirAll(filepath.Join(store, d), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// A "plugin" symlink: target path contains "mkt/plg" (from sources).
+		pluginTarget := filepath.Join(aiEnvDir, "mkt/plg/skills/plug-skill")
+		if err := os.MkdirAll(pluginTarget, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(pluginTarget, filepath.Join(store, "plug-skill")); err != nil {
+			t.Fatal(err)
+		}
+		// A "repo" symlink: target path contains "repos/lenny".
+		repoTarget := filepath.Join(aiEnvDir, "repos/lenny/skills/lenny-thing")
+		if err := os.MkdirAll(repoTarget, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(repoTarget, filepath.Join(store, "lenny-thing")); err != nil {
+			t.Fatal(err)
+		}
+		// An unclassified symlink (no match) -> "plugin" fallback.
+		unknownTarget := filepath.Join(aiEnvDir, "somewhere/else/lonely")
+		if err := os.MkdirAll(unknownTarget, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(unknownTarget, filepath.Join(store, "lonely")); err != nil {
+			t.Fatal(err)
+		}
+
+		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+			"sources:\n"+
+				"  - name: \"mysrc\"\n    marketplace: \"mkt\"\n    plugin: \"plg\"\n"+
+				"repos:\n"+
+				"  - name: \"lenny\"\n    url: \"u\"\n    skills_path: \"skills\"\n    prefix: \"true\"\n")
+
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "inventory"), runWith(t, bashBin, opts, "inventory"))
+	})
+
+	t.Run("filter_argument", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		store := filepath.Join(aiEnvDir, "skills")
+		for _, d := range []string{"foo-bar", "foo-baz", "other-thing"} {
+			if err := os.MkdirAll(filepath.Join(store, d), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "inventory", "foo:"), runWith(t, bashBin, opts, "inventory", "foo:"))
+	})
+}
+
 // TestHelpFallthrough: `help` is not ported yet — the Go binary must delegate
 // to legacy and produce identical output.
 func TestHelpFallthrough(t *testing.T) {

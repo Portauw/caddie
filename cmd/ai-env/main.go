@@ -13,9 +13,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/Portauw/ai-env/internal/config"
 	"github.com/Portauw/ai-env/internal/legacy"
+	"github.com/Portauw/ai-env/internal/repos"
+	"github.com/Portauw/ai-env/internal/skills"
 	"github.com/Portauw/ai-env/internal/sources"
 	"github.com/Portauw/ai-env/internal/version"
 )
@@ -35,6 +39,8 @@ var nativeCommands = map[string]handler{
 	"rm":        cmdDelete,
 	"clone":     cmdClone,
 	"cp":        cmdClone,
+	"repo":      cmdRepo,
+	"inventory": cmdInventory,
 }
 
 // ANSI codes mirroring the bash helpers so stdout stays byte-identical.
@@ -293,6 +299,137 @@ func cmdClone(args []string) {
 	}
 	fmt.Printf("%s✓%s  Cloned: %s -> %s\n", ansiGreen, ansiReset, src, dest)
 	fmt.Printf("%sℹ%s  Edit with: %sai-env edit %s%s\n", ansiBlue, ansiReset, ansiCyan, dest, ansiReset)
+}
+
+// cmdRepo dispatches `repo <subcmd>`. Only list|ls is ported natively; every
+// other subcommand falls through to the frozen bash script so writes stay
+// funneled through the single existing implementation.
+func cmdRepo(args []string) {
+	if len(args) == 0 {
+		die("Usage: ai-env repo <list|add|remove|update>")
+	}
+	sub := args[0]
+	switch sub {
+	case "list", "ls":
+		cmdRepoList(args[1:])
+	case "add", "remove", "rm", "update":
+		// Fall through to legacy for not-yet-ported write commands.
+		if err := legacy.Exec(append([]string{"repo"}, args...)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	default:
+		die("Unknown repo command: " + sub)
+	}
+}
+
+func cmdRepoList(_ []string) {
+	sourcesFile := filepath.Join(config.Dir(), "sources.yaml")
+	if _, err := os.Stat(sourcesFile); os.IsNotExist(err) || !repos.HasReposSection() {
+		// Bash: warn "No git repos registered. Add one with: ${CYAN}ai-env repo add <name> <url>${RESET}"
+		fmt.Printf("%s⚠%s  No git repos registered. Add one with: %sai-env repo add <name> <url>%s\n",
+			ansiYellow, ansiReset, ansiCyan, ansiReset)
+		return
+	}
+	fmt.Printf("%sRegistered git repos:%s\n\n", ansiBold, ansiReset)
+
+	entries, err := repos.Parse()
+	if err != nil {
+		die(err.Error())
+	}
+	for _, e := range entries {
+		repoDir := filepath.Join(repos.Dir(), e.Name)
+		// Bash: status defaults to "(not cloned)" (dim). When .git exists,
+		// replace with "<branch>@<short_hash>" in green. Missing git calls
+		// return "?" via `|| echo "?"`.
+		status := fmt.Sprintf("%s(not cloned)%s", ansiDim, ansiReset)
+		if info, err := os.Stat(filepath.Join(repoDir, ".git")); err == nil && info.IsDir() {
+			branch := gitOutput(repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+			if branch == "" {
+				branch = "?"
+			}
+			shortHash := gitOutput(repoDir, "rev-parse", "--short", "HEAD")
+			if shortHash == "" {
+				shortHash = "?"
+			}
+			status = fmt.Sprintf("%s%s@%s%s", ansiGreen, branch, shortHash, ansiReset)
+		}
+		fmt.Printf("  %s%s%s  %s\n", ansiBold, e.Name, ansiReset, status)
+		fmt.Printf("    %s%s%s\n", ansiDim, e.URL, ansiReset)
+
+		prefixDisplay := "none"
+		if e.Prefix != "" && e.Prefix != "false" {
+			if e.Prefix == "true" {
+				prefixDisplay = e.Name + "-*"
+			} else {
+				prefixDisplay = e.Prefix + "-*"
+			}
+		}
+		fmt.Printf("    %sskills_path: %s, prefix: %s%s\n", ansiDim, e.SkillsPath, prefixDisplay, ansiReset)
+		fmt.Println("")
+	}
+}
+
+// gitOutput runs `git -C dir <args...>` and returns trimmed stdout, or ""
+// on error. Mirrors bash `$(git -C "$dir" ... 2>/dev/null)`.
+func gitOutput(dir string, args ...string) string {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func cmdInventory(args []string) {
+	filter := ""
+	if len(args) > 0 {
+		filter = args[0]
+	}
+	if !skills.StoreExists() {
+		die(fmt.Sprintf("Canonical store not found. Run %sai-env init%s first.", ansiCyan, ansiReset))
+	}
+
+	fmt.Printf("%sSkill Inventory%s (%s%s%s)\n\n", ansiBold, ansiReset, ansiDim, skills.Store(), ansiReset)
+
+	items, err := skills.Scan()
+	if err != nil {
+		die(err.Error())
+	}
+
+	// Group by prefix, preserving store sort order for item lists (python
+	// iterates sorted(store.iterdir()) and appends in order).
+	groups := map[string][]skills.Item{}
+	for _, it := range items {
+		groups[it.Prefix] = append(groups[it.Prefix], it)
+	}
+	prefixes := make([]string, 0, len(groups))
+	for k := range groups {
+		prefixes = append(prefixes, k)
+	}
+	sort.Strings(prefixes)
+
+	for _, prefix := range prefixes {
+		g := groups[prefix]
+		fmt.Printf("  \033[1m%s\033[0m (%d skills)\n", prefix, len(g))
+		for _, it := range g {
+			skillID := fmt.Sprintf("%s:%s", prefix, it.Remainder)
+			if filter != "" && !strings.Contains(skillID, filter) {
+				continue
+			}
+			marker := ""
+			switch it.Type {
+			case skills.TypePlugin:
+				marker = "  \033[2m(plugin)\033[0m"
+			case skills.TypeRepo:
+				marker = "  \033[2m(repo)\033[0m"
+			}
+			fmt.Printf("    %s%s\n", skillID, marker)
+		}
+		fmt.Println()
+	}
+
+	fmt.Printf("Total: %d skills\n", len(items))
 }
 
 func cmdWhich(_ []string) {
