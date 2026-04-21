@@ -1407,3 +1407,179 @@ func TestScanContract(t *testing.T) {
 		}
 	})
 }
+
+// setupActivateFixture creates a ready-to-activate env: ai-env dir with a
+// cloned repo + sources.yaml + env YAML binding `directory:` to projectDir.
+// Returns (goBin, aiEnvDir, home, projectDir).
+func setupActivateFixture(t *testing.T, envName, directory string, skillPatterns []string) (aiEnvDir, home, projectDir string) {
+	t.Helper()
+	aiEnvDir = setupEnvDir(t)
+	home = t.TempDir()
+	projectDir = directory
+	if projectDir == "" {
+		projectDir = t.TempDir()
+	}
+	bare := makeBareRepo(t)
+	cloneBareInto(t, bare, filepath.Join(aiEnvDir, "repos", "mine"))
+	mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+		"repos:\n  - name: \"mine\"\n    url: \""+bare+"\"\n    skills_path: \"skills\"\n")
+
+	body := "name: \"" + envName + "\"\ndirectory: \"" + projectDir + "\"\nskills:\n"
+	for _, p := range skillPatterns {
+		body += "  - \"" + p + "\"\n"
+	}
+	mustWrite(t, filepath.Join(aiEnvDir, "environments", envName+".yaml"), body)
+	return aiEnvDir, home, projectDir
+}
+
+// TestActivateContract exercises the native `activate`/`use` handler.
+// Bash parity is not required where the Go side intentionally diverges
+// (no SOURCES.md generation); those subtests assert Go's own invariants.
+func TestActivateContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+
+	t.Run("explicit_env_first_run", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "activate", "proj")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
+		}
+		link := filepath.Join(projectDir, ".agents", "skills", "alpha")
+		if li, err := os.Lstat(link); err != nil || li.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("expected skill symlink at %s: err=%v", link, err)
+		}
+		claude := filepath.Join(projectDir, ".claude", "skills")
+		if li, err := os.Lstat(claude); err != nil || li.Mode()&os.ModeSymlink == 0 {
+			t.Errorf(".claude/skills missing or not a symlink: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(projectDir, ".claude", ".ai-env-fingerprint")); err != nil {
+			t.Errorf("fingerprint not written: %v", err)
+		}
+	})
+
+	t.Run("explicit_env_idempotent_second_run", func(t *testing.T) {
+		aiEnvDir, home, _ := setupActivateFixture(t, "proj", "", []string{"*"})
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
+		_ = runWith(t, goBin, opts, "activate", "proj")
+		r := runWith(t, goBin, opts, "activate", "proj")
+		if r.exitCode != 0 {
+			t.Fatalf("second exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if !strings.Contains(r.stdout, "unchanged") {
+			t.Errorf("expected 'unchanged' on re-activate, got %q", r.stdout)
+		}
+	})
+
+	t.Run("cwd_auto_resolve", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
+		mustWrite(t, filepath.Join(projectDir, ".ai-env.yaml"), "environment: \"proj\"\n")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
+		}
+		if _, err := os.Lstat(filepath.Join(projectDir, ".agents", "skills", "alpha")); err != nil {
+			t.Errorf("expected skill symlink after auto-resolve: %v", err)
+		}
+	})
+
+	t.Run("dry_run", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "activate", "proj", "--dry-run")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if !strings.Contains(r.stdout, "Dry run") {
+			t.Errorf("expected 'Dry run' in stdout, got %q", r.stdout)
+		}
+		// No mutations allowed.
+		if _, err := os.Stat(filepath.Join(projectDir, ".agents", "skills")); !os.IsNotExist(err) {
+			t.Errorf(".agents/skills should not exist after dry-run: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(projectDir, ".claude", ".ai-env-fingerprint")); !os.IsNotExist(err) {
+			t.Errorf("fingerprint should not be written on dry-run: %v", err)
+		}
+	})
+
+	t.Run("no_env_found", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		cwd := t.TempDir()
+		// Non-terminal stdin + no envs at all → die with "No profiles found"
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: cwd, stdin: "\n"}, "activate")
+		if r.exitCode == 0 {
+			t.Errorf("expected non-zero exit, got stdout=%q", r.stdout)
+		}
+	})
+
+	t.Run("unknown_env_name", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "activate", "ghost")
+		if r.exitCode == 0 {
+			t.Errorf("expected non-zero exit for unknown env")
+		}
+		if !strings.Contains(r.stderr, "ghost") && !strings.Contains(r.stdout, "ghost") {
+			t.Errorf("expected error mentioning 'ghost', got stderr=%q stdout=%q", r.stderr, r.stdout)
+		}
+	})
+
+	t.Run("gitignore_appended_idempotent", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
+		// Init a real .git dir in project.
+		if err := os.MkdirAll(filepath.Join(projectDir, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
+		_ = runWith(t, goBin, opts, "activate", "proj")
+		_ = runWith(t, goBin, opts, "activate", "proj")
+		body, err := os.ReadFile(filepath.Join(projectDir, ".gitignore"))
+		if err != nil {
+			t.Fatalf("gitignore missing: %v", err)
+		}
+		for _, e := range []string{".claude/skills/", ".agents/skills/", ".claude/.ai-env-fingerprint"} {
+			count := strings.Count(string(body), e+"\n")
+			if count != 1 {
+				t.Errorf("entry %q appears %d times (want 1) in: %s", e, count, string(body))
+			}
+		}
+	})
+
+	t.Run("no_sources_manifest", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "activate", "proj")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d", r.exitCode)
+		}
+		if _, err := os.Stat(filepath.Join(projectDir, ".agents", "SOURCES.md")); !os.IsNotExist(err) {
+			t.Errorf(".agents/SOURCES.md should NOT exist (bash parity divergence): err=%v", err)
+		}
+	})
+
+	t.Run("fingerprint_invalidated_by_skill_change", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
+		r1 := runWith(t, goBin, opts, "activate", "proj")
+		if r1.exitCode != 0 {
+			t.Fatalf("first activate exit=%d stderr=%q", r1.exitCode, r1.stderr)
+		}
+		// Add a new skill to the store directly.
+		extra := filepath.Join(aiEnvDir, "skills", "bravo")
+		if err := os.MkdirAll(extra, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(extra, "SKILL.md"), "x")
+		// Bust scan cache so new skill is considered.
+		_ = os.Remove(filepath.Join(aiEnvDir, ".last-scan"))
+
+		r2 := runWith(t, goBin, opts, "activate", "proj")
+		if r2.exitCode != 0 {
+			t.Fatalf("second activate exit=%d stderr=%q", r2.exitCode, r2.stderr)
+		}
+		if strings.Contains(r2.stdout, "unchanged") {
+			t.Errorf("expected reconcile (not 'unchanged') after new skill added, got %q", r2.stdout)
+		}
+		if _, err := os.Lstat(filepath.Join(projectDir, ".agents", "skills", "bravo")); err != nil {
+			t.Errorf("new skill 'bravo' not linked after second activate: %v", err)
+		}
+	})
+}

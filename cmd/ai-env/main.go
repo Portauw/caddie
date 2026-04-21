@@ -51,6 +51,8 @@ var nativeCommands = map[string]handler{
 	"new":       cmdCreate,
 	"init":      cmdInit,
 	"scan":      cmdScan,
+	"activate":  cmdActivate,
+	"use":       cmdActivate,
 }
 
 // ANSI codes mirroring the bash helpers so stdout stays byte-identical.
@@ -1286,4 +1288,332 @@ func cmdScan(args []string) {
 			}
 		}
 	}
+}
+
+// expandTilde replaces a leading `~` with $HOME (bash `${var/#\~/$HOME}`).
+func expandTilde(p string) string {
+	if !strings.HasPrefix(p, "~") {
+		return p
+	}
+	home := os.Getenv("HOME")
+	if home == "" {
+		h, _ := os.UserHomeDir()
+		home = h
+	}
+	return home + strings.TrimPrefix(p, "~")
+}
+
+// cmdActivate mirrors bash cmd_activate. Resolves the target environment
+// (explicit arg, .ai-env.yaml, interactive picker), syncs repos, resolves
+// skills, fingerprints, and minimally reconciles the target .agents/skills
+// directory (+ .claude/skills symlink). Writes a fingerprint + .gitignore
+// entries for project-local targets.
+//
+// Deliberate divergence from bash: no SOURCES.md manifest is generated. The
+// .gitignore entry list keeps ".agents/SOURCES.md" so legacy files are still
+// tracked as ignored when present, but we do not create one here.
+func cmdActivate(args []string) {
+	name := ""
+	dryRun := false
+	for _, a := range args {
+		switch a {
+		case "--dry-run", "-n":
+			dryRun = true
+		default:
+			if strings.HasPrefix(a, "-") {
+				die("Unknown flag: " + a)
+			}
+			name = a
+		}
+	}
+
+	cwd, _ := os.Getwd()
+
+	// Always probe the project config so we can use it as a fallback for
+	// project_dir even when an explicit name is given.
+	projectConfig := config.FindProjectConfig(cwd)
+
+	if name == "" {
+		if projectConfig != "" {
+			if ref := config.ReadScalar(projectConfig, "environment"); ref != "" {
+				if config.EnvExists(ref) {
+					name = ref
+				} else {
+					fmt.Printf("%s⚠%s  .ai-env.yaml references unknown environment: %s\n",
+						ansiYellow, ansiReset, ref)
+				}
+			}
+		}
+		if name == "" {
+			// Fall back to the directory: matching rule.
+			if n, _, ok := config.ResolveFromCwd(cwd); ok {
+				name = n
+			}
+		}
+		if name == "" {
+			envs := config.ListEnvs()
+			if len(envs) == 0 {
+				die(fmt.Sprintf("No profiles found. Run %sai-env create <name>%s first.", ansiCyan, ansiReset))
+			}
+			base := filepath.Base(cwd)
+			fmt.Printf("%sNo profile for %s%s\n\n", ansiBold, base, ansiReset)
+			fmt.Printf("Pick an environment to use here:\n\n")
+			for i, en := range envs {
+				desc := config.ReadScalar(config.EnvFile(en), "description")
+				fmt.Printf("  %s%d%s) %s%-20s%s %s%s%s\n",
+					ansiCyan, i+1, ansiReset, ansiBold, en, ansiReset, ansiDim, desc, ansiReset)
+			}
+			fmt.Println()
+			if !isTerminal(os.Stdin) {
+				die("Invalid choice.")
+			}
+			fmt.Printf("  Choice [1-%d]: ", len(envs))
+			br := bufio.NewReader(os.Stdin)
+			line, _ := br.ReadString('\n')
+			line = strings.TrimRight(line, "\n")
+			idx := 0
+			_, err := fmt.Sscanf(line, "%d", &idx)
+			if err != nil || idx < 1 || idx > len(envs) {
+				die("Invalid choice.")
+			}
+			name = envs[idx-1]
+			// Remember the choice.
+			projectConfig = filepath.Join(cwd, ".ai-env.yaml")
+			_ = os.WriteFile(projectConfig, []byte(fmt.Sprintf("environment: \"%s\"\n", name)), 0o644)
+			fmt.Printf("%s✓%s  Created .ai-env.yaml → %s\n\n", ansiGreen, ansiReset, name)
+		}
+	}
+
+	if !config.EnvExists(name) {
+		die(fmt.Sprintf("Environment '%s' not found. Run 'ai-env list' to see available environments.", name))
+	}
+
+	file := config.EnvFile(name)
+	displayName := config.ReadScalar(file, "name")
+	directory := config.ReadScalar(file, "directory")
+	if directory != "" {
+		directory = expandTilde(directory)
+	}
+
+	projectDir := ""
+	if directory != "" {
+		projectDir = directory
+	} else if projectConfig != "" {
+		projectDir = filepath.Dir(projectConfig)
+	}
+
+	home := os.Getenv("HOME")
+	if home == "" {
+		h, _ := os.UserHomeDir()
+		home = h
+	}
+
+	var targetAgents, fingerprintDir string
+	if projectDir != "" {
+		targetAgents = filepath.Join(projectDir, ".agents", "skills")
+		fingerprintDir = filepath.Join(projectDir, ".claude")
+	} else {
+		targetAgents = filepath.Join(home, ".agents", "skills")
+		fingerprintDir = config.Dir()
+	}
+	fingerprintFile := filepath.Join(fingerprintDir, ".ai-env-fingerprint")
+
+	label := displayName
+	if label == "" {
+		label = name
+	}
+	projLabel := projectDir
+	if projLabel == "" {
+		projLabel = "global"
+	}
+	fmt.Printf("%s%s%s %s→ %s%s\n", ansiBold, label, ansiReset, ansiDim, projLabel, ansiReset)
+
+	// Repo sync step. Bash shells out to `cmd_scan` under various conditions;
+	// we just invoke the native cmdScan which handles its own mtime cache.
+	activateSyncRepos()
+
+	patterns := config.ReadList(file, "skills")
+
+	// Resolve matched skills + per-prefix counts.
+	matched, prefixSummary := resolveMatchedWithSummary(patterns)
+	skillCount := len(matched)
+
+	if dryRun {
+		fmt.Println()
+		fmt.Printf("%sDry run — would activate:%s\n\n", ansiYellow, ansiReset)
+		fmt.Printf("  Environment: %s%s%s\n", ansiBold, label, ansiReset)
+		fmt.Printf("  Project dir: %s\n", projLabel)
+		fmt.Printf("  Skills:      %d (%s)\n", skillCount, prefixSummary)
+		fmt.Println()
+		fmt.Printf("  %sWould manage:%s\n", ansiDim, ansiReset)
+		fmt.Printf("    %s%s/ (.claude/skills → symlink)%s\n", ansiDim, targetAgents, ansiReset)
+		fmt.Println()
+		fmt.Printf("  Matched skills:\n")
+		for _, s := range matched {
+			fmt.Printf("    %s\n", s)
+		}
+		return
+	}
+
+	newFP := skills.ComputeFingerprint(name, matched)
+	if data, err := os.ReadFile(fingerprintFile); err == nil {
+		old := strings.TrimRight(string(data), "\n")
+		if old == newFP {
+			fmt.Printf("%s✓%s %d skills (unchanged)\n", ansiGreen, ansiReset, skillCount)
+			return
+		}
+	}
+
+	store := skills.Store()
+	res, err := skills.ReconcileSkillDir(targetAgents, matched, store)
+	if err != nil {
+		die(err.Error())
+	}
+	totalAdded, totalRemoved := res.Added, res.Removed
+
+	if projectDir != "" {
+		ensureClaudeSkillsSymlink(filepath.Join(projectDir, ".claude", "skills"), targetAgents)
+		// Clear the global dirs when using project-local (prevent stale syms).
+		globalAgents := filepath.Join(home, ".agents", "skills")
+		_, _ = skills.ReconcileSkillDir(globalAgents, nil, store)
+		ensureClaudeSkillsSymlink(filepath.Join(home, ".claude", "skills"), globalAgents)
+		ensureProjectGitignore(projectDir)
+	} else {
+		ensureClaudeSkillsSymlink(filepath.Join(home, ".claude", "skills"), targetAgents)
+	}
+
+	_ = os.MkdirAll(filepath.Dir(fingerprintFile), 0o755)
+	_ = os.WriteFile(fingerprintFile, []byte(newFP+"\n"), 0o644)
+
+	changeDesc := ""
+	switch {
+	case totalAdded > 0 && totalRemoved > 0:
+		changeDesc = fmt.Sprintf(" (+%d added, -%d removed)", totalAdded, totalRemoved)
+	case totalAdded > 0:
+		changeDesc = fmt.Sprintf(" (+%d added)", totalAdded)
+	case totalRemoved > 0:
+		changeDesc = fmt.Sprintf(" (-%d removed)", totalRemoved)
+	}
+	fmt.Printf("%s✓%s %d skills%s\n", ansiGreen, ansiReset, skillCount, changeDesc)
+}
+
+// resolveMatchedWithSummary returns sorted matched skill dirnames and a
+// "prefix: count, prefix: count" summary mirroring bash's python block.
+func resolveMatchedWithSummary(patterns []string) ([]string, string) {
+	if len(patterns) == 0 {
+		return nil, ""
+	}
+	items, err := skills.Scan()
+	if err != nil {
+		return nil, ""
+	}
+	matchedDirs := map[string]string{} // dirname -> prefix
+	for _, it := range items {
+		id := it.SkillID()
+		for _, p := range patterns {
+			if ok, _ := filepath.Match(p, id); ok {
+				matchedDirs[it.DirName] = it.Prefix
+				break
+			}
+		}
+	}
+	dirs := make([]string, 0, len(matchedDirs))
+	counts := map[string]int{}
+	for d, p := range matchedDirs {
+		dirs = append(dirs, d)
+		counts[p]++
+	}
+	sort.Strings(dirs)
+
+	prefixes := make([]string, 0, len(counts))
+	for p := range counts {
+		prefixes = append(prefixes, p)
+	}
+	sort.Strings(prefixes)
+	parts := make([]string, 0, len(prefixes))
+	for _, p := range prefixes {
+		parts = append(parts, fmt.Sprintf("%s: %d", p, counts[p]))
+	}
+	return dirs, strings.Join(parts, ", ")
+}
+
+// activateSyncRepos is a lightweight version of bash _activate_sync_repos.
+// Bash has a 60-second mtime cache gate on .last-scan + a fetch/pull loop;
+// our native cmdScan has the same cache gate, so we just call it. Output is
+// suppressed to keep activate's stdout focused on the activation summary.
+func activateSyncRepos() {
+	// Redirect stdout of cmdScan by temporarily swapping os.Stdout.
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		cmdScan(nil)
+		return
+	}
+	os.Stdout = w
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, r)
+		close(done)
+	}()
+	defer func() {
+		_ = w.Close()
+		<-done
+		os.Stdout = orig
+	}()
+	cmdScan(nil)
+}
+
+// ensureProjectGitignore is the Go port of bash _ensure_gitignore. Appends
+// managed entries to <project>/.gitignore (idempotently) when the project
+// has a .git directory. The ".agents/SOURCES.md" entry is preserved because
+// historical installs may still have the file on disk, even though Go no
+// longer creates one.
+func ensureProjectGitignore(projectDir string) {
+	if info, err := os.Stat(filepath.Join(projectDir, ".git")); err != nil || !info.IsDir() {
+		return
+	}
+	gitignore := filepath.Join(projectDir, ".gitignore")
+	entries := []string{
+		".claude/skills/",
+		".agents/skills/",
+		".agents/SOURCES.md",
+		".claude/.ai-env-fingerprint",
+	}
+
+	var body []byte
+	if b, err := os.ReadFile(gitignore); err == nil {
+		body = b
+	}
+	existing := map[string]bool{}
+	for _, line := range strings.Split(string(body), "\n") {
+		existing[line] = true
+	}
+
+	needsUpdate := false
+	for _, e := range entries {
+		if !existing[e] {
+			needsUpdate = true
+			break
+		}
+	}
+	if !needsUpdate {
+		return
+	}
+
+	var out strings.Builder
+	out.Write(body)
+	// Mirror bash: ensure trailing newline before appending.
+	if len(body) > 0 && body[len(body)-1] != '\n' {
+		out.WriteByte('\n')
+	}
+	out.WriteByte('\n')
+	out.WriteString("# ai-env managed skill directories\n")
+	for _, e := range entries {
+		if !existing[e] {
+			out.WriteString(e)
+			out.WriteByte('\n')
+			existing[e] = true
+		}
+	}
+	_ = os.WriteFile(gitignore, []byte(out.String()), 0o644)
 }
