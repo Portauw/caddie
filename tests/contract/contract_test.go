@@ -59,6 +59,8 @@ type runOpts struct {
 	cwd      string
 	aiEnvDir string
 	home     string // overrides $HOME for the child process
+	stdin    string // piped to child process stdin
+	env      []string
 }
 
 func run(t *testing.T, bin string, args ...string) runResult {
@@ -81,7 +83,11 @@ func runWith(t *testing.T, bin string, opts runOpts, args ...string) runResult {
 	if opts.home != "" {
 		env = append(env, "HOME="+opts.home)
 	}
+	env = append(env, opts.env...)
 	cmd.Env = env
+	if opts.stdin != "" {
+		cmd.Stdin = strings.NewReader(opts.stdin)
+	}
 
 	err := cmd.Run()
 	code := 0
@@ -351,6 +357,185 @@ func TestSourceContract(t *testing.T) {
 		diffResult(t,
 			runWith(t, goBin, opts, "source", "remove", "ghost"),
 			runWith(t, bashBin, opts, "source", "remove", "ghost"),
+		)
+	})
+}
+
+// TestEditContract: edit invokes $EDITOR on the env file and prints "Updated: <name>".
+// Uses EDITOR=true (no-op) so the test doesn't hang.
+func TestEditContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	t.Run("success", func(t *testing.T) {
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir := t.TempDir()
+			os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+			envFile := filepath.Join(aiEnvDir, "environments", "myenv.yaml")
+			mustWrite(t, envFile, "skills:\n  - \"*\"\n")
+			opts := runOpts{aiEnvDir: aiEnvDir, env: []string{"EDITOR=true"}}
+			r := runWith(t, bin, opts, "edit", "myenv")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d stderr=%q", bin, r.exitCode, r.stderr)
+			}
+			if _, err := os.Stat(envFile); err != nil {
+				t.Errorf("%s: env file gone after edit: %v", bin, err)
+			}
+		}
+	})
+
+	t.Run("not_found", func(t *testing.T) {
+		aiEnvDir := t.TempDir()
+		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		opts := runOpts{aiEnvDir: aiEnvDir, env: []string{"EDITOR=true"}}
+		diffResult(t, runWith(t, goBin, opts, "edit", "ghost"), runWith(t, bashBin, opts, "edit", "ghost"))
+	})
+
+	t.Run("no_arg", func(t *testing.T) {
+		aiEnvDir := t.TempDir()
+		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		opts := runOpts{aiEnvDir: aiEnvDir, env: []string{"EDITOR=true"}}
+		diffResult(t, runWith(t, goBin, opts, "edit"), runWith(t, bashBin, opts, "edit"))
+	})
+}
+
+// TestDeleteContract: success with "y", cancel with "n", not found.
+func TestDeleteContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	setup := func(t *testing.T) (aiEnvDir, envFile string) {
+		aiEnvDir = t.TempDir()
+		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		envFile = filepath.Join(aiEnvDir, "environments", "myenv.yaml")
+		mustWrite(t, envFile, "skills:\n  - \"*\"\n")
+		return
+	}
+
+	t.Run("confirm_yes", func(t *testing.T) {
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir, envFile := setup(t)
+			opts := runOpts{aiEnvDir: aiEnvDir, stdin: "y\n"}
+			r := runWith(t, bin, opts, "delete", "myenv")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d stderr=%q stdout=%q", bin, r.exitCode, r.stderr, r.stdout)
+			}
+			if _, err := os.Stat(envFile); err == nil {
+				t.Errorf("%s: env file still exists after delete", bin)
+			}
+		}
+	})
+
+	t.Run("confirm_no", func(t *testing.T) {
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir, envFile := setup(t)
+			opts := runOpts{aiEnvDir: aiEnvDir, stdin: "n\n"}
+			r := runWith(t, bin, opts, "delete", "myenv")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d", bin, r.exitCode)
+			}
+			if _, err := os.Stat(envFile); err != nil {
+				t.Errorf("%s: env file removed despite 'n': %v", bin, err)
+			}
+		}
+	})
+
+	t.Run("compare_prompt", func(t *testing.T) {
+		a, _ := setup(t)
+		b, _ := setup(t)
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a, stdin: "y\n"}, "delete", "myenv"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b, stdin: "y\n"}, "delete", "myenv"),
+		)
+	})
+
+	t.Run("not_found", func(t *testing.T) {
+		aiEnvDir := t.TempDir()
+		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "delete", "ghost"), runWith(t, bashBin, opts, "delete", "ghost"))
+	})
+
+	t.Run("rm_alias", func(t *testing.T) {
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir, envFile := setup(t)
+			opts := runOpts{aiEnvDir: aiEnvDir, stdin: "y\n"}
+			r := runWith(t, bin, opts, "rm", "myenv")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d", bin, r.exitCode)
+			}
+			if _, err := os.Stat(envFile); err == nil {
+				t.Errorf("%s: env file still exists after rm", bin)
+			}
+		}
+	})
+}
+
+// TestCloneContract: success, src missing, dest exists.
+func TestCloneContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	t.Run("success", func(t *testing.T) {
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir := t.TempDir()
+			os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+			content := "name: \"Src\"\nskills:\n  - \"*\"\n"
+			mustWrite(t, filepath.Join(aiEnvDir, "environments", "src.yaml"), content)
+			opts := runOpts{aiEnvDir: aiEnvDir}
+			r := runWith(t, bin, opts, "clone", "src", "dst")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d stderr=%q", bin, r.exitCode, r.stderr)
+			}
+			got, _ := os.ReadFile(filepath.Join(aiEnvDir, "environments", "dst.yaml"))
+			if string(got) != content {
+				t.Errorf("%s: dest content %q want %q", bin, string(got), content)
+			}
+		}
+	})
+
+	t.Run("src_missing", func(t *testing.T) {
+		aiEnvDir := t.TempDir()
+		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "clone", "ghost", "new"), runWith(t, bashBin, opts, "clone", "ghost", "new"))
+	})
+
+	t.Run("dest_exists", func(t *testing.T) {
+		aiEnvDir := t.TempDir()
+		os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+		mustWrite(t, filepath.Join(aiEnvDir, "environments", "a.yaml"), "skills:\n  - \"*\"\n")
+		mustWrite(t, filepath.Join(aiEnvDir, "environments", "b.yaml"), "skills:\n  - \"*\"\n")
+		opts := runOpts{aiEnvDir: aiEnvDir}
+		diffResult(t, runWith(t, goBin, opts, "clone", "a", "b"), runWith(t, bashBin, opts, "clone", "a", "b"))
+	})
+
+	t.Run("cp_alias", func(t *testing.T) {
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir := t.TempDir()
+			os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755)
+			mustWrite(t, filepath.Join(aiEnvDir, "environments", "src.yaml"), "skills:\n  - \"*\"\n")
+			opts := runOpts{aiEnvDir: aiEnvDir}
+			r := runWith(t, bin, opts, "cp", "src", "dst")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d", bin, r.exitCode)
+			}
+			if _, err := os.Stat(filepath.Join(aiEnvDir, "environments", "dst.yaml")); err != nil {
+				t.Errorf("%s: dst missing: %v", bin, err)
+			}
+		}
+	})
+
+	t.Run("compare_output_success", func(t *testing.T) {
+		a := t.TempDir()
+		b := t.TempDir()
+		os.MkdirAll(filepath.Join(a, "environments"), 0o755)
+		os.MkdirAll(filepath.Join(b, "environments"), 0o755)
+		mustWrite(t, filepath.Join(a, "environments", "src.yaml"), "skills:\n  - \"*\"\n")
+		mustWrite(t, filepath.Join(b, "environments", "src.yaml"), "skills:\n  - \"*\"\n")
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "clone", "src", "dst"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "clone", "src", "dst"),
 		)
 	})
 }

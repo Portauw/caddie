@@ -7,8 +7,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/Portauw/ai-env/internal/config"
@@ -27,6 +30,11 @@ var nativeCommands = map[string]handler{
 	"list":      cmdList,
 	"ls":        cmdList,
 	"source":    cmdSource,
+	"edit":      cmdEdit,
+	"delete":    cmdDelete,
+	"rm":        cmdDelete,
+	"clone":     cmdClone,
+	"cp":        cmdClone,
 }
 
 // ANSI codes mirroring the bash helpers so stdout stays byte-identical.
@@ -40,6 +48,16 @@ const (
 	ansiRed    = "\033[0;31m"
 	ansiGreen  = "\033[0;32m"
 )
+
+// isTerminal reports whether f refers to a tty (for prompt suppression,
+// matching bash's `read -p` behavior when stdin is piped).
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
 
 func die(msg string) {
 	fmt.Fprintf(os.Stderr, "%s✗%s  %s\n", ansiRed, ansiReset, msg)
@@ -193,6 +211,90 @@ func cmdSourceRemove(args []string) {
 		die(err.Error())
 	}
 	fmt.Printf("%s✓%s  Removed source: %s%s%s\n", ansiGreen, ansiReset, ansiBold, name, ansiReset)
+}
+
+func cmdEdit(args []string) {
+	if len(args) == 0 || args[0] == "" {
+		die("Usage: ai-env edit <name>")
+	}
+	name := args[0]
+	if !config.EnvExists(name) {
+		die(fmt.Sprintf("Environment '%s' not found.", name))
+	}
+	file := config.EnvFile(name)
+
+	// Bash: `$EDITOR "$file"` — unquoted expansion so EDITOR may contain args.
+	// Use sh -c to preserve that word-splitting behavior.
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vim"
+	}
+	cmd := exec.Command("sh", "-c", editor+` "$0"`, file)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// Bash doesn't check exit — it just runs success afterward.
+		// Preserve that: fall through even if editor failed.
+	}
+	fmt.Printf("%s✓%s  Updated: %s\n", ansiGreen, ansiReset, name)
+}
+
+func cmdDelete(args []string) {
+	if len(args) == 0 || args[0] == "" {
+		die("Usage: ai-env delete <name>")
+	}
+	name := args[0]
+	if !config.EnvExists(name) {
+		die(fmt.Sprintf("Environment '%s' not found.", name))
+	}
+
+	// Bash: `read -rp "Are you sure..." -n 1 confirm; echo ""`
+	// bash's `read -p` only writes the prompt when stdin is a terminal;
+	// when stdin is piped the prompt is suppressed. Mirror that so piped
+	// tests match byte-for-byte. Then read one byte and emit a newline.
+	if isTerminal(os.Stdin) {
+		fmt.Printf("Are you sure you want to delete '%s'? [y/N] ", name)
+	}
+	one := make([]byte, 1)
+	n, _ := io.ReadFull(bufio.NewReader(os.Stdin), one)
+	fmt.Println()
+	confirm := ""
+	if n == 1 {
+		confirm = string(one)
+	}
+	if confirm != "y" && confirm != "Y" {
+		return
+	}
+
+	if err := os.Remove(config.EnvFile(name)); err != nil {
+		die(err.Error())
+	}
+	fmt.Printf("%s✓%s  Deleted: %s\n", ansiGreen, ansiReset, name)
+}
+
+func cmdClone(args []string) {
+	if len(args) < 2 || args[0] == "" || args[1] == "" {
+		die("Usage: ai-env clone <source> <destination>")
+	}
+	src, dest := args[0], args[1]
+	if !config.EnvExists(src) {
+		die(fmt.Sprintf("Source environment '%s' not found.", src))
+	}
+	if config.EnvExists(dest) {
+		die(fmt.Sprintf("Destination environment '%s' already exists.", dest))
+	}
+
+	// Bash uses `cp` which preserves content byte-for-byte. Read+write matches.
+	data, err := os.ReadFile(config.EnvFile(src))
+	if err != nil {
+		die(err.Error())
+	}
+	if err := os.WriteFile(config.EnvFile(dest), data, 0o644); err != nil {
+		die(err.Error())
+	}
+	fmt.Printf("%s✓%s  Cloned: %s -> %s\n", ansiGreen, ansiReset, src, dest)
+	fmt.Printf("%sℹ%s  Edit with: %sai-env edit %s%s\n", ansiBlue, ansiReset, ansiCyan, dest, ansiReset)
 }
 
 func cmdWhich(_ []string) {
