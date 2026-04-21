@@ -1228,9 +1228,10 @@ func cmdScan(args []string) {
 
 	localCount, total := skills.CountStore()
 	fmt.Println()
-	_ = os.WriteFile(cachePath, nil, 0o644)
-	// touch: if the file already existed the WriteFile above resets mtime; if
-	// it didn't, we just created it. Either way .last-scan is refreshed.
+	now := time.Now()
+	if err := os.Chtimes(cachePath, now, now); err != nil {
+		_ = os.WriteFile(cachePath, nil, 0o644)
+	}
 
 	fmt.Printf("%s✓%s  Scan complete: %s%d%s skills in canonical store (%d local, %d from repos)\n",
 		ansiGreen, ansiReset, ansiBold, total, ansiReset, localCount, totalRepo)
@@ -1275,7 +1276,7 @@ func cmdScan(args []string) {
 			if p == "" {
 				continue
 			}
-			if skills.EnvPatternMatches(p) == 0 {
+			if skills.PatternMatches(p) == 0 {
 				if !hasWarn {
 					fmt.Println()
 					hasWarn = true

@@ -198,3 +198,19 @@ func ResolveIDs(patterns []string) ([]string, error) {
 	sort.Strings(out)
 	return out, nil
 }
+
+// PatternMatches returns the count of store items whose DisplayID matches
+// pattern. Used by the orphaned-pattern warning in scan.
+func PatternMatches(pattern string) int {
+	items, err := Scan()
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, it := range items {
+		if matchPattern(it.DisplayID(), pattern) {
+			count++
+		}
+	}
+	return count
+}

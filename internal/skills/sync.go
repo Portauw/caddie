@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Portauw/ai-env/internal/config"
 	"github.com/Portauw/ai-env/internal/repos"
 )
 
@@ -24,21 +23,6 @@ type RepoUpdate struct {
 type Shadow struct {
 	SkillName string
 	RepoName  string
-}
-
-// SyncResult bundles everything the renderer needs from a single scan pass.
-type SyncResult struct {
-	Swept         int
-	BrokenRemoved int
-	TotalRepo     int // total skills synced from all repos
-	LocalCount    int // real dirs in the store (non-symlink)
-	Total         int // all entries in the store (dir or symlink-to-dir)
-	Updates       []RepoUpdate
-	Shadowed      []Shadow
-	// PerRepo contains (repoName, count, skillsPath) tuples in parse order for
-	// "Repo 'x': N skills from <path>/" lines. Nil entries mean the repo was
-	// warned about and skipped (not cloned / missing skills_path).
-	PerRepo []PerRepoSync
 }
 
 // PerRepoSync describes one repo's scan outcome. Warning is set when the repo
@@ -275,23 +259,3 @@ func CountStore() (local, total int) {
 	return local, total
 }
 
-// EnvPatternMatches returns the number of store items whose SkillID matches
-// the given pattern. Used for the orphaned-pattern warning.
-func EnvPatternMatches(pattern string) int {
-	items, err := Scan()
-	if err != nil {
-		return 0
-	}
-	count := 0
-	for _, it := range items {
-		id := it.Prefix + ":" + it.DirName
-		if matchPattern(id, pattern) {
-			count++
-		}
-	}
-	return count
-}
-
-// EnvDirForWarn returns config.EnvDir() — a thin re-export so main.go can
-// iterate environment YAMLs without importing config twice.
-func EnvDirForWarn() string { return config.EnvDir() }
