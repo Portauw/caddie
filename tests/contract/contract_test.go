@@ -50,7 +50,7 @@ func buildSharedBinary() (string, error) {
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 
-	src := filepath.Join(root, "ai-env")
+	src := filepath.Join(root, "ai-env-frozen")
 	dst := filepath.Join(root, "internal", "legacy", "ai-env-legacy.sh")
 	data, err := os.ReadFile(src)
 	if err != nil {
@@ -141,7 +141,7 @@ func runWith(t *testing.T, bin string, opts runOpts, args ...string) runResult {
 // implementation byte-for-byte.
 func TestVersionContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	for _, flag := range []string{"--version", "-v"} {
 		t.Run(strings.TrimLeft(flag, "-"), func(t *testing.T) {
@@ -162,7 +162,7 @@ func TestVersionContract(t *testing.T) {
 // strategies (project config, directory match, no-match).
 func TestWhichContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	setupFixture := func(t *testing.T) (aiEnvDir, projectDir string) {
 		t.Helper()
@@ -265,7 +265,7 @@ func diffResult(t *testing.T, got, want runResult) {
 // fixtures with optional name/description/skills fields.
 func TestListContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	t.Run("empty", func(t *testing.T) {
 		aiEnvDir := setupEnvDir(t)
@@ -320,7 +320,7 @@ func TestSourceRejected(t *testing.T) {
 // Uses EDITOR=true (no-op) so the test doesn't hang.
 func TestEditContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	t.Run("success", func(t *testing.T) {
 		for _, bin := range []string{goBin, bashBin} {
@@ -354,7 +354,7 @@ func TestEditContract(t *testing.T) {
 // TestDeleteContract: success with "y", cancel with "n", not found.
 func TestDeleteContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	setup := func(t *testing.T) (aiEnvDir, envFile string) {
 		aiEnvDir = setupEnvDir(t)
@@ -424,7 +424,7 @@ func TestDeleteContract(t *testing.T) {
 // TestCloneContract: success, src missing, dest exists.
 func TestCloneContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	t.Run("success", func(t *testing.T) {
 		for _, bin := range []string{goBin, bashBin} {
@@ -490,7 +490,7 @@ func TestCloneContract(t *testing.T) {
 // since neither impl clones, so both emit `(not cloned)`.
 func TestRepoListContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	t.Run("no_sources_file", func(t *testing.T) {
 		aiEnvDir := setupEnvDir(t)
@@ -572,7 +572,7 @@ func makeBareRepo(t *testing.T) string {
 // duplicate names die.
 func TestRepoAddContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	t.Run("missing_args", func(t *testing.T) {
 		a := setupEnvDir(t)
@@ -627,7 +627,7 @@ func TestRepoAddContract(t *testing.T) {
 // the checkout + sources.yaml block, not-found dies, `rm` alias works.
 func TestRepoRemoveContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	seedRegistered := func(t *testing.T, aiEnvDir, name string) {
 		t.Helper()
@@ -704,7 +704,7 @@ func TestRepoRemoveContract(t *testing.T) {
 // sources/repos cache (to exercise plugin/repo classification).
 func TestInventoryContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	t.Run("no_store", func(t *testing.T) {
 		aiEnvDir := setupEnvDir(t)
@@ -823,7 +823,7 @@ func TestHelpContract(t *testing.T) {
 // pull by name, "not found" error when name mismatches, no-repos-section dies.
 func TestRepoUpdateContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	t.Run("no_repos_section", func(t *testing.T) {
 		a := setupEnvDir(t)
@@ -911,7 +911,7 @@ func TestRepoUpdateContract(t *testing.T) {
 // empty-patterns (exercises the `0\n0` grep quirk), and missing-env.
 func TestShowContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	t.Run("populated", func(t *testing.T) {
 		aiEnvDir := setupEnvDir(t)
@@ -964,7 +964,7 @@ func TestShowContract(t *testing.T) {
 // the written YAML byte-for-byte and stdout modulo the AI_ENV_DIR path.
 func TestCreateContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	t.Run("full_input", func(t *testing.T) {
 		a := setupEnvDir(t)
@@ -1095,7 +1095,7 @@ func TestInitContract(t *testing.T) {
 // never touched.
 func TestResetContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	setup := func(t *testing.T) (aiEnvDir, home string) {
 		t.Helper()
@@ -1607,7 +1607,7 @@ func makeExportStore(t *testing.T, aiEnvDir string, names ...string) {
 // (see NOTE at bottom) because they require a live aws CLI + S3 endpoint.
 func TestExportContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env")
+	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	// diffPathNormalized compares two runResults after substituting per-side
 	// path variables (target dir, AI_ENV_DIR) with stable placeholders. The go

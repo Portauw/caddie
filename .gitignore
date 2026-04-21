@@ -11,5 +11,5 @@
 
 # Go build
 /dist/
-# Build artifact: refreshed by scripts/build.sh from ./ai-env
+# Build artifact: refreshed by scripts/build.sh from ./ai-env-frozen
 /internal/legacy/ai-env-legacy.sh

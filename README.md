@@ -1,17 +1,20 @@
 # ai-env — Skill Profile Manager
 
-ai-env manages skills across multiple sources and creates project-specific skill profiles for Claude Code and other agents. It maintains a canonical skill store, auto-detects plugin sources, and configures agent-specific skill directories via symlinks.
+ai-env manages skills from registered git repos and creates project-specific skill profiles for Claude Code and other agents. It maintains a canonical skill store and configures agent-specific skill directories via symlinks.
 
 ## Quick Install
 
-```bash
-# Copy to your PATH
-cp ai-env /usr/local/bin/ai-env
-chmod +x /usr/local/bin/ai-env
+Requires Go 1.22+ (`brew install go`).
 
-# Initialize (backs up ~/.claude/skills/, creates config directories, auto-detects sources)
+```bash
+./scripts/build.sh
+cp dist/ai-env /usr/local/bin/ai-env
+
+# Initialize (creates config directories, skill store, ~/.claude/skills symlink)
 ai-env init
 ```
+
+The repo also keeps `ai-env-frozen` — the original bash implementation, used as an escape hatch and as the parity oracle for contract tests. It is not installed by default.
 
 ## First-time Setup
 
@@ -19,12 +22,12 @@ ai-env init
 
 1. Creates `~/.config/ai-env/` with default configuration
 2. Creates `~/.config/ai-env/environments/` for your project profiles
-3. Auto-detects installed plugin sources and registers them in `~/.config/ai-env/sources.yaml`
+3. Creates an empty `~/.config/ai-env/sources.yaml` repo registry
 4. Backs up your existing `~/.claude/skills/` to `~/.claude/skills.bak.YYYY-MM-DD`
 5. Migrates any hand-written skills to `~/.agents/skills/` (canonical store)
 6. Replaces `~/.claude/skills/` with symlinks managed by ai-env
 
-After init, ai-env fully manages the skill activation pipeline.
+After init, register git repos with `ai-env repo add <name> <url>` and run `ai-env scan`.
 
 ## Usage Flow
 

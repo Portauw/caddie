@@ -1,8 +1,10 @@
 // Package legacy embeds the frozen bash implementation of ai-env and
 // executes it as a fallback for subcommands that haven't been ported to Go yet.
 //
-// The embedded script is a build-time copy of ./ai-env at the repo root.
-// scripts/build.sh refreshes internal/legacy/ai-env-legacy.sh before `go build`.
+// The embedded script is a build-time copy of ./ai-env-frozen at the repo
+// root. scripts/build.sh refreshes internal/legacy/ai-env-legacy.sh before
+// `go build`. The Go port no longer falls through to legacy, but the package
+// stays as an escape hatch.
 package legacy
 
 import (
