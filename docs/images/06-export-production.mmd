@@ -1,0 +1,14 @@
+flowchart LR
+    classDef src fill:#fff3e0,stroke:#e65100,color:#bf360c
+    classDef dst fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef prod fill:#fce4ec,stroke:#c2185b,color:#880e4f
+
+    A["📁 &lt;project&gt;/.agents/skills/<br/>(symlink tree)"]:::src
+    B["📦 ./dist/skills/<br/>(flat, real files)<br/>• superpowers-*/SKILL.md<br/>• gws-*/SKILL.md"]:::dst
+
+    C["🐳 Docker"]:::prod
+    D["☁️ Lambda"]:::prod
+    E["🔄 CI/CD"]:::prod
+
+    A -->|"ai-env export<br/>resolve + copy"| B
+    B --> C & D & E

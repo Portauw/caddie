@@ -1,0 +1,23 @@
+flowchart TB
+    classDef pile fill:#fff3cd,stroke:#8a6d3b,stroke-width:2px,color:#333
+    classDef pain fill:#f8d7da,stroke:#a94442,stroke-width:2px,color:#333
+
+    subgraph pile["🗑️  ~/.claude/skills/  (before ai-env)"]
+        direction LR
+        A["📦 brainstorming"]
+        B["📦 fastapi-review"]
+        C["📦 gmail-send"]
+        D["📦 figma-export"]
+        E["📦 jira-ticket"]
+        F["📦 react-component"]
+        G["📦 terraform-plan"]
+        H["📦 slack-summary"]
+        I["📦 ... 70 more ..."]
+    end
+
+    pile --> P1["❌ Every project sees every skill"]
+    pile --> P2["🤯 Claude picks wrong tool for the job"]
+    pile --> P3["🔁 No per-project configuration"]
+
+    class pile pile
+    class P1,P2,P3 pain
