@@ -880,19 +880,222 @@ func TestInventoryContract(t *testing.T) {
 	})
 }
 
-// TestHelpFallthrough: `help` is not ported yet — the Go binary must delegate
-// to legacy and produce identical output.
-func TestHelpFallthrough(t *testing.T) {
+// TestHelpContract: `help`, `--help`, `-h` are native — must match bash byte-for-byte.
+func TestHelpContract(t *testing.T) {
 	goBin := buildGoBinary(t)
 	bashBin := filepath.Join(repoRoot(t), "ai-env")
 
-	got := run(t, goBin, "help")
-	want := run(t, bashBin, "help")
+	for _, flag := range []string{"help", "--help", "-h"} {
+		t.Run(strings.TrimLeft(flag, "-"), func(t *testing.T) {
+			got := run(t, goBin, flag)
+			want := run(t, bashBin, flag)
+			diffResult(t, got, want)
+		})
+	}
+}
 
-	if got.stdout != want.stdout {
-		t.Errorf("stdout mismatch (len go=%d bash=%d)", len(got.stdout), len(want.stdout))
+// TestRepoUpdateContract: native `repo update` must match bash — pull all,
+// pull by name, "not found" error when name mismatches, no-repos-section dies.
+func TestRepoUpdateContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	t.Run("no_repos_section", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "repo", "update"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "repo", "update"),
+		)
+	})
+
+	t.Run("missing_sources_file", func(t *testing.T) {
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "repo", "update"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "repo", "update"),
+		)
+	})
+
+	t.Run("name_not_found", func(t *testing.T) {
+		bare := makeBareRepo(t)
+		seed := "sources:\n\nrepos:\n  - name: \"mine\"\n    url: \"" + bare + "\"\n    skills_path: \"skills\"\n"
+		a := setupEnvDir(t)
+		b := setupEnvDir(t)
+		mustWrite(t, filepath.Join(a, "sources.yaml"), seed)
+		mustWrite(t, filepath.Join(b, "sources.yaml"), seed)
+		diffResult(t,
+			runWith(t, goBin, runOpts{aiEnvDir: a}, "repo", "update", "ghost"),
+			runWith(t, bashBin, runOpts{aiEnvDir: b}, "repo", "update", "ghost"),
+		)
+	})
+
+	// For the clone-and-update paths the output includes the commit count, so
+	// we assert on exit-code + on-disk state + repos match, not stdout parity.
+	t.Run("clones_then_up_to_date", func(t *testing.T) {
+		url := makeBareRepo(t)
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir := setupEnvDir(t)
+			mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+				"sources:\n\nrepos:\n  - name: \"mine\"\n    url: \""+url+"\"\n    skills_path: \"skills\"\n")
+			opts := runOpts{aiEnvDir: aiEnvDir}
+			// First invocation clones.
+			r1 := runWith(t, bin, opts, "repo", "update", "mine")
+			if r1.exitCode != 0 {
+				t.Fatalf("%s clone: exit=%d stderr=%q stdout=%q", bin, r1.exitCode, r1.stderr, r1.stdout)
+			}
+			if _, err := os.Stat(filepath.Join(aiEnvDir, "repos", "mine", ".git")); err != nil {
+				t.Fatalf("%s: clone dir missing: %v", bin, err)
+			}
+			// Second invocation is up-to-date.
+			r2 := runWith(t, bin, opts, "repo", "update", "mine")
+			if r2.exitCode != 0 {
+				t.Fatalf("%s up-to-date: exit=%d stderr=%q stdout=%q", bin, r2.exitCode, r2.stderr, r2.stdout)
+			}
+			if !strings.Contains(r2.stdout, "already up to date") {
+				t.Errorf("%s: expected up-to-date marker, got stdout=%q", bin, r2.stdout)
+			}
+		}
+	})
+
+	t.Run("all_mode_iterates_two", func(t *testing.T) {
+		url1 := makeBareRepo(t)
+		url2 := makeBareRepo(t)
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir := setupEnvDir(t)
+			mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+				"sources:\n\nrepos:\n"+
+					"  - name: \"one\"\n    url: \""+url1+"\"\n    skills_path: \"skills\"\n"+
+					"  - name: \"two\"\n    url: \""+url2+"\"\n    skills_path: \"skills\"\n")
+			opts := runOpts{aiEnvDir: aiEnvDir}
+			r := runWith(t, bin, opts, "repo", "update")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d stderr=%q stdout=%q", bin, r.exitCode, r.stderr, r.stdout)
+			}
+			for _, n := range []string{"one", "two"} {
+				if _, err := os.Stat(filepath.Join(aiEnvDir, "repos", n, ".git")); err != nil {
+					t.Errorf("%s: %s not cloned: %v", bin, n, err)
+				}
+			}
+		}
+	})
+}
+
+// TestResetContract: native `reset` must match bash across -f success, -f with
+// nothing to clean (idempotent), confirmation 'n' cancels, confirmation 'y'
+// proceeds. HOME is overridden to a temp dir so the real user's ~/.agents is
+// never touched.
+func TestResetContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+	bashBin := filepath.Join(repoRoot(t), "ai-env")
+
+	setup := func(t *testing.T) (aiEnvDir, home string) {
+		t.Helper()
+		aiEnvDir = setupEnvDir(t)
+		home = t.TempDir()
+		// Seed a managed symlink layout: store with one real dir and one
+		// symlink, ~/.agents/skills with a managed symlink.
+		store := filepath.Join(aiEnvDir, "skills")
+		if err := os.MkdirAll(filepath.Join(store, "real-skill"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(home, "target-skill")
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(store, "linked-skill")); err != nil {
+			t.Fatal(err)
+		}
+		agents := filepath.Join(home, ".agents", "skills")
+		if err := os.MkdirAll(agents, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(agents, "linked-skill")); err != nil {
+			t.Fatal(err)
+		}
+		return
 	}
-	if got.exitCode != want.exitCode {
-		t.Errorf("exit code mismatch: go=%d bash=%d", got.exitCode, want.exitCode)
-	}
+
+	t.Run("force_success", func(t *testing.T) {
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir, home := setup(t)
+			opts := runOpts{aiEnvDir: aiEnvDir, home: home}
+			r := runWith(t, bin, opts, "reset", "-f")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d stderr=%q stdout=%q", bin, r.exitCode, r.stderr, r.stdout)
+			}
+			// Skill store must be gone.
+			if _, err := os.Stat(filepath.Join(aiEnvDir, "skills")); !os.IsNotExist(err) {
+				t.Errorf("%s: skill store still present: %v", bin, err)
+			}
+			// Managed symlink in ~/.agents/skills must be gone.
+			if _, err := os.Lstat(filepath.Join(home, ".agents", "skills", "linked-skill")); !os.IsNotExist(err) {
+				t.Errorf("%s: managed symlink still present: %v", bin, err)
+			}
+		}
+	})
+
+	t.Run("force_idempotent_empty", func(t *testing.T) {
+		a := setupEnvDir(t)
+		homeA := t.TempDir()
+		b := setupEnvDir(t)
+		homeB := t.TempDir()
+		got := runWith(t, goBin, runOpts{aiEnvDir: a, home: homeA}, "reset", "-f")
+		want := runWith(t, bashBin, runOpts{aiEnvDir: b, home: homeB}, "reset", "-f")
+		// Bash has a `[[: 0\n0: arithmetic syntax error` quirk when
+		// $plugins_to_enable is empty (grep -c . returns "0\n0"); we don't
+		// reproduce that noise. Compare stdout + exit only.
+		if got.stdout != want.stdout {
+			t.Errorf("stdout mismatch\n  go:   %q\n  bash: %q", got.stdout, want.stdout)
+		}
+		if got.exitCode != want.exitCode {
+			t.Errorf("exit code mismatch: go=%d bash=%d", got.exitCode, want.exitCode)
+		}
+	})
+
+	t.Run("confirm_no_cancels", func(t *testing.T) {
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir, home := setup(t)
+			opts := runOpts{aiEnvDir: aiEnvDir, home: home, stdin: "n\n"}
+			r := runWith(t, bin, opts, "reset")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d stderr=%q", bin, r.exitCode, r.stderr)
+			}
+			// Store must still exist — user said no.
+			if _, err := os.Stat(filepath.Join(aiEnvDir, "skills")); err != nil {
+				t.Errorf("%s: skill store removed despite 'n': %v", bin, err)
+			}
+			if !strings.Contains(r.stdout, "Aborted.") {
+				t.Errorf("%s: expected Aborted. in stdout, got %q", bin, r.stdout)
+			}
+		}
+	})
+
+	t.Run("confirm_yes_proceeds", func(t *testing.T) {
+		for _, bin := range []string{goBin, bashBin} {
+			aiEnvDir, home := setup(t)
+			opts := runOpts{aiEnvDir: aiEnvDir, home: home, stdin: "y\n"}
+			r := runWith(t, bin, opts, "reset")
+			if r.exitCode != 0 {
+				t.Fatalf("%s: exit=%d stderr=%q stdout=%q", bin, r.exitCode, r.stderr, r.stdout)
+			}
+			if _, err := os.Stat(filepath.Join(aiEnvDir, "skills")); !os.IsNotExist(err) {
+				t.Errorf("%s: skill store not removed: %v", bin, err)
+			}
+		}
+	})
+
+	t.Run("force_stdout_parity_seeded", func(t *testing.T) {
+		a, homeA := setup(t)
+		b, homeB := setup(t)
+		got := runWith(t, goBin, runOpts{aiEnvDir: a, home: homeA}, "reset", "-f")
+		want := runWith(t, bashBin, runOpts{aiEnvDir: b, home: homeB}, "reset", "-f")
+		if got.stdout != want.stdout {
+			t.Errorf("stdout mismatch\n  go:   %q\n  bash: %q", got.stdout, want.stdout)
+		}
+		if got.exitCode != want.exitCode {
+			t.Errorf("exit code mismatch: go=%d bash=%d", got.exitCode, want.exitCode)
+		}
+	})
 }

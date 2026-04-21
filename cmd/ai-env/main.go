@@ -8,6 +8,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -23,6 +24,11 @@ import (
 	"github.com/Portauw/ai-env/internal/sources"
 	"github.com/Portauw/ai-env/internal/version"
 )
+
+// jsonUnmarshal/jsonMarshalIndent are thin wrappers so the reset handler can
+// use encoding/json without importing it in every test fixture file.
+func jsonUnmarshal(data []byte, v any) error    { return json.Unmarshal(data, v) }
+func jsonMarshalIndent(v any, p, i string) ([]byte, error) { return json.MarshalIndent(v, p, i) }
 
 type handler func(args []string)
 
@@ -41,6 +47,10 @@ var nativeCommands = map[string]handler{
 	"cp":        cmdClone,
 	"repo":      cmdRepo,
 	"inventory": cmdInventory,
+	"help":      cmdHelp,
+	"--help":    cmdHelp,
+	"-h":        cmdHelp,
+	"reset":     cmdReset,
 }
 
 // ANSI codes mirroring the bash helpers so stdout stays byte-identical.
@@ -317,11 +327,7 @@ func cmdRepo(args []string) {
 	case "remove", "rm":
 		cmdRepoRemove(args[1:])
 	case "update":
-		// Fall through to legacy: requires git pull logic, separate scope.
-		if err := legacy.Exec(append([]string{"repo"}, args...)); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
+		cmdRepoUpdate(args[1:])
 	default:
 		die("Unknown repo command: " + sub)
 	}
@@ -536,6 +542,484 @@ func cmdInventory(args []string) {
 	}
 
 	fmt.Printf("Total: %d skills\n", len(items))
+}
+
+// cmdHelp mirrors bash usage(): a static multi-section help blob with ANSI
+// color codes. Registered under help, --help, -h. Output must be byte-identical
+// to `printf '%b\n' "$(cat << EOF ... EOF)"` in bash — note the trailing
+// newline from printf's own \n and that backslash-escaped $ becomes $.
+func cmdHelp(_ []string) {
+	B, R, C, D, V := ansiBold, ansiReset, ansiCyan, ansiDim, version.Version
+	fmt.Print(
+		B + "ai-env" + R + " v" + V + " — Skill Profile Manager for AI Coding Agents\n" +
+			"\n" +
+			B + "USAGE" + R + "\n" +
+			"  ai-env <command> [arguments] [flags]\n" +
+			"\n" +
+			B + "SETUP" + R + "\n" +
+			"  " + C + "init" + R + "                        Initialize: migrate skills, detect sources, first scan\n" +
+			"  " + C + "source" + R + " list                  Show registered plugin sources\n" +
+			"  " + C + "source" + R + " add <name> <mkt> <p>  Register a plugin source\n" +
+			"  " + C + "source" + R + " remove <name>         Unregister a plugin source\n" +
+			"\n" +
+			B + "GIT REPOS" + R + "\n" +
+			"  " + C + "repo" + R + " list                    Show registered git repos + status\n" +
+			"  " + C + "repo" + R + " add <name> <url> [path] Register + clone a git skill repo\n" +
+			"  " + C + "repo" + R + " remove <name>           Unregister repo + clean up symlinks\n" +
+			"  " + C + "repo" + R + " update [name]           Pull latest changes (all or specific)\n" +
+			"\n" +
+			B + "DISCOVERY" + R + "\n" +
+			"  " + C + "scan" + R + "    [-v]                 Scan sources + repos, sync to skill store\n" +
+			"  " + C + "inventory" + R + "                    List all skills with prefix grouping\n" +
+			"\n" +
+			B + "ENVIRONMENTS" + R + "\n" +
+			"  " + C + "create" + R + "  <name>               Create a new environment interactively\n" +
+			"  " + C + "list" + R + "    (ls)                 List all environments\n" +
+			"  " + C + "show" + R + "    <name>               Show config + resolved skills\n" +
+			"  " + C + "edit" + R + "    <name>               Open environment config in $EDITOR\n" +
+			"  " + C + "activate" + R + " [name]              Resolve skills for cwd (or explicit env)\n" +
+			"  " + C + "clone" + R + "   <src> <dest>         Clone an environment config\n" +
+			"  " + C + "delete" + R + "  <name>               Delete an environment\n" +
+			"  " + C + "which" + R + "                        Show currently active environment\n" +
+			"  " + C + "reset" + R + "   [-f]                 Remove symlinks, store & re-enable plugins\n" +
+			"\n" +
+			B + "EXPORT" + R + "\n" +
+			"  " + C + "export" + R + "  <env> --to <dir>       Copy resolved skills to local directory\n" +
+			"  " + C + "export" + R + "  <env> --to s3://b/p/   Upload resolved skills to S3\n" +
+			"  " + C + "export" + R + "  --all --to <target>    Export all skills (no env filter)\n" +
+			"  Flags: --clean (remove stale), --dry-run (preview)\n" +
+			"  Env:   AWS_PROFILE, AWS_ENDPOINT_URL (for S3 targets)\n" +
+			"\n" +
+			B + "FLAGS" + R + "\n" +
+			"  -n, --dry-run             Show what would happen without executing\n" +
+			"  -v, --verbose             Show detailed output\n" +
+			"  -h, --help                Show this help message\n" +
+			"\n" +
+			B + "SKILL PATTERNS" + R + "\n" +
+			"  Patterns use prefix:name format with glob wildcards:\n" +
+			"    \"gws:*\"            all gws skills\n" +
+			"    \"gws:gmail*\"       gws-gmail, gws-gmail-send, etc.\n" +
+			"    \"local:*\"          all hand-written skills (no prefix dash)\n" +
+			"    \"superpowers:*\"    all superpowers plugin skills\n" +
+			"    \"lenny:ai-*\"       repo skills matching ai-* (e.g. ai-evals)\n" +
+			"    \"*\"                everything\n" +
+			"\n" +
+			B + "EXAMPLES" + R + "\n" +
+			"  ai-env init                              # First-time setup\n" +
+			"  ai-env create my-project                 # Create environment\n" +
+			"  ai-env activate                          # Auto-detect profile from cwd\n" +
+			"  ai-env activate my-project               # Explicit profile activation\n" +
+			"  ai-env activate --dry-run                # Preview what would change\n" +
+			"  ai-env source add sp superpowers-dev superpowers  # Register plugin source\n" +
+			"  ai-env repo add lenny https://github.com/RefoundAI/lenny-skills  # Add git repo\n" +
+			"  ai-env inventory                         # See all available skills\n" +
+			"\n" +
+			B + "SHELL INTEGRATION" + R + "\n" +
+			"  Add to ~/.zshrc (or ~/.bashrc):\n" +
+			"\n" +
+			"    claude() {\n" +
+			"      ai-env activate && command claude \"$@\"\n" +
+			"    }\n" +
+			"\n" +
+			B + "PROJECT CONFIG" + R + "\n" +
+			"  Create .ai-env.yaml in your project root:\n" +
+			"\n" +
+			"    environment: \"my-project\"\n" +
+			"\n" +
+			B + "DIRECTORIES" + R + "\n" +
+			"  " + D + "~/.config/ai-env/skills/" + R + "            Skill store (source of truth)\n" +
+			"  " + D + "~/.config/ai-env/repos/" + R + "             Cloned git repos\n" +
+			"  " + D + "~/.config/ai-env/config.yaml" + R + "        Global settings (default_environment)\n" +
+			"  " + D + "<project>/.agents/skills/" + R + "            Project skills (managed symlinks)\n" +
+			"  " + D + "<project>/.claude/skills" + R + "             Symlink to .agents/skills\n" +
+			"  " + D + "<project>/.ai-env.yaml" + R + "              Project profile binding\n" +
+			"  " + D + "~/.config/ai-env/environments/" + R + "       Environment YAML files\n" +
+			"  " + D + "~/.config/ai-env/sources.yaml" + R + "        Source + repo registry\n",
+	)
+	// Bash `$(cat << EOF)` strips trailing newlines from the heredoc body;
+	// `printf '%b\n'` then adds one. Net tail is a single "\n" — matched above.
+}
+
+// cmdRepoUpdate mirrors bash cmd_repo_update: git pull each registered repo
+// (or one filtered by name). Dies if no repos section present; reports
+// "not found" if target name didn't match; clones on first run.
+func cmdRepoUpdate(args []string) {
+	target := ""
+	if len(args) > 0 {
+		target = args[0]
+	}
+
+	// Bash: die if sources.yaml missing OR no `repos:` header.
+	hasRepos, err := repos.HasReposSection()
+	if err != nil {
+		die(err.Error())
+	}
+	if !hasRepos {
+		die("No git repos registered.")
+	}
+
+	entries, err := repos.Parse()
+	if err != nil {
+		die(err.Error())
+	}
+
+	updated := 0
+	for _, e := range entries {
+		if target != "" && e.Name != target {
+			continue
+		}
+		repoDir := filepath.Join(repos.Dir(), e.Name)
+		gitDir := filepath.Join(repoDir, ".git")
+
+		if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
+			fmt.Printf("%sℹ%s  Repo '%s' not cloned yet. Cloning...\n", ansiBlue, ansiReset, e.Name)
+			if err := os.MkdirAll(repos.Dir(), 0o755); err != nil {
+				die(err.Error())
+			}
+			clone := exec.Command("git", "clone", "--depth", "1", e.URL, repoDir)
+			if clone.Run() == nil {
+				fmt.Printf("%s✓%s  Cloned: %s\n", ansiGreen, ansiReset, e.Name)
+				updated++
+			} else {
+				fmt.Printf("%s⚠%s  Failed to clone: %s\n", ansiYellow, ansiReset, e.Name)
+			}
+			continue
+		}
+
+		beforeHash := repos.GitOutput(repoDir, "rev-parse", "HEAD")
+
+		fmt.Printf("%sℹ%s  Updating '%s'...\n", ansiBlue, ansiReset, e.Name)
+		pull := exec.Command("git", "-C", repoDir, "pull", "--ff-only")
+		// Bash: `git -C pull --ff-only 2>/dev/null` — stderr dropped; stdout
+		// also goes to /dev/null (the bash form only checks exit status).
+		if pull.Run() == nil {
+			afterHash := repos.GitOutput(repoDir, "rev-parse", "HEAD")
+			if beforeHash != afterHash {
+				commitCount := repos.GitOutput(repoDir, "rev-list", beforeHash+".."+afterHash, "--count")
+				if commitCount == "" {
+					commitCount = "?"
+				}
+				fmt.Printf("%s✓%s  Updated: %s%s%s (%s new commit(s))\n",
+					ansiGreen, ansiReset, ansiBold, e.Name, ansiReset, commitCount)
+				updated++
+			} else {
+				fmt.Printf("  %s%s: already up to date%s\n", ansiDim, e.Name, ansiReset)
+			}
+		} else {
+			fmt.Printf("%s⚠%s  Update failed for '%s'. Try: cd %s && git pull\n",
+				ansiYellow, ansiReset, e.Name, repoDir)
+		}
+	}
+
+	if target != "" && updated == 0 {
+		found := false
+		for _, e := range entries {
+			if e.Name == target {
+				found = true
+				break
+			}
+		}
+		if !found {
+			die(fmt.Sprintf("Repo '%s' not found.", target))
+		}
+	}
+
+	if updated > 0 {
+		fmt.Println()
+		fmt.Printf("%sℹ%s  Run %sai-env scan --force%s to sync updated skills into the store.\n",
+			ansiBlue, ansiReset, ansiCyan, ansiReset)
+	}
+}
+
+// cmdReset mirrors bash cmd_reset: clean managed symlinks in ~/.agents/skills,
+// remove ~/.claude/skills symlink, clean project-local skill symlinks for every
+// registered environment, rm -rf the skill store, remove state files, and
+// re-enable disabled plugins registered via ai-env sources.
+//
+// Skipped vs bash: the plugin-enable step uses python to rewrite ~/.claude/
+// settings.json — we delegate by reimplementing the narrow behavior (scan
+// store symlinks, rewrite settings.json) only when settings.json exists.
+func cmdReset(args []string) {
+	force := false
+	if len(args) > 0 && (args[0] == "-f" || args[0] == "--force") {
+		force = true
+	}
+
+	fmt.Printf("%sai-env reset%s — restore to clean state\n\n", ansiBold, ansiReset)
+
+	home := os.Getenv("HOME")
+	if home == "" {
+		h, _ := os.UserHomeDir()
+		home = h
+	}
+	agentSkills := filepath.Join(home, ".agents", "skills")
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	skillStore := filepath.Join(config.Dir(), "skills")
+	settingsFile := filepath.Join(home, ".claude", "settings.json")
+
+	// 1. Inventory
+	symlinkCountAgents := 0
+	storeCount := 0
+	claudeIsSymlink := false
+	if info, err := os.Lstat(claudeSkills); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		claudeIsSymlink = true
+	}
+	if info, err := os.Stat(agentSkills); err == nil && info.IsDir() {
+		if entries, err := os.ReadDir(agentSkills); err == nil {
+			for _, e := range entries {
+				full := filepath.Join(agentSkills, e.Name())
+				if li, err := os.Lstat(full); err == nil && li.Mode()&os.ModeSymlink != 0 {
+					symlinkCountAgents++
+				}
+			}
+		}
+	}
+	if info, err := os.Stat(skillStore); err == nil && info.IsDir() {
+		if entries, err := os.ReadDir(skillStore); err == nil {
+			storeCount = len(entries)
+		}
+	}
+
+	// 2. Scan store symlinks to detect managed plugins (marketplace/plugin pairs).
+	managed := []string{}
+	if info, err := os.Stat(skillStore); err == nil && info.IsDir() {
+		seen := map[string]bool{}
+		if entries, err := os.ReadDir(skillStore); err == nil {
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+			for _, e := range entries {
+				full := filepath.Join(skillStore, e.Name())
+				li, err := os.Lstat(full)
+				if err != nil || li.Mode()&os.ModeSymlink == 0 {
+					continue
+				}
+				target, err := os.Readlink(full)
+				if err != nil {
+					continue
+				}
+				// Pattern: .../.claude/plugins/cache/<marketplace>/<plugin>/...
+				needle := "/.claude/plugins/cache/"
+				idx := strings.Index(target, needle)
+				if idx < 0 {
+					continue
+				}
+				rest := target[idx+len(needle):]
+				parts := strings.SplitN(rest, "/", 3)
+				if len(parts) < 2 {
+					continue
+				}
+				key := parts[1] + "@" + parts[0]
+				if !seen[key] {
+					seen[key] = true
+					managed = append(managed, key)
+				}
+			}
+		}
+	}
+
+	// Cross-reference with disabled plugins in settings.json.
+	pluginsToEnable := []string{}
+	if len(managed) > 0 {
+		if disabled, ok := readDisabledPlugins(settingsFile); ok {
+			managedSet := map[string]bool{}
+			for _, m := range managed {
+				managedSet[m] = true
+			}
+			for _, k := range disabled {
+				if managedSet[k] {
+					pluginsToEnable = append(pluginsToEnable, k)
+				}
+			}
+		}
+	}
+	enableCount := len(pluginsToEnable)
+
+	// 3. Show summary
+	fmt.Printf("%sWill remove:%s\n", ansiBold, ansiReset)
+	fmt.Printf("  %d managed symlink(s) in ~/.agents/skills/\n", symlinkCountAgents)
+	if claudeIsSymlink {
+		fmt.Printf("  ~/.claude/skills/ → ~/.agents/skills/ (symlink)\n")
+	}
+	fmt.Printf("  %d item(s) in skill store (~/.config/ai-env/skills/)\n", storeCount)
+	fmt.Printf("  State files (.last-scan)\n")
+	fmt.Printf("  Project-local skill symlinks (for all environments with directory: set)\n")
+	fmt.Println()
+	fmt.Printf("%sWill re-enable (plugins with skills in store):%s\n", ansiBold, ansiReset)
+	if enableCount > 0 {
+		for _, p := range pluginsToEnable {
+			fmt.Printf("  %s%s%s\n", ansiCyan, p, ansiReset)
+		}
+	} else {
+		fmt.Printf("  %s(no managed plugins to re-enable)%s\n", ansiDim, ansiReset)
+	}
+	fmt.Println()
+	fmt.Printf("%sWill keep:%s\n", ansiBold, ansiReset)
+	fmt.Printf("  Environment configs (~/.config/ai-env/environments/)\n")
+	fmt.Printf("  Source registry (~/.config/ai-env/sources.yaml)\n")
+	fmt.Println()
+
+	// 4. Confirm unless --force. Bash: `echo -n "Proceed? [y/N] "; read -r confirm`.
+	// Unlike cmdDelete (which uses `read -rp`), here the prompt is an echo so
+	// it's always emitted regardless of tty state — match that.
+	if !force {
+		fmt.Print("Proceed? [y/N] ")
+		br := bufio.NewReader(os.Stdin)
+		line, _ := br.ReadString('\n')
+		confirm := strings.TrimRight(line, "\n")
+		if confirm != "y" && confirm != "Y" {
+			fmt.Println("Aborted.")
+			return
+		}
+		fmt.Println()
+	}
+
+	// 5. Remove symlinks in $AGENT_SKILLS (maxdepth 1, type l).
+	if info, err := os.Stat(agentSkills); err == nil && info.IsDir() {
+		if entries, err := os.ReadDir(agentSkills); err == nil {
+			for _, e := range entries {
+				full := filepath.Join(agentSkills, e.Name())
+				if li, err := os.Lstat(full); err == nil && li.Mode()&os.ModeSymlink != 0 {
+					_ = os.Remove(full)
+				}
+			}
+		}
+		fmt.Printf("%sℹ%s  Cleaned ~/.agents/skills/ symlinks\n", ansiBlue, ansiReset)
+	}
+	// Remove ~/.claude/skills if it's a symlink.
+	if li, err := os.Lstat(claudeSkills); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		if os.Remove(claudeSkills) == nil {
+			fmt.Printf("%sℹ%s  Removed ~/.claude/skills symlink\n", ansiBlue, ansiReset)
+		}
+	}
+
+	// 5b. Clean project-local skill dirs for every environment with `directory:`.
+	projectCleaned := 0
+	envDir := config.EnvDir()
+	if entries, err := os.ReadDir(envDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+				continue
+			}
+			envYAML := filepath.Join(envDir, e.Name())
+			ed := config.ReadScalar(envYAML, "directory")
+			if ed == "" {
+				continue
+			}
+			if strings.HasPrefix(ed, "~") {
+				ed = home + strings.TrimPrefix(ed, "~")
+			}
+			pdir := filepath.Join(ed, ".agents", "skills")
+			if info, err := os.Stat(pdir); err == nil && info.IsDir() {
+				if items, err := os.ReadDir(pdir); err == nil {
+					for _, it := range items {
+						full := filepath.Join(pdir, it.Name())
+						if li, err := os.Lstat(full); err == nil && li.Mode()&os.ModeSymlink != 0 {
+							if os.Remove(full) == nil {
+								projectCleaned++
+							}
+						}
+					}
+				}
+			}
+			// Remove .claude/skills symlink + fingerprint.
+			claudeLink := filepath.Join(ed, ".claude", "skills")
+			if li, err := os.Lstat(claudeLink); err == nil && li.Mode()&os.ModeSymlink != 0 {
+				_ = os.Remove(claudeLink)
+			}
+			_ = os.Remove(filepath.Join(ed, ".claude", ".ai-env-fingerprint"))
+		}
+	}
+	if projectCleaned > 0 {
+		fmt.Printf("%sℹ%s  Cleaned %d project-local symlink(s)\n", ansiBlue, ansiReset, projectCleaned)
+	}
+
+	// 6. Remove skill store
+	if info, err := os.Stat(skillStore); err == nil && info.IsDir() {
+		_ = os.RemoveAll(skillStore)
+		fmt.Printf("%sℹ%s  Removed skill store\n", ansiBlue, ansiReset)
+	}
+
+	// 7. Remove state files
+	_ = os.Remove(filepath.Join(config.Dir(), ".last-scan"))
+	fmt.Printf("%sℹ%s  Removed state files\n", ansiBlue, ansiReset)
+
+	// 8. Re-enable plugins
+	if enableCount > 0 {
+		if _, err := os.Stat(settingsFile); err == nil {
+			enabled := enablePlugins(settingsFile, pluginsToEnable)
+			fmt.Printf("%sℹ%s  Re-enabled %d plugin(s) in settings.json\n", ansiBlue, ansiReset, enabled)
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("%s✓%s  Reset complete. To rebuild, run: %sai-env scan && ai-env activate <env>%s\n",
+		ansiGreen, ansiReset, ansiCyan, ansiReset)
+}
+
+// readDisabledPlugins returns the list of plugin keys under enabledPlugins
+// whose value is false. Uses encoding/json. Returns (nil, false) if the file
+// can't be read/parsed (matching bash's `2>/dev/null || true`).
+func readDisabledPlugins(path string) ([]string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var doc map[string]any
+	if err := jsonUnmarshal(data, &doc); err != nil {
+		return nil, false
+	}
+	plugins, ok := doc["enabledPlugins"].(map[string]any)
+	if !ok {
+		return nil, true
+	}
+	var out []string
+	for k, v := range plugins {
+		if b, ok := v.(bool); ok && !b {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out, true
+}
+
+// enablePlugins flips keys in enabledPlugins from false to true. Returns
+// the count that were flipped. Writes back with 2-space indent + trailing
+// newline to match python's json.dump(indent=2) + f.write('\n').
+func enablePlugins(path string, toEnable []string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	var doc map[string]any
+	if err := jsonUnmarshal(data, &doc); err != nil {
+		return 0
+	}
+	plugins, ok := doc["enabledPlugins"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	set := map[string]bool{}
+	for _, k := range toEnable {
+		set[k] = true
+	}
+	count := 0
+	for k, v := range plugins {
+		if !set[k] {
+			continue
+		}
+		if b, ok := v.(bool); ok && !b {
+			plugins[k] = true
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	out, err := jsonMarshalIndent(doc, "", "  ")
+	if err != nil {
+		return 0
+	}
+	_ = os.WriteFile(path, append(out, '\n'), 0o644)
+	return count
 }
 
 func cmdWhich(_ []string) {
