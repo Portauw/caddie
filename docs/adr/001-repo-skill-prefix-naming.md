@@ -6,7 +6,7 @@
 
 ## Context and Problem Statement
 
-ai-env aggregates skills from multiple sources (marketplace plugins and git repos) into a flat canonical store (`~/.config/ai-env/skills/`). Both Claude Code and OpenCode discover skills by scanning folder names in this flat directory — nested subdirectories are not supported.
+ai-env aggregates skills from registered git repos into a flat canonical store (`~/.config/ai-env/skills/`). Both Claude Code and OpenCode discover skills by scanning folder names in this flat directory — nested subdirectories are not supported.
 
 When two repos contain a skill with the same folder name (e.g. both `lenny` and `sterling-skills` could have a `brainstorming/` folder), the last one scanned silently overwrites the first. There is no collision warning or namespacing mechanism.
 

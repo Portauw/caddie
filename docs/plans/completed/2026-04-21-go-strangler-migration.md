@@ -1,5 +1,12 @@
 # Go Strangler Migration
 
+> **Status: COMPLETED 2026-04-21.** All subcommands run native Go. The
+> bash script is retained as `ai-env-frozen` at the repo root and as
+> `internal/legacy/ai-env-legacy.sh` (embedded but unused) — kept as the
+> parity oracle for contract tests and an emergency rollback path. During
+> the port, plugin sources were dropped in favor of git repos as the sole
+> skill origin, and `.agents/SOURCES.md` generation was removed.
+
 Incrementally replace the 2782-line `ai-env` bash script with a Go implementation, one subcommand at a time, without breaking the current `cp ai-env /usr/local/bin/ai-env` install UX.
 
 ## Architecture
