@@ -1284,6 +1284,64 @@ func TestScanContract(t *testing.T) {
 		}
 	})
 
+	t.Run("nested_categories", func(t *testing.T) {
+		// Build a bare repo whose layout uses category dirs:
+		// skills/cloud/foo/SKILL.md and skills/web/bar/SKILL.md.
+		work := t.TempDir()
+		bare := t.TempDir()
+		gitRun := func(dir string, args ...string) {
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+				"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%v: %v\n%s", args, err, out)
+			}
+		}
+		gitRun(work, "git", "init", "-q", "-b", "main")
+		for _, p := range []string{"cloud/foo", "web/bar"} {
+			d := filepath.Join(work, "skills", p)
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		gitRun(work, "git", "add", "-A")
+		gitRun(work, "git", "commit", "-q", "-m", "init")
+		gitRun(work, "git", "clone", "-q", "--bare", work, bare)
+
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		cloneBareInto(t, bare, filepath.Join(aiEnvDir, "repos", "mine"))
+		mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
+			"sources:\n\nrepos:\n  - name: \"mine\"\n    url: \""+bare+"\"\n    skills_path: \"skills\"\n")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "scan")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
+		}
+		for _, want := range []string{"cloud-foo", "web-bar"} {
+			link := filepath.Join(aiEnvDir, "skills", want)
+			li, err := os.Lstat(link)
+			if err != nil {
+				t.Errorf("expected symlink %s: %v", want, err)
+				continue
+			}
+			if li.Mode()&os.ModeSymlink == 0 {
+				t.Errorf("%s is not a symlink", want)
+			}
+		}
+		// Category dirs themselves must not appear as skills.
+		for _, banned := range []string{"cloud", "web"} {
+			if _, err := os.Lstat(filepath.Join(aiEnvDir, "skills", banned)); err == nil {
+				t.Errorf("category dir %s should not be a store entry", banned)
+			}
+		}
+	})
+
 	t.Run("prefix_true", func(t *testing.T) {
 		bare := makeBareRepo(t)
 		aiEnvDir := setupEnvDir(t)

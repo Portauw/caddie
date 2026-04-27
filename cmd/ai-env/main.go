@@ -329,16 +329,17 @@ func cmdRepoAdd(args []string) {
 		clone := exec.Command("git", "clone", "--depth", "1", url, repoDir)
 		// Stderr intentionally dropped to match bash's 2>/dev/null.
 		if err := clone.Run(); err == nil {
-			skillCount := 0
-			skillsDir := filepath.Join(repoDir, skillsPath)
-			if entries, err := os.ReadDir(skillsDir); err == nil {
-				for _, e := range entries {
-					if e.IsDir() {
-						skillCount++
-					}
-				}
-			}
+			walked, _ := skills.WalkRepoSkills(repoDir, skillsPath)
+			skillCount := len(walked)
 			fmt.Printf("%s✓%s  Cloned: %s%s%s (%d skills found)\n", ansiGreen, ansiReset, ansiBold, name, ansiReset, skillCount)
+			if skillCount == 0 {
+				displayPath := skillsPath
+				if displayPath == "" || displayPath == "." {
+					displayPath = "the repo root"
+				}
+				fmt.Printf("%s⚠%s  No SKILL.md files found under %s; the repo is registered but scan will be a no-op\n",
+					ansiYellow, ansiReset, displayPath)
+			}
 		} else {
 			fmt.Printf("%s⚠%s  Clone failed. Run %sai-env repo update %s%s to retry.\n", ansiYellow, ansiReset, ansiCyan, name, ansiReset)
 		}
@@ -471,6 +472,8 @@ func cmdHelp(_ []string) {
 			B + "GIT REPOS" + R + "\n" +
 			"  " + C + "repo" + R + " list                    Show registered git repos + status\n" +
 			"  " + C + "repo" + R + " add <name> <url> [path] Register + clone a git skill repo\n" +
+			"                              (path defaults to \"skills\"; use \".\" or \"\" if SKILL.md files\n" +
+			"                              live at the repo root. Nested category dirs are walked.)\n" +
 			"  " + C + "repo" + R + " remove <name>           Unregister repo + clean up symlinks\n" +
 			"  " + C + "repo" + R + " update [name]           Pull latest changes (all or specific)\n" +
 			"\n" +

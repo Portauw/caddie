@@ -144,23 +144,23 @@ func SyncRepos(verbose bool, verbosef func(format string, a ...any)) (total int,
 			}
 		}
 
-		repoSkillDir := filepath.Join(repoDir, e.SkillsPath)
-		if info, err := os.Stat(repoSkillDir); err != nil || !info.IsDir() {
-			perRepo = append(perRepo, PerRepoSync{Name: e.Name, SkillsPath: e.SkillsPath, Warning: "skills_path not found"})
-			continue
+		// "" / "." means the repo root holds skills directly. Otherwise the
+		// directory must exist before we walk.
+		if e.SkillsPath != "" && e.SkillsPath != "." {
+			repoSkillDir := filepath.Join(repoDir, e.SkillsPath)
+			if info, err := os.Stat(repoSkillDir); err != nil || !info.IsDir() {
+				perRepo = append(perRepo, PerRepoSync{Name: e.Name, SkillsPath: e.SkillsPath, Warning: "skills_path not found"})
+				continue
+			}
 		}
-		skillEntries, err := os.ReadDir(repoSkillDir)
+		walked, err := WalkRepoSkills(repoDir, e.SkillsPath)
 		if err != nil {
 			continue
 		}
 		count := 0
-		for _, se := range skillEntries {
-			skillPath := filepath.Join(repoSkillDir, se.Name())
-			info, err := os.Stat(skillPath)
-			if err != nil || !info.IsDir() {
-				continue
-			}
-			originalName := se.Name()
+		for _, rs := range walked {
+			skillPath := rs.AbsPath
+			originalName := rs.Name
 			skillName := originalName
 			switch {
 			case e.Prefix == "" || e.Prefix == "false":
