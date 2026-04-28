@@ -483,7 +483,7 @@ func cmdHelp(_ []string) {
 			"  " + C + "list" + R + "    (ls)                 List all environments\n" +
 			"  " + C + "show" + R + "    <name>               Show config + resolved skills\n" +
 			"  " + C + "edit" + R + "    <name>               Open environment config in $EDITOR\n" +
-			"  " + C + "activate" + R + " [name]              Resolve skills for cwd (or explicit env)\n" +
+			"  " + C + "activate" + R + " [name] [-f]         Resolve skills for cwd (-f: force-pull repos)\n" +
 			"  " + C + "clone" + R + "   <src> <dest>         Clone an environment config\n" +
 			"  " + C + "delete" + R + "  <name>               Delete an environment\n" +
 			"  " + C + "which" + R + "                        Show currently active environment\n" +
@@ -514,6 +514,7 @@ func cmdHelp(_ []string) {
 			"  caddie activate                          # Auto-detect profile from cwd\n" +
 			"  caddie activate my-project               # Explicit profile activation\n" +
 			"  caddie activate --dry-run                # Preview what would change\n" +
+			"  caddie activate --force                  # Pull all repos now (bypass hourly cache)\n" +
 			"  caddie repo add lenny https://github.com/RefoundAI/lenny-skills  # Add git repo\n" +
 			"  caddie inventory                         # See all available skills\n" +
 			"\n" +
@@ -687,7 +688,7 @@ func cmdReset(args []string) {
 		fmt.Printf("  ~/.claude/skills/ → ~/.agents/skills/ (symlink)\n")
 	}
 	fmt.Printf("  %d item(s) in skill store (~/.config/caddie/skills/)\n", storeCount)
-	fmt.Printf("  State files (.last-scan)\n")
+	fmt.Printf("  State files (.last-scan, .last-pull)\n")
 	fmt.Printf("  Project-local skill symlinks (for all environments with directory: set)\n")
 	fmt.Println()
 	fmt.Printf("%sWill keep:%s\n", ansiBold, ansiReset)
@@ -775,6 +776,7 @@ func cmdReset(args []string) {
 	}
 
 	_ = os.Remove(filepath.Join(config.Dir(), ".last-scan"))
+	_ = os.Remove(filepath.Join(config.Dir(), ".last-pull"))
 	fmt.Printf("%sℹ%s  Removed state files\n", ansiBlue, ansiReset)
 
 	fmt.Println()
@@ -1315,10 +1317,13 @@ func expandTilde(p string) string {
 func cmdActivate(args []string) {
 	name := ""
 	dryRun := false
+	force := false
 	for _, a := range args {
 		switch a {
 		case "--dry-run", "-n":
 			dryRun = true
+		case "--force", "-f":
+			force = true
 		default:
 			if strings.HasPrefix(a, "-") {
 				die("Unknown flag: " + a)
@@ -1428,9 +1433,9 @@ func cmdActivate(args []string) {
 	}
 	fmt.Printf("%s%s%s %s→ %s%s\n", ansiBold, label, ansiReset, ansiDim, projLabel, ansiReset)
 
-	// Repo sync step. Bash shells out to `cmd_scan` under various conditions;
-	// we just invoke the native cmdScan which handles its own mtime cache.
-	activateSyncRepos()
+	// Repo sync step. Pulls registered git repos at most hourly (or always
+	// with --force), then runs scan to refresh the skill store.
+	activateSyncRepos(force)
 
 	patterns := config.ReadList(file, "skills")
 
@@ -1537,16 +1542,42 @@ func resolveMatchedWithSummary(patterns []string) ([]string, string) {
 	return dirs, strings.Join(parts, ", ")
 }
 
-// activateSyncRepos is a lightweight version of bash _activate_sync_repos.
-// Bash has a 60-second mtime cache gate on .last-scan + a fetch/pull loop;
-// our native cmdScan has the same cache gate, so we just call it. Output is
-// suppressed to keep activate's stdout focused on the activation summary.
-func activateSyncRepos() {
-	// Redirect stdout of cmdScan by temporarily swapping os.Stdout.
+// activateSyncRepos pulls registered git repos at most once per hour (or
+// every call when force is true), then runs the native scan to refresh the
+// skill store. Repo-update output stays visible so the user sees when a
+// source actually changed; scan output is suppressed to keep activate's
+// summary clean.
+func activateSyncRepos(force bool) {
+	pullPath := filepath.Join(config.Dir(), ".last-pull")
+	shouldPull := force
+	if !shouldPull {
+		info, err := os.Stat(pullPath)
+		if err != nil || time.Since(info.ModTime()) >= time.Hour {
+			shouldPull = true
+		}
+	}
+	if shouldPull {
+		// Only attempt if there are repos registered; otherwise stay silent.
+		if has, err := repos.HasReposSection(); err == nil && has {
+			cmdRepoUpdate(nil)
+		}
+		now := time.Now()
+		if f, err := os.OpenFile(pullPath, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			_ = f.Close()
+		}
+		_ = os.Chtimes(pullPath, now, now)
+	}
+
+	scanArgs := []string(nil)
+	if force {
+		scanArgs = []string{"--force"}
+	}
+
+	// Suppress scan output.
 	orig := os.Stdout
 	r, w, err := os.Pipe()
 	if err != nil {
-		cmdScan(nil)
+		cmdScan(scanArgs)
 		return
 	}
 	os.Stdout = w
@@ -1560,7 +1591,7 @@ func activateSyncRepos() {
 		<-done
 		os.Stdout = orig
 	}()
-	cmdScan(nil)
+	cmdScan(scanArgs)
 }
 
 // ensureProjectGitignore is the Go port of bash _ensure_gitignore. Appends
