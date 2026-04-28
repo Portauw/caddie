@@ -1,7 +1,4 @@
-// SKILL.md walker for repo skill discovery. Recurses under <repoDir>/<skillsPath>
-// and emits one RepoSkill per directory containing a SKILL.md file. Stops
-// descending once a SKILL.md is found (so a skill that nests another skill
-// won't double-count). Hidden directories (starting with ".") are skipped.
+// SKILL.md walker for repo skill discovery.
 package skills
 
 import (
@@ -23,8 +20,10 @@ type RepoSkill struct {
 // WalkRepoSkills walks <repoDir>/<skillsPath> looking for directories that
 // contain a regular SKILL.md file. skillsPath == "" or "." means "the repo
 // root". Returns a slice sorted by Name. Errors reading a single directory
-// are swallowed (siblings keep walking); a missing skillsPath returns
-// (nil, nil) so callers can render a friendly warning.
+// are swallowed; a missing skillsPath returns (nil, nil).
+//
+// Descent stops at the first SKILL.md found in a subtree, so a skill that
+// nests another skill won't double-count. Hidden directories are skipped.
 func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 	root := repoDir
 	if skillsPath != "" && skillsPath != "." {
@@ -44,10 +43,9 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 	var out []RepoSkill
 	var walk func(dir string, parts []string)
 	walk = func(dir string, parts []string) {
-		// If this dir has a SKILL.md, emit and stop descending.
 		if len(parts) > 0 {
-			skillFile := filepath.Join(dir, "SKILL.md")
-			if fi, err := os.Stat(skillFile); err == nil && fi.Mode().IsRegular() {
+			// os.Stat (not Lstat) so a symlinked SKILL.md still counts.
+			if fi, err := os.Stat(filepath.Join(dir, "SKILL.md")); err == nil && fi.Mode().IsRegular() {
 				out = append(out, RepoSkill{
 					Name:    strings.Join(parts, "-"),
 					AbsPath: dir,
@@ -64,14 +62,18 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 			if strings.HasPrefix(name, ".") {
 				continue
 			}
-			// Resolve into a directory (follow symlinks-to-dirs the same way
-			// os.Stat would; keep it simple — only descend into dirs).
 			full := filepath.Join(dir, name)
-			fi, err := os.Stat(full)
-			if err != nil || !fi.IsDir() {
+			t := e.Type()
+			if t.IsDir() {
+				walk(full, append(parts, name))
 				continue
 			}
-			walk(full, append(parts, name))
+			// Follow symlinks-to-dirs but not regular files.
+			if t&os.ModeSymlink != 0 {
+				if fi, err := os.Stat(full); err == nil && fi.IsDir() {
+					walk(full, append(parts, name))
+				}
+			}
 		}
 	}
 	walk(root, nil)

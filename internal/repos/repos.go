@@ -1,36 +1,28 @@
-// Package repos parses the `repos:` section of sources.yaml. Mirrors the
-// bash parse_repos python parser line-for-line — do not swap in a real YAML
-// parser until the rest of the repo command family is ported and covered.
+// Package repos parses the `repos:` section of sources.yaml.
 package repos
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Portauw/caddie/internal/config"
 )
 
-// stripQuotes removes a single layer of matched surrounding quotes.
-func stripQuotes(v string) string {
-	if len(v) >= 2 {
-		c := v[0]
-		if (c == '"' || c == '\'') && v[len(v)-1] == c {
-			return v[1 : len(v)-1]
-		}
-	}
-	return v
-}
+// Timeouts cap git operations so a hung remote can't wedge `caddie activate`.
+const (
+	GitReadTimeout  = 5 * time.Second
+	GitFetchTimeout = 30 * time.Second
+	GitCloneTimeout = 90 * time.Second
+)
 
-// Entry mirrors the tuple emitted by bash parse_repos:
-//
-//	name|url|skills_path|prefix
-//
-// skills_path defaults to "skills" if unset. prefix may be "", "false",
-// "true", or a literal prefix string — callers must interpret it.
+// Entry is one registered git repo. Prefix may be "", "false", "true", or a
+// literal prefix string — callers must interpret it.
 type Entry struct {
 	Name       string
 	URL        string
@@ -45,8 +37,7 @@ func File() string { return filepath.Join(config.Dir(), "sources.yaml") }
 func Dir() string { return filepath.Join(config.Dir(), "repos") }
 
 // Parse reads sources.yaml and returns one Entry per `  - name: ...` block
-// under `repos:`. Missing `skills_path` defaults to "skills" (matching
-// parse_repos' `current.get('skills_path','skills')`).
+// under `repos:`. Missing `skills_path` defaults to "skills".
 func Parse() ([]Entry, error) {
 	path := File()
 	f, err := os.Open(path)
@@ -87,7 +78,7 @@ func Parse() ([]Entry, error) {
 			cur = &Entry{}
 			rest := strings.TrimSpace(line[4:])
 			if strings.HasPrefix(rest, "name:") {
-				cur.Name = stripQuotes(strings.TrimSpace(rest[len("name:"):]))
+				cur.Name = config.StripQuotes(strings.TrimSpace(rest[len("name:"):]))
 			}
 			continue
 		}
@@ -100,7 +91,7 @@ func Parse() ([]Entry, error) {
 				continue
 			}
 			k := strings.TrimSpace(kv[0])
-			v := stripQuotes(strings.TrimSpace(kv[1]))
+			v := config.StripQuotes(strings.TrimSpace(kv[1]))
 			switch k {
 			case "name":
 				cur.Name = v
@@ -127,7 +118,6 @@ func Parse() ([]Entry, error) {
 }
 
 // HasReposSection reports whether sources.yaml contains a `^repos:` line.
-// Mirrors bash `grep -q "^repos:" "$SOURCES_FILE"`.
 func HasReposSection() (bool, error) {
 	f, err := os.Open(File())
 	if err != nil {
@@ -146,36 +136,22 @@ func HasReposSection() (bool, error) {
 	return false, nil
 }
 
-// Exists mirrors the bash cmd_repo_add / cmd_repo_remove python duplicate
-// check: scans for any line under `repos:` containing `name:` and the given
-// substring. Preserves the bash substring-match quirk for parity.
+// Exists reports whether a repo with the given name is registered.
 func Exists(name string) (bool, error) {
-	f, err := os.Open(File())
+	entries, err := Parse()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
 		return false, err
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	inRepos := false
-	for sc.Scan() {
-		line := sc.Text()
-		if strings.HasPrefix(line, "repos:") {
-			inRepos = true
-			continue
-		}
-		if inRepos && strings.Contains(line, "name:") && strings.Contains(line, name) {
+	for _, e := range entries {
+		if e.Name == name {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// Append adds a new repo entry to sources.yaml. Creates the file with
-// `sources:` header if missing, and appends a `repos:` header section if
-// absent. Byte-compatible with the bash HEREDOC.
+// Append adds a new repo entry to sources.yaml, creating the file and the
+// `repos:` section if needed.
 func Append(e Entry) error {
 	path := File()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -205,7 +181,7 @@ func Append(e Entry) error {
 }
 
 // Remove deletes the block for `name` under `repos:` from sources.yaml.
-// Mirrors the bash cmd_repo_remove python algorithm line-for-line.
+// Match is exact — a name "lenny" will not match a registered "lenny-extra".
 func Remove(name string) error {
 	path := File()
 	data, err := os.ReadFile(path)
@@ -213,7 +189,7 @@ func Remove(name string) error {
 		return err
 	}
 	lines := strings.Split(string(data), "\n")
-	var out []string
+	out := make([]string, 0, len(lines))
 	skip := false
 	inRepos := false
 	for _, line := range lines {
@@ -222,7 +198,7 @@ func Remove(name string) error {
 			out = append(out, line)
 			continue
 		}
-		if inRepos && strings.Contains(line, "  - name:") && strings.Contains(line, name) {
+		if inRepos && isRepoNameLine(line, name) {
 			skip = true
 			continue
 		}
@@ -240,10 +216,22 @@ func Remove(name string) error {
 	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644)
 }
 
-// GitOutput runs `git -C dir <args...>` and returns trimmed stdout, or ""
-// on error. Mirrors bash `$(git -C "$dir" ... 2>/dev/null)`.
+// isRepoNameLine reports whether line is a `  - name: <name>` block header
+// for an exactly-matching name.
+func isRepoNameLine(line, name string) bool {
+	rest, ok := strings.CutPrefix(strings.TrimRight(line, " \t"), "  - name:")
+	if !ok {
+		return false
+	}
+	return config.StripQuotes(strings.TrimSpace(rest)) == name
+}
+
+// GitOutput runs `git -C dir <args...>` with a 5s timeout and returns trimmed
+// stdout, or "" on error.
 func GitOutput(dir string, args ...string) string {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	ctx, cancel := context.WithTimeout(context.Background(), GitReadTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -251,11 +239,26 @@ func GitOutput(dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// RepoName returns the effective prefix used in the inventory repo_map:
-// if prefix is empty/"false"/"true", falls back to the repo name; otherwise
-// uses the literal prefix value.
-func (e Entry) RepoName() string {
-	if e.Prefix == "" || e.Prefix == "false" || e.Prefix == "true" {
+// UsesPrefix reports whether the entry has a non-trivial prefix that should
+// be applied to its skill names. The sentinels "" and "false" mean "no
+// prefix"; "true" means "use the repo name as the prefix".
+func (e Entry) UsesPrefix() bool {
+	return e.Prefix != "" && e.Prefix != "false"
+}
+
+// LinkPointsTo reports whether target (a symlink target string) refers into
+// the checkout for repo `name`. Used to scrub stale store links when a repo
+// is removed or its prefix changes.
+func LinkPointsTo(target, name string) bool {
+	needle := string(os.PathSeparator) + "repos" + string(os.PathSeparator) + name + string(os.PathSeparator)
+	return strings.Contains(target, needle)
+}
+
+// EffectivePrefix returns the prefix string that should appear in skill IDs:
+// the literal Prefix value when it's a real string, or the repo Name when
+// Prefix is "" / "false" / "true".
+func (e Entry) EffectivePrefix() string {
+	if !e.UsesPrefix() || e.Prefix == "true" {
 		return e.Name
 	}
 	return e.Prefix

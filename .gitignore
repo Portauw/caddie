@@ -12,3 +12,7 @@
 
 # Go build
 /dist/
+
+# caddie managed skill directories
+.claude/skills/
+.agents/skills/

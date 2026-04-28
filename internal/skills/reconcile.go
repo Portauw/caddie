@@ -1,6 +1,4 @@
-// Reconcile + fingerprint helpers for cmd_activate. Mirror the bash
-// compute_fingerprint and reconcile_skill_dir functions byte-for-byte so
-// projects do not re-run reconcile when nothing changed.
+// Reconcile + fingerprint helpers for cmd_activate.
 package skills
 
 import (
@@ -11,12 +9,9 @@ import (
 	"strings"
 )
 
-// ComputeFingerprint mirrors bash compute_fingerprint:
-//
-//	{ echo "$env_name"; cat; } | shasum -a 256 | cut -d' ' -f1
-//
-// where stdin is the sorted skill dirnames joined with newlines.
-// Equivalent input bytes: "<env>\n<skill1>\n<skill2>\n...\n".
+// ComputeFingerprint returns the SHA-256 of the env name and sorted skill
+// dirnames, each terminated by '\n'. Used to short-circuit `caddie activate`
+// when nothing changed since the last run.
 func ComputeFingerprint(envName string, sortedSkills []string) string {
 	var b strings.Builder
 	b.WriteString(envName)
@@ -36,12 +31,10 @@ type ReconcileResult struct {
 }
 
 // ReconcileSkillDir diffs the existing symlinks in targetDir against the
-// expected set and minimally adds/removes. Entries that aren't symlinks are
-// left alone (matches bash `[[ ! -L "$item" ]] && continue`). The skill store
-// path is used as the symlink source (same layout as bash).
-//
-// Missing store entries are silently skipped — matches bash's `[[ -d ||
-// -L $source_path ]]` guard.
+// expected set and minimally adds/removes/refreshes. Non-symlink entries are
+// left alone; missing store entries are silently skipped. Symlinks that
+// already exist but point to the wrong target (e.g. after a config-dir
+// rename) are removed and re-created.
 func ReconcileSkillDir(targetDir string, expected []string, store string) (ReconcileResult, error) {
 	var res ReconcileResult
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
@@ -56,7 +49,6 @@ func ReconcileSkillDir(targetDir string, expected []string, store string) (Recon
 		want[e] = struct{}{}
 	}
 
-	// Remove symlinks that aren't in want.
 	entries, err := os.ReadDir(targetDir)
 	if err == nil {
 		for _, e := range entries {
@@ -73,18 +65,24 @@ func ReconcileSkillDir(targetDir string, expected []string, store string) (Recon
 		}
 	}
 
-	// Add missing symlinks.
 	for name := range want {
 		tgt := filepath.Join(targetDir, name)
-		if li, err := os.Lstat(tgt); err == nil && li.Mode()&os.ModeSymlink != 0 {
-			continue
-		}
 		src := filepath.Join(store, name)
-		info, err := os.Lstat(src)
-		if err != nil {
+		if _, err := os.Lstat(src); err != nil {
 			continue
 		}
-		_ = info
+		if li, err := os.Lstat(tgt); err == nil {
+			// Already a symlink — only keep it if the target matches.
+			if li.Mode()&os.ModeSymlink != 0 {
+				if current, err := os.Readlink(tgt); err == nil && current == src {
+					continue
+				}
+				_ = os.Remove(tgt)
+			} else {
+				// Non-symlink existing entry (real file/dir) — leave it alone.
+				continue
+			}
+		}
 		if err := os.Symlink(src, tgt); err == nil {
 			res.Added++
 		}

@@ -1,13 +1,15 @@
 // Scan sync logic: sweep agent dirs, clean broken symlinks, sync repo skills
-// into the canonical store. Extracted from cmd_scan so the main.go renderer
-// can focus on output formatting while the fs side-effects live here.
+// into the canonical store.
 package skills
 
 import (
+	"cmp"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Portauw/caddie/internal/repos"
 )
@@ -31,12 +33,21 @@ type PerRepoSync struct {
 	Name       string
 	SkillsPath string
 	Count      int
-	Warning    string // non-empty when the repo was skipped
+	Warning    string
+}
+
+// LogFn is an optional verbose-logger. nil means silent.
+type LogFn func(format string, a ...any)
+
+func (l LogFn) write(format string, a ...any) {
+	if l != nil {
+		l(format, a...)
+	}
 }
 
 // SweepAgentDir moves non-symlink dirs under $HOME/.agents/skills/<name>/ into
-// the store when no entry exists there yet. Mirrors bash 0c.
-func SweepAgentDir(home string, verbose bool, verbosef func(format string, a ...any)) int {
+// the store when no entry exists there yet.
+func SweepAgentDir(home string, log LogFn) int {
 	agentDir := filepath.Join(home, ".agents", "skills")
 	info, err := os.Stat(agentDir)
 	if err != nil || !info.IsDir() {
@@ -51,13 +62,7 @@ func SweepAgentDir(home string, verbose bool, verbosef func(format string, a ...
 	for _, e := range entries {
 		full := filepath.Join(agentDir, e.Name())
 		li, err := os.Lstat(full)
-		if err != nil {
-			continue
-		}
-		if li.Mode()&os.ModeSymlink != 0 {
-			continue
-		}
-		if !li.IsDir() {
+		if err != nil || li.Mode()&os.ModeSymlink != 0 || !li.IsDir() {
 			continue
 		}
 		target := filepath.Join(store, e.Name())
@@ -67,45 +72,32 @@ func SweepAgentDir(home string, verbose bool, verbosef func(format string, a ...
 		if err := os.Rename(full, target); err != nil {
 			continue
 		}
-		if verbose && verbosef != nil {
-			verbosef("  \033[0;32m+\033[0m swept: %s -> store\n", e.Name())
-		}
+		log.write("  \033[0;32m+\033[0m swept: %s -> store\n", e.Name())
 		swept++
 	}
 	return swept
 }
 
 // CleanBrokenStoreLinks removes symlinks in the store whose target doesn't
-// exist. Mirrors bash 0d.
-func CleanBrokenStoreLinks(verbose bool, verbosef func(format string, a ...any)) int {
-	store := Store()
-	entries, err := os.ReadDir(store)
-	if err != nil {
-		return 0
-	}
+// exist.
+func CleanBrokenStoreLinks(log LogFn) int {
 	removed := 0
-	for _, e := range entries {
-		full := filepath.Join(store, e.Name())
-		li, err := os.Lstat(full)
-		if err != nil || li.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
+	EachSymlink(Store(), func(name, full string) {
 		if _, err := os.Stat(full); err != nil {
 			if os.Remove(full) == nil {
-				if verbose && verbosef != nil {
-					verbosef("  \033[2mremoved broken: %s\033[0m\n", e.Name())
-				}
+				log.write("  \033[2mremoved broken: %s\033[0m\n", name)
 				removed++
 			}
 		}
-	}
+	})
 	return removed
 }
 
 // SyncRepos iterates every registered repo, checks for remote updates (best
 // effort — offline failures are silent), and syncs skills into the store.
-// Mirrors bash 1b.
-func SyncRepos(verbose bool, verbosef func(format string, a ...any)) (total int, updates []RepoUpdate, shadowed []Shadow, perRepo []PerRepoSync) {
+// When skipFetch is true, the per-repo `git fetch --dry-run` probe is omitted
+// — set this when caller already pulled the repos.
+func SyncRepos(log LogFn, skipFetch bool) (total int, updates []RepoUpdate, shadowed []Shadow, perRepo []PerRepoSync) {
 	hasRepos, err := repos.HasReposSection()
 	if err != nil || !hasRepos {
 		return 0, nil, nil, nil
@@ -123,29 +115,12 @@ func SyncRepos(verbose bool, verbosef func(format string, a ...any)) (total int,
 			continue
 		}
 
-		// Check for remote updates — fetch --dry-run. Any stdout/stderr implies
-		// a pending change. Errors (offline) are silently ignored.
-		cmd := exec.Command("git", "-C", repoDir, "fetch", "--dry-run")
-		out, err := cmd.CombinedOutput()
-		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
-			localHash := repos.GitOutput(repoDir, "rev-parse", "HEAD")
-			_ = exec.Command("git", "-C", repoDir, "fetch", "--quiet").Run()
-			defaultBranch := "main"
-			if sym := repos.GitOutput(repoDir, "symbolic-ref", "refs/remotes/origin/HEAD"); sym != "" {
-				defaultBranch = strings.TrimPrefix(sym, "refs/remotes/origin/")
-			}
-			remoteHash := repos.GitOutput(repoDir, "rev-parse", "origin/"+defaultBranch)
-			if remoteHash != "" && localHash != remoteHash {
-				behind := repos.GitOutput(repoDir, "rev-list", "HEAD..origin/"+defaultBranch, "--count")
-				if behind == "" {
-					behind = "?"
-				}
-				updates = append(updates, RepoUpdate{Name: e.Name, Behind: behind})
+		if !skipFetch {
+			if u, ok := checkRemoteAhead(e.Name, repoDir); ok {
+				updates = append(updates, u)
 			}
 		}
 
-		// "" / "." means the repo root holds skills directly. Otherwise the
-		// directory must exist before we walk.
 		if e.SkillsPath != "" && e.SkillsPath != "." {
 			repoSkillDir := filepath.Join(repoDir, e.SkillsPath)
 			if info, err := os.Stat(repoSkillDir); err != nil || !info.IsDir() {
@@ -157,78 +132,111 @@ func SyncRepos(verbose bool, verbosef func(format string, a ...any)) (total int,
 		if err != nil {
 			continue
 		}
-		count := 0
-		for _, rs := range walked {
-			skillPath := rs.AbsPath
-			originalName := rs.Name
-			skillName := originalName
-			switch {
-			case e.Prefix == "" || e.Prefix == "false":
-				// no-op
-			case e.Prefix == "true":
-				if !strings.HasPrefix(skillName, e.Name+"-") {
-					skillName = e.Name + "-" + skillName
-				}
-			default:
-				if !strings.HasPrefix(skillName, e.Prefix+"-") {
-					skillName = e.Prefix + "-" + skillName
-				}
-			}
-
-			// Clean up stale unprefixed symlink when a prefix was applied.
-			if skillName != originalName {
-				stale := filepath.Join(store, originalName)
-				if li, err := os.Lstat(stale); err == nil && li.Mode()&os.ModeSymlink != 0 {
-					if target, err := os.Readlink(stale); err == nil {
-						needle := string(os.PathSeparator) + "repos" + string(os.PathSeparator) + e.Name + string(os.PathSeparator)
-						if strings.Contains(target, needle) {
-							_ = os.Remove(stale)
-							if verbose && verbosef != nil {
-								verbosef("  \033[2mclean: removed unprefixed %s (now %s)\033[0m\n", originalName, skillName)
-							}
-						}
-					}
-				}
-			}
-
-			target := filepath.Join(store, skillName)
-			li, err := os.Lstat(target)
-			if err == nil {
-				isSymlink := li.Mode()&os.ModeSymlink != 0
-				if !isSymlink && li.IsDir() {
-					// Real dir shadows the repo version.
-					if verbose && verbosef != nil {
-						verbosef("  \033[2mskip: %s (local override)\033[0m\n", skillName)
-					}
-					shadowed = append(shadowed, Shadow{SkillName: skillName, RepoName: e.Name})
-					continue
-				}
-				if isSymlink {
-					current, _ := os.Readlink(target)
-					if current != skillPath {
-						_ = os.Remove(target)
-						if err := os.Symlink(skillPath, target); err == nil {
-							if verbose && verbosef != nil {
-								verbosef("  \033[2mupdate: %s -> %s\033[0m\n", skillName, skillPath)
-							}
-						}
-					}
-					count++
-					continue
-				}
-			}
-			// No existing target — create symlink.
-			if err := os.Symlink(skillPath, target); err == nil {
-				if verbose && verbosef != nil {
-					verbosef("  \033[0;32m+\033[0m %s -> %s\n", skillName, skillPath)
-				}
-				count++
-			}
-		}
+		count := syncRepoSkills(e, walked, store, log, &shadowed)
 		perRepo = append(perRepo, PerRepoSync{Name: e.Name, SkillsPath: e.SkillsPath, Count: count})
 		total += count
 	}
 	return total, updates, shadowed, perRepo
+}
+
+// checkRemoteAhead probes the remote with `git fetch --dry-run`; on a hit it
+// runs a real fetch and compares hashes against origin/<default-branch>. The
+// caller can skip this entirely when it just pulled the repo.
+func checkRemoteAhead(name, repoDir string) (RepoUpdate, bool) {
+	if !hasRemoteUpdates(repoDir) {
+		return RepoUpdate{}, false
+	}
+	localHash := repos.GitOutput(repoDir, "rev-parse", "HEAD")
+	runGit(repoDir, repos.GitFetchTimeout, "fetch", "--quiet")
+	defaultBranch := "main"
+	if sym := repos.GitOutput(repoDir, "symbolic-ref", "refs/remotes/origin/HEAD"); sym != "" {
+		defaultBranch = strings.TrimPrefix(sym, "refs/remotes/origin/")
+	}
+	remoteHash := repos.GitOutput(repoDir, "rev-parse", "origin/"+defaultBranch)
+	if remoteHash == "" || localHash == remoteHash {
+		return RepoUpdate{}, false
+	}
+	behind := cmp.Or(repos.GitOutput(repoDir, "rev-list", "HEAD..origin/"+defaultBranch, "--count"), "?")
+	return RepoUpdate{Name: name, Behind: behind}, true
+}
+
+func hasRemoteUpdates(repoDir string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), repos.GitFetchTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", repoDir, "fetch", "--dry-run").CombinedOutput()
+	return err == nil && len(strings.TrimSpace(string(out))) > 0
+}
+
+func runGit(dir string, timeout time.Duration, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Run()
+}
+
+
+func prefixSkillName(e repos.Entry, name string) string {
+	if !e.UsesPrefix() {
+		return name
+	}
+	prefix := e.EffectivePrefix()
+	if strings.HasPrefix(name, prefix+"-") {
+		return name
+	}
+	return prefix + "-" + name
+}
+
+func syncRepoSkills(e repos.Entry, walked []RepoSkill, store string, log LogFn, shadowed *[]Shadow) int {
+	count := 0
+	for _, rs := range walked {
+		skillName := prefixSkillName(e, rs.Name)
+
+		// Clean up stale unprefixed symlink when a prefix was applied.
+		if skillName != rs.Name {
+			cleanStaleUnprefixedLink(store, e.Name, rs.Name, skillName, log)
+		}
+
+		target := filepath.Join(store, skillName)
+		li, err := os.Lstat(target)
+		if err == nil {
+			isSymlink := li.Mode()&os.ModeSymlink != 0
+			if !isSymlink && li.IsDir() {
+				log.write("  \033[2mskip: %s (local override)\033[0m\n", skillName)
+				*shadowed = append(*shadowed, Shadow{SkillName: skillName, RepoName: e.Name})
+				continue
+			}
+			if isSymlink {
+				current, _ := os.Readlink(target)
+				if current != rs.AbsPath {
+					_ = os.Remove(target)
+					if err := os.Symlink(rs.AbsPath, target); err == nil {
+						log.write("  \033[2mupdate: %s -> %s\033[0m\n", skillName, rs.AbsPath)
+					}
+				}
+				count++
+				continue
+			}
+		}
+		if err := os.Symlink(rs.AbsPath, target); err == nil {
+			log.write("  \033[0;32m+\033[0m %s -> %s\n", skillName, rs.AbsPath)
+			count++
+		}
+	}
+	return count
+}
+
+func cleanStaleUnprefixedLink(store, repoName, originalName, newName string, log LogFn) {
+	stale := filepath.Join(store, originalName)
+	li, err := os.Lstat(stale)
+	if err != nil || li.Mode()&os.ModeSymlink == 0 {
+		return
+	}
+	target, err := os.Readlink(stale)
+	if err != nil || !repos.LinkPointsTo(target, repoName) {
+		return
+	}
+	if os.Remove(stale) == nil {
+		log.write("  \033[2mclean: removed unprefixed %s (now %s)\033[0m\n", originalName, newName)
+	}
 }
 
 // CountStore returns (localCount, total) where localCount is the number of
@@ -246,7 +254,6 @@ func CountStore() (local, total int) {
 			continue
 		}
 		isSymlink := li.Mode()&os.ModeSymlink != 0
-		// Stat follows symlinks — matches bash's `-d "$item"`.
 		info, err := os.Stat(full)
 		if err != nil || !info.IsDir() {
 			continue
@@ -258,4 +265,3 @@ func CountStore() (local, total int) {
 	}
 	return local, total
 }
-

@@ -1,11 +1,8 @@
 // Package export implements `caddie export` — copying resolved skills into
-// either a local directory or an S3 prefix. Mirrors the bash helpers
-// _export_to_dir and _export_to_s3 byte-for-byte: the dry-run plan lines,
-// the summary sentences, and the clean-before-copy ordering must stay intact
-// so the contract tests pass.
+// either a local directory or an S3 prefix. The dry-run plan lines, summary
+// sentences, and the clean-before-copy ordering are pinned by contract tests.
 //
-// S3 shells out to the `aws` CLI (matching bash). There is no AWS SDK
-// dependency by design — see the commit message on the export port.
+// S3 shells out to the `aws` CLI rather than depending on an AWS SDK.
 package export
 
 import (
@@ -18,9 +15,8 @@ import (
 	"strings"
 )
 
-// ANSI codes duplicated from cmd/caddie/main.go. Keeping a local copy avoids
-// importing the main package and keeps this package self-contained; there
-// are only ~6 codes and they're effectively a public contract.
+// ANSI codes — duplicated from cmd/caddie/main.go to keep this package
+// importable without pulling in main.
 const (
 	ansiReset = "\033[0m"
 	ansiDim   = "\033[2m"
@@ -42,9 +38,8 @@ type Options struct {
 	DryRun bool
 }
 
-// countFiles counts regular files under dir (recursive). Matches
-// `find "$real_dir" -type f | wc -l` in bash. Errors silently count 0,
-// matching bash's `2>/dev/null`.
+// countFiles counts regular files under dir (recursive). Errors are silently
+// counted as zero.
 func countFiles(dir string) int {
 	n := 0
 	_ = filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
@@ -59,10 +54,9 @@ func countFiles(dir string) int {
 	return n
 }
 
-// copyDir copies src to dst recursively, preserving file mode bits. Symlinks
-// in the source are preserved as symlinks (bash's `cp -a` behavior). dst is
-// created if needed; existing dst contents are NOT merged — callers are
-// expected to remove dst first (mirrors bash `rm -rf "$dest"` before `cp -a`).
+// copyDir copies src to dst recursively, preserving file mode bits and
+// symlinks (cp -a semantics). Callers must remove dst first if they want a
+// clean copy — copyDir does not merge into existing destinations.
 func copyDir(src, dst string) error {
 	info, err := os.Stat(src)
 	if err != nil {
@@ -78,7 +72,7 @@ func copyDir(src, dst string) error {
 	for _, e := range entries {
 		srcPath := filepath.Join(src, e.Name())
 		dstPath := filepath.Join(dst, e.Name())
-		// Use Lstat so we don't follow symlinks — bash's `cp -a` preserves them.
+		// Lstat so source symlinks are preserved verbatim, not followed.
 		li, err := os.Lstat(srcPath)
 		if err != nil {
 			return err
@@ -122,7 +116,8 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	return out.Close()
 }
 
-// Local implements _export_to_dir.
+// Local copies entries into target/. With Clean, sibling directories not in
+// entries are removed first.
 func Local(target string, entries []Entry, opts Options) error {
 	matched := make(map[string]bool, len(entries))
 	for _, e := range entries {
@@ -134,8 +129,6 @@ func Local(target string, entries []Entry, opts Options) error {
 	if opts.Clean {
 		if info, err := os.Stat(target); err == nil && info.IsDir() {
 			existing, _ := os.ReadDir(target)
-			// bash iterates `$target/*/` (shell glob → lexicographic). Go's ReadDir
-			// returns sorted entries already.
 			names := make([]string, 0, len(existing))
 			for _, e := range existing {
 				full := filepath.Join(target, e.Name())
@@ -198,7 +191,7 @@ func Local(target string, entries []Entry, opts Options) error {
 }
 
 // parseS3URI splits an s3://bucket/prefix URI into bucket and prefix
-// (prefix has any trailing '/' stripped). Matches bash sed pipeline.
+// (prefix has any trailing '/' stripped).
 func parseS3URI(uri string) (bucket, prefix string) {
 	rest := strings.TrimPrefix(uri, "s3://")
 	if i := strings.Index(rest, "/"); i >= 0 {
@@ -210,8 +203,8 @@ func parseS3URI(uri string) (bucket, prefix string) {
 	return
 }
 
-// awsFlags reproduces bash: pass through AWS_PROFILE / AWS_ENDPOINT_URL as
-// CLI flags (not env — matches bash exactly for trace/debug parity).
+// awsFlags converts AWS_PROFILE / AWS_ENDPOINT_URL into explicit CLI flags
+// so the exact command shows up in trace/debug output.
 func awsFlags() []string {
 	var flags []string
 	if p := os.Getenv("AWS_PROFILE"); p != "" {
@@ -224,8 +217,7 @@ func awsFlags() []string {
 }
 
 // awsListPrefixes runs `aws s3 ls s3://bucket/prefix/` and parses the `PRE`
-// lines to get immediate subdirectories. Returns an empty slice on error,
-// matching bash `|| true` leniency.
+// lines to get immediate subdirectories. Returns nil on error.
 func awsListPrefixes(bucket, prefix string, flags []string) []string {
 	args := append([]string{}, flags...)
 	args = append(args, "s3", "ls", fmt.Sprintf("s3://%s/%s/", bucket, prefix))
@@ -243,7 +235,7 @@ func awsListPrefixes(bucket, prefix string, flags []string) []string {
 	return names
 }
 
-// S3 implements _export_to_s3.
+// S3 uploads entries under s3://<bucket>/<prefix>/ via the aws CLI.
 func S3(uri string, entries []Entry, opts Options) error {
 	bucket, prefix := parseS3URI(uri)
 	flags := awsFlags()
@@ -269,8 +261,7 @@ func S3(uri string, entries []Entry, opts Options) error {
 				args = append(args, "s3", "rm",
 					fmt.Sprintf("s3://%s/%s/%s/", bucket, prefix, name),
 					"--recursive")
-				// Bash discards output; we do the same. Don't fail the whole
-				// export if a single remove bombs — preserve bash leniency.
+				// A single rm failing should not abort the rest of the export.
 				_ = exec.Command("aws", args...).Run()
 			}
 			removed++

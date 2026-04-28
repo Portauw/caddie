@@ -1,19 +1,19 @@
 // Command caddie is the Go entry point for the caddie tool.
-//
-// Strangler-pattern migration: the port is complete — every subcommand is
-// handled by nativeCommands. Each native handler must be byte-compatible
-// with the frozen bash — see tests/contract.
 package main
 
 import (
 	"bufio"
+	"cmp"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Portauw/caddie/internal/config"
@@ -55,7 +55,6 @@ var nativeCommands = map[string]handler{
 	"export":    cmdExport,
 }
 
-// ANSI codes mirroring the bash helpers so stdout stays byte-identical.
 const (
 	ansiBold   = "\033[1m"
 	ansiReset  = "\033[0m"
@@ -67,8 +66,8 @@ const (
 	ansiGreen  = "\033[0;32m"
 )
 
-// isTerminal reports whether f refers to a tty (for prompt suppression,
-// matching bash's `read -p` behavior when stdin is piped).
+// isTerminal reports whether f refers to a tty (used to suppress prompts
+// when stdin is piped, matching contract-test expectations).
 func isTerminal(f *os.File) bool {
 	info, err := f.Stat()
 	if err != nil {
@@ -84,19 +83,14 @@ func die(msg string) {
 
 func main() {
 	args := os.Args[1:]
-	// With export ported, every bash subcommand has a native Go handler.
-	// No command: bash printed usage; match that via the help handler.
 	if len(args) == 0 {
 		cmdHelp(nil)
 		return
 	}
-
 	if fn, ok := nativeCommands[args[0]]; ok {
 		fn(args[1:])
 		return
 	}
-
-	// Unknown subcommand is a hard error, matching bash main()'s `die`.
 	die(fmt.Sprintf("Unknown command: %s\nRun 'caddie --help' for usage.", args[0]))
 }
 
@@ -136,8 +130,8 @@ func cmdList(_ []string) {
 		ansiDim, ansiCyan, ansiReset, ansiDim, ansiReset)
 }
 
-// cmdSource rejects the removed source subcommand family. Plugin sources
-// were dropped in favor of git repos as the only skill origin.
+// cmdSource prints a migration message for the removed `source` family.
+// Plugin sources were dropped in favor of git repos.
 func cmdSource(_ []string) {
 	die("`caddie source` has been removed. Use `caddie repo` to manage skill sources.")
 }
@@ -152,17 +146,12 @@ func cmdEdit(args []string) {
 	}
 	file := config.EnvFile(name)
 
-	// Bash: `$EDITOR "$file"` — unquoted expansion so EDITOR may contain args.
-	// Use sh -c to preserve that word-splitting behavior.
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vim"
-	}
+	editor := cmp.Or(os.Getenv("EDITOR"), "vim")
+	// `sh -c` preserves $EDITOR's word-splitting (e.g. "code --wait").
 	cmd := exec.Command("sh", "-c", editor+` "$0"`, file)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// Bash runs `$EDITOR "$file"` without checking exit status — we match.
 	_ = cmd.Run()
 	fmt.Printf("%s✓%s  Updated: %s\n", ansiGreen, ansiReset, name)
 }
@@ -176,10 +165,6 @@ func cmdDelete(args []string) {
 		die(fmt.Sprintf("Environment '%s' not found.", name))
 	}
 
-	// Bash: `read -rp "Are you sure..." -n 1 confirm; echo ""`
-	// bash's `read -p` only writes the prompt when stdin is a terminal;
-	// when stdin is piped the prompt is suppressed. Mirror that so piped
-	// tests match byte-for-byte. Then read one byte and emit a newline.
 	if isTerminal(os.Stdin) {
 		fmt.Printf("Are you sure you want to delete '%s'? [y/N] ", name)
 	}
@@ -212,7 +197,6 @@ func cmdClone(args []string) {
 		die(fmt.Sprintf("Destination environment '%s' already exists.", dest))
 	}
 
-	// Bash uses `cp` which preserves content byte-for-byte. Read+write matches.
 	data, err := os.ReadFile(config.EnvFile(src))
 	if err != nil {
 		die(err.Error())
@@ -224,9 +208,6 @@ func cmdClone(args []string) {
 	fmt.Printf("%sℹ%s  Edit with: %scaddie edit %s%s\n", ansiBlue, ansiReset, ansiCyan, dest, ansiReset)
 }
 
-// cmdRepo dispatches `repo <subcmd>`. Only list|ls is ported natively; every
-// other subcommand falls through to the frozen bash script so writes stay
-// funneled through the single existing implementation.
 func cmdRepo(args []string) {
 	if len(args) == 0 {
 		die("Usage: caddie repo <list|add|remove|update>")
@@ -262,36 +243,26 @@ func cmdRepoList(_ []string) {
 		repoDir := filepath.Join(repos.Dir(), e.Name)
 		status := fmt.Sprintf("%s(not cloned)%s", ansiDim, ansiReset)
 		if info, err := os.Stat(filepath.Join(repoDir, ".git")); err == nil && info.IsDir() {
-			branch := repos.GitOutput(repoDir, "rev-parse", "--abbrev-ref", "HEAD")
-			if branch == "" {
-				branch = "?"
-			}
-			shortHash := repos.GitOutput(repoDir, "rev-parse", "--short", "HEAD")
-			if shortHash == "" {
-				shortHash = "?"
-			}
+			branch := cmp.Or(repos.GitOutput(repoDir, "rev-parse", "--abbrev-ref", "HEAD"), "?")
+			shortHash := cmp.Or(repos.GitOutput(repoDir, "rev-parse", "--short", "HEAD"), "?")
 			status = fmt.Sprintf("%s%s@%s%s", ansiGreen, branch, shortHash, ansiReset)
 		}
 		fmt.Printf("  %s%s%s  %s\n", ansiBold, e.Name, ansiReset, status)
 		fmt.Printf("    %s%s%s\n", ansiDim, e.URL, ansiReset)
 
 		prefixDisplay := "none"
-		if e.Prefix != "" && e.Prefix != "false" {
-			if e.Prefix == "true" {
-				prefixDisplay = e.Name + "-*"
-			} else {
-				prefixDisplay = e.Prefix + "-*"
-			}
+		if e.UsesPrefix() {
+			prefixDisplay = e.EffectivePrefix() + "-*"
 		}
 		fmt.Printf("    %sskills_path: %s, prefix: %s%s\n", ansiDim, e.SkillsPath, prefixDisplay, ansiReset)
 		fmt.Println("")
 	}
 }
 
-// cmdRepoAdd mirrors bash cmd_repo_add: register a git repo under `repos:`
-// in sources.yaml, then `git clone --depth 1` the URL into $CONFIG_DIR/repos/<name>.
-// Clone failures print a warning (matching bash) but don't fail the command —
-// the registration still succeeds so `caddie repo update` can retry later.
+// cmdRepoAdd registers a git repo under `repos:` in sources.yaml, then
+// shallow-clones the URL into $CONFIG_DIR/repos/<name>. Clone failures emit
+// a warning but the registration still succeeds, so `caddie repo update` can
+// retry later.
 func cmdRepoAdd(args []string) {
 	if len(args) < 2 || args[0] == "" || args[1] == "" {
 		die("Usage: caddie repo add <name> <url> [skills_path]\n  Example: caddie repo add lenny https://github.com/RefoundAI/lenny-skills skills")
@@ -302,8 +273,6 @@ func cmdRepoAdd(args []string) {
 		skillsPath = args[2]
 	}
 
-	// repos.Exists already returns false for a missing file or missing
-	// `repos:` section, so no pre-check is needed.
 	exists, err := repos.Exists(name)
 	if err != nil {
 		die(err.Error())
@@ -320,12 +289,9 @@ func cmdRepoAdd(args []string) {
 		die(err.Error())
 	}
 	repoDir := filepath.Join(repos.Dir(), name)
-	// Bash only clones when $REPOS_DIR/$name doesn't exist — match that.
 	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
 		fmt.Printf("%sℹ%s  Cloning %s...\n", ansiBlue, ansiReset, url)
-		clone := exec.Command("git", "clone", "--depth", "1", url, repoDir)
-		// Stderr intentionally dropped to match bash's 2>/dev/null.
-		if err := clone.Run(); err == nil {
+		if err := gitClone(url, repoDir); err == nil {
 			walked, _ := skills.WalkRepoSkills(repoDir, skillsPath)
 			skillCount := len(walked)
 			fmt.Printf("%s✓%s  Cloned: %s%s%s (%d skills found)\n", ansiGreen, ansiReset, ansiBold, name, ansiReset, skillCount)
@@ -346,9 +312,8 @@ func cmdRepoAdd(args []string) {
 	fmt.Printf("%sℹ%s  Run %scaddie scan --force%s to sync skills into the store.\n", ansiBlue, ansiReset, ansiCyan, ansiReset)
 }
 
-// cmdRepoRemove mirrors bash cmd_repo_remove: unregister a repo from
-// sources.yaml, remove any symlinks in the skill store pointing into its
-// checkout, and rm -rf the checkout directory.
+// cmdRepoRemove unregisters a repo, removes store symlinks pointing into its
+// checkout, and rm -rf's the checkout directory.
 func cmdRepoRemove(args []string) {
 	if len(args) == 0 || args[0] == "" {
 		die("Usage: caddie repo remove <name>")
@@ -375,27 +340,14 @@ func cmdRepoRemove(args []string) {
 	}
 
 	removed := 0
-	store := skills.Store()
 	repoDir := filepath.Join(repos.Dir(), name)
-	needle := string(os.PathSeparator) + "repos" + string(os.PathSeparator) + name + string(os.PathSeparator)
-	if entries, err := os.ReadDir(store); err == nil {
-		for _, e := range entries {
-			full := filepath.Join(store, e.Name())
-			info, err := os.Lstat(full)
-			if err != nil || info.Mode()&os.ModeSymlink == 0 {
-				continue
-			}
-			target, err := os.Readlink(full)
-			if err != nil {
-				continue
-			}
-			if strings.Contains(target, needle) {
-				if err := os.Remove(full); err == nil {
-					removed++
-				}
+	skills.EachSymlinkTarget(skills.Store(), func(_, full, target string) {
+		if repos.LinkPointsTo(target, name) {
+			if os.Remove(full) == nil {
+				removed++
 			}
 		}
-	}
+	})
 
 	if info, err := os.Stat(repoDir); err == nil && info.IsDir() {
 		if err := os.RemoveAll(repoDir); err != nil {
@@ -451,10 +403,6 @@ func cmdInventory(args []string) {
 	fmt.Printf("Total: %d skills\n", len(items))
 }
 
-// cmdHelp mirrors bash usage(): a static multi-section help blob with ANSI
-// color codes. Registered under help, --help, -h. Output must be byte-identical
-// to `printf '%b\n' "$(cat << EOF ... EOF)"` in bash — note the trailing
-// newline from printf's own \n and that backslash-escaped $ becomes $.
 func cmdHelp(_ []string) {
 	B, R, C, D, V := ansiBold, ansiReset, ansiCyan, ansiDim, version.Version
 	fmt.Print(
@@ -540,20 +488,29 @@ func cmdHelp(_ []string) {
 			"  " + D + "~/.config/caddie/environments/" + R + "       Environment YAML files\n" +
 			"  " + D + "~/.config/caddie/sources.yaml" + R + "        Repo registry\n",
 	)
-	// Bash `$(cat << EOF)` strips trailing newlines from the heredoc body;
-	// `printf '%b\n'` then adds one. Net tail is a single "\n" — matched above.
 }
 
-// cmdRepoUpdate mirrors bash cmd_repo_update: git pull each registered repo
-// (or one filtered by name). Dies if no repos section present; reports
-// "not found" if target name didn't match; clones on first run.
+// cmdRepoUpdate pulls every registered repo in parallel (or just one when
+// args[0] is set). Returns nothing; the result is reflected in stdout and
+// in the .last-pull mtime via the caller (when used as auto-pull).
 func cmdRepoUpdate(args []string) {
+	updated, _ := runRepoUpdate(args)
+	if updated > 0 {
+		fmt.Println()
+		fmt.Printf("%sℹ%s  Run %scaddie scan --force%s to sync updated skills into the store.\n",
+			ansiBlue, ansiReset, ansiCyan, ansiReset)
+	}
+}
+
+// runRepoUpdate is the worker behind cmdRepoUpdate. Returns (successes, attempted).
+// Output is buffered per-repo and flushed in registration order, so concurrent
+// pulls don't interleave on stdout.
+func runRepoUpdate(args []string) (updated, attempted int) {
 	target := ""
 	if len(args) > 0 {
 		target = args[0]
 	}
 
-	// Bash: die if sources.yaml missing OR no `repos:` header.
 	hasRepos, err := repos.HasReposSection()
 	if err != nil {
 		die(err.Error())
@@ -567,82 +524,98 @@ func cmdRepoUpdate(args []string) {
 		die(err.Error())
 	}
 
-	updated := 0
+	var todo []repos.Entry
 	for _, e := range entries {
-		if target != "" && e.Name != target {
-			continue
-		}
-		repoDir := filepath.Join(repos.Dir(), e.Name)
-		gitDir := filepath.Join(repoDir, ".git")
-
-		if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
-			fmt.Printf("%sℹ%s  Repo '%s' not cloned yet. Cloning...\n", ansiBlue, ansiReset, e.Name)
-			if err := os.MkdirAll(repos.Dir(), 0o755); err != nil {
-				die(err.Error())
-			}
-			clone := exec.Command("git", "clone", "--depth", "1", e.URL, repoDir)
-			if clone.Run() == nil {
-				fmt.Printf("%s✓%s  Cloned: %s\n", ansiGreen, ansiReset, e.Name)
-				updated++
-			} else {
-				fmt.Printf("%s⚠%s  Failed to clone: %s\n", ansiYellow, ansiReset, e.Name)
-			}
-			continue
-		}
-
-		beforeHash := repos.GitOutput(repoDir, "rev-parse", "HEAD")
-
-		fmt.Printf("%sℹ%s  Updating '%s'...\n", ansiBlue, ansiReset, e.Name)
-		pull := exec.Command("git", "-C", repoDir, "pull", "--ff-only")
-		// Bash: `git -C pull --ff-only 2>/dev/null` — stderr dropped; stdout
-		// also goes to /dev/null (the bash form only checks exit status).
-		if pull.Run() == nil {
-			afterHash := repos.GitOutput(repoDir, "rev-parse", "HEAD")
-			if beforeHash != afterHash {
-				commitCount := repos.GitOutput(repoDir, "rev-list", beforeHash+".."+afterHash, "--count")
-				if commitCount == "" {
-					commitCount = "?"
-				}
-				fmt.Printf("%s✓%s  Updated: %s%s%s (%s new commit(s))\n",
-					ansiGreen, ansiReset, ansiBold, e.Name, ansiReset, commitCount)
-				updated++
-			} else {
-				fmt.Printf("  %s%s: already up to date%s\n", ansiDim, e.Name, ansiReset)
-			}
-		} else {
-			fmt.Printf("%s⚠%s  Update failed for '%s'. Try: cd %s && git pull\n",
-				ansiYellow, ansiReset, e.Name, repoDir)
+		if target == "" || e.Name == target {
+			todo = append(todo, e)
 		}
 	}
-
-	if target != "" && updated == 0 {
-		found := false
-		for _, e := range entries {
-			if e.Name == target {
-				found = true
-				break
-			}
-		}
-		if !found {
-			die(fmt.Sprintf("Repo '%s' not found.", target))
-		}
+	if target != "" && len(todo) == 0 {
+		die(fmt.Sprintf("Repo '%s' not found.", target))
 	}
 
-	if updated > 0 {
-		fmt.Println()
-		fmt.Printf("%sℹ%s  Run %scaddie scan --force%s to sync updated skills into the store.\n",
-			ansiBlue, ansiReset, ansiCyan, ansiReset)
+	if err := os.MkdirAll(repos.Dir(), 0o755); err != nil {
+		die(err.Error())
 	}
+
+	const maxParallel = 4
+	type result struct {
+		out string
+		ok  bool
+	}
+	results := make([]result, len(todo))
+	sem := make(chan struct{}, maxParallel)
+	var wg sync.WaitGroup
+	for i, e := range todo {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, e repos.Entry) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			results[i].out, results[i].ok = updateOneRepo(e)
+		}(i, e)
+	}
+	wg.Wait()
+
+	for _, r := range results {
+		fmt.Print(r.out)
+		if r.ok {
+			updated++
+		}
+	}
+	return updated, len(todo)
 }
 
-// cmdReset mirrors bash cmd_reset: clean managed symlinks in ~/.agents/skills,
-// remove ~/.claude/skills symlink, clean project-local skill symlinks for every
-// registered environment, rm -rf the skill store, remove state files, and
-// re-enable disabled plugins registered via caddie sources.
-//
-// Skipped vs bash: the plugin-enable step uses python to rewrite ~/.claude/
-// settings.json — we delegate by reimplementing the narrow behavior (scan
-// store symlinks, rewrite settings.json) only when settings.json exists.
+// updateOneRepo pulls (or clones) a single repo and returns its rendered
+// status block plus whether anything actually changed.
+func updateOneRepo(e repos.Entry) (string, bool) {
+	repoDir := filepath.Join(repos.Dir(), e.Name)
+	gitDir := filepath.Join(repoDir, ".git")
+	var b strings.Builder
+
+	if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
+		fmt.Fprintf(&b, "%sℹ%s  Repo '%s' not cloned yet. Cloning...\n", ansiBlue, ansiReset, e.Name)
+		if err := gitClone(e.URL, repoDir); err == nil {
+			fmt.Fprintf(&b, "%s✓%s  Cloned: %s\n", ansiGreen, ansiReset, e.Name)
+			return b.String(), true
+		}
+		fmt.Fprintf(&b, "%s⚠%s  Failed to clone: %s\n", ansiYellow, ansiReset, e.Name)
+		return b.String(), false
+	}
+
+	beforeHash := repos.GitOutput(repoDir, "rev-parse", "HEAD")
+	fmt.Fprintf(&b, "%sℹ%s  Updating '%s'...\n", ansiBlue, ansiReset, e.Name)
+
+	ctx, cancel := context.WithTimeout(context.Background(), repos.GitFetchTimeout)
+	defer cancel()
+	pullErr := exec.CommandContext(ctx, "git", "-C", repoDir, "pull", "--ff-only").Run()
+	if pullErr != nil {
+		fmt.Fprintf(&b, "%s⚠%s  Update failed for '%s'. Try: cd %s && git pull\n",
+			ansiYellow, ansiReset, e.Name, repoDir)
+		return b.String(), false
+	}
+	afterHash := repos.GitOutput(repoDir, "rev-parse", "HEAD")
+	if beforeHash == afterHash {
+		fmt.Fprintf(&b, "  %s%s: already up to date%s\n", ansiDim, e.Name, ansiReset)
+		return b.String(), false
+	}
+	commitCount := cmp.Or(repos.GitOutput(repoDir, "rev-list", beforeHash+".."+afterHash, "--count"), "?")
+	fmt.Fprintf(&b, "%s✓%s  Updated: %s%s%s (%s new commit(s))\n",
+		ansiGreen, ansiReset, ansiBold, e.Name, ansiReset, commitCount)
+	return b.String(), true
+}
+
+// gitClone shallow-clones url into dir. Uses GitCloneTimeout (longer than
+// fetch) to accommodate larger first-time pulls over slow links.
+func gitClone(url, dir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), repos.GitCloneTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, "git", "clone", "--depth", "1", url, dir).Run()
+}
+
+// cmdReset cleans managed symlinks in ~/.agents/skills, removes the
+// ~/.claude/skills symlink, cleans project-local skill symlinks for every
+// registered environment, rm -rf's the skill store, and removes state files.
 func cmdReset(args []string) {
 	force := false
 	if len(args) > 0 && (args[0] == "-f" || args[0] == "--force") {
@@ -651,30 +624,16 @@ func cmdReset(args []string) {
 
 	fmt.Printf("%scaddie reset%s — restore to clean state\n\n", ansiBold, ansiReset)
 
-	home := os.Getenv("HOME")
-	if home == "" {
-		h, _ := os.UserHomeDir()
-		home = h
-	}
+	home := config.Home()
 	agentSkills := filepath.Join(home, ".agents", "skills")
 	claudeSkills := filepath.Join(home, ".claude", "skills")
 	skillStore := filepath.Join(config.Dir(), "skills")
 
-	symlinkCountAgents := 0
+	symlinkCountAgents := skills.EachSymlink(agentSkills, nil)
 	storeCount := 0
 	claudeIsSymlink := false
 	if info, err := os.Lstat(claudeSkills); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		claudeIsSymlink = true
-	}
-	if info, err := os.Stat(agentSkills); err == nil && info.IsDir() {
-		if entries, err := os.ReadDir(agentSkills); err == nil {
-			for _, e := range entries {
-				full := filepath.Join(agentSkills, e.Name())
-				if li, err := os.Lstat(full); err == nil && li.Mode()&os.ModeSymlink != 0 {
-					symlinkCountAgents++
-				}
-			}
-		}
 	}
 	if info, err := os.Stat(skillStore); err == nil && info.IsDir() {
 		if entries, err := os.ReadDir(skillStore); err == nil {
@@ -696,9 +655,7 @@ func cmdReset(args []string) {
 	fmt.Printf("  Repo registry (~/.config/caddie/sources.yaml)\n")
 	fmt.Println()
 
-	// Bash uses `echo -n "Proceed?..."; read -r confirm` here — an echo, not
-	// `read -rp`, so the prompt fires regardless of tty state. Don't gate on
-	// isTerminal like cmdDelete does.
+	// Prompt unconditionally (don't gate on isTerminal here — echo, not read -rp).
 	if !force {
 		fmt.Print("Proceed? [y/N] ")
 		br := bufio.NewReader(os.Stdin)
@@ -712,14 +669,7 @@ func cmdReset(args []string) {
 	}
 
 	if info, err := os.Stat(agentSkills); err == nil && info.IsDir() {
-		if entries, err := os.ReadDir(agentSkills); err == nil {
-			for _, e := range entries {
-				full := filepath.Join(agentSkills, e.Name())
-				if li, err := os.Lstat(full); err == nil && li.Mode()&os.ModeSymlink != 0 {
-					_ = os.Remove(full)
-				}
-			}
-		}
+		skills.EachSymlink(agentSkills, func(_, full string) { _ = os.Remove(full) })
 		fmt.Printf("%sℹ%s  Cleaned ~/.agents/skills/ symlinks\n", ansiBlue, ansiReset)
 	}
 	// Remove ~/.claude/skills if it's a symlink.
@@ -729,7 +679,7 @@ func cmdReset(args []string) {
 		}
 	}
 
-	// 5b. Clean project-local skill dirs for every environment with `directory:`.
+	// Clean project-local skill dirs for every environment with `directory:`.
 	projectCleaned := 0
 	envDir := config.EnvDir()
 	if entries, err := os.ReadDir(envDir); err == nil {
@@ -742,22 +692,13 @@ func cmdReset(args []string) {
 			if ed == "" {
 				continue
 			}
-			if strings.HasPrefix(ed, "~") {
-				ed = home + strings.TrimPrefix(ed, "~")
-			}
+			ed = config.ExpandTilde(ed)
 			pdir := filepath.Join(ed, ".agents", "skills")
-			if info, err := os.Stat(pdir); err == nil && info.IsDir() {
-				if items, err := os.ReadDir(pdir); err == nil {
-					for _, it := range items {
-						full := filepath.Join(pdir, it.Name())
-						if li, err := os.Lstat(full); err == nil && li.Mode()&os.ModeSymlink != 0 {
-							if os.Remove(full) == nil {
-								projectCleaned++
-							}
-						}
-					}
+			skills.EachSymlink(pdir, func(_, full string) {
+				if os.Remove(full) == nil {
+					projectCleaned++
 				}
-			}
+			})
 			// Remove .claude/skills symlink + fingerprint.
 			claudeLink := filepath.Join(ed, ".claude", "skills")
 			if li, err := os.Lstat(claudeLink); err == nil && li.Mode()&os.ModeSymlink != 0 {
@@ -801,8 +742,6 @@ func cmdWhich(_ []string) {
 	fmt.Println(name)
 }
 
-// cmdShow mirrors bash cmd_show: print config file contents + resolved skills
-// derived from the store via resolve_skills. Byte-exact stdout vs bash.
 func cmdShow(args []string) {
 	if len(args) == 0 || args[0] == "" {
 		die("Usage: caddie show <name>")
@@ -815,23 +754,11 @@ func cmdShow(args []string) {
 	displayName := config.ReadScalar(file, "name")
 	directory := config.ReadScalar(file, "directory")
 
-	label := displayName
-	if label == "" {
-		label = name
-	}
+	label := cmp.Or(displayName, name)
 	fmt.Printf("%sEnvironment: %s%s%s\n\n", ansiBold, ansiCyan, label, ansiReset)
 
 	if directory != "" {
-		// Bash `${directory/#\~/$HOME}` expands a leading `~` only.
-		expanded := directory
-		if strings.HasPrefix(expanded, "~") {
-			home := os.Getenv("HOME")
-			if home == "" {
-				h, _ := os.UserHomeDir()
-				home = h
-			}
-			expanded = home + strings.TrimPrefix(expanded, "~")
-		}
+		expanded := config.ExpandTilde(directory)
 		fmt.Printf("  %sSkills managed in:%s\n", ansiDim, ansiReset)
 		fmt.Printf("    %s%s/.agents/skills/ (.claude/skills → symlink)%s\n", ansiDim, expanded, ansiReset)
 		if _, err := os.Stat(filepath.Join(expanded, ".claude", ".caddie-fingerprint")); err == nil {
@@ -840,7 +767,6 @@ func cmdShow(args []string) {
 		fmt.Println()
 	}
 
-	// Dump config verbatim — bash `cat "$file"`.
 	data, err := os.ReadFile(file)
 	if err != nil {
 		die(err.Error())
@@ -851,15 +777,12 @@ func cmdShow(args []string) {
 	fmt.Printf("%sResolved skills:%s\n", ansiBold, ansiReset)
 
 	patterns := config.ReadList(file, "skills")
-	// If the store doesn't exist (init not run), resolve_skills silently
-	// yields empty — match that instead of erroring out.
 	var ids []string
 	if skills.StoreExists() {
 		ids, _ = skills.ResolveIDs(patterns)
 	}
-	// Bash quirk: `count=$(echo "$resolved" | grep -c . || echo 0)`. When
-	// resolved is empty, grep -c . prints "0" and returns 1, so `|| echo 0`
-	// fires too — $count captures "0\n0". We mirror that exactly.
+	// Two zeros are emitted when there are no matches to mirror the historical
+	// `grep -c . || echo 0` shell quirk that contract tests pin.
 	if len(ids) == 0 {
 		fmt.Printf("  0\n0 skills matched\n\n")
 	} else {
@@ -870,11 +793,9 @@ func cmdShow(args []string) {
 	}
 }
 
-// cmdCreate mirrors bash cmd_create: interactive prompts for display name,
-// description, directory, skill patterns; writes an environment YAML.
-// Prompt text gated on tty for piped-stdin contract tests (same pattern as
-// cmdDelete); bash `read -rp` natively suppresses the prompt when stdin is
-// not a tty.
+// cmdCreate prompts for display name, description, directory, and skill
+// patterns; writes an environment YAML. Prompt text is gated on tty so the
+// contract tests that pipe stdin still match.
 func cmdCreate(args []string) {
 	if len(args) == 0 || args[0] == "" {
 		die("Usage: caddie create <name>")
@@ -957,24 +878,18 @@ func cmdCreate(args []string) {
 	fmt.Printf("  Activate: %scaddie activate %s%s\n", ansiCyan, name, ansiReset)
 }
 
-// cmdInit mirrors bash cmd_init: idempotent filesystem setup (config dirs,
-// skill store, backups, migrations, ~/.claude/skills symlink, auto-detected
-// plugin sources, example env). Delegates the final `cmd_scan` step to the
-// legacy bash script because scan hasn't been ported yet.
+// cmdInit performs idempotent filesystem setup: config dirs, skill store,
+// backups, migrations, ~/.claude/skills symlink, example env, then runs scan.
 func cmdInit(args []string) {
 	fmt.Printf("%sInitializing caddie skill profile manager...%s\n\n", ansiBold, ansiReset)
 
-	home := os.Getenv("HOME")
-	if home == "" {
-		h, _ := os.UserHomeDir()
-		home = h
-	}
+	home := config.Home()
 	configDir := config.Dir()
 	envDir := config.EnvDir()
 	skillStore := skills.Store()
 	claudeSkills := filepath.Join(home, ".claude", "skills")
 	agentSkills := filepath.Join(home, ".agents", "skills")
-	sourcesFile := filepath.Join(configDir, "sources.yaml")
+	sourcesFile := repos.File()
 
 	_ = os.MkdirAll(configDir, 0o755)
 	_ = os.MkdirAll(envDir, 0o755)
@@ -998,7 +913,6 @@ func cmdInit(args []string) {
 			fmt.Printf("%sℹ%s  Backup already exists: %s\n", ansiBlue, ansiReset, backup)
 			continue
 		}
-		// `cp -a` preserves attrs; use an external cp to keep semantics identical.
 		cmd := exec.Command("cp", "-a", d, backup)
 		if cmd.Run() == nil {
 			fmt.Printf("%s✓%s  Backed up %s to %s\n", ansiGreen, ansiReset, d, backup)
@@ -1022,11 +936,10 @@ func cmdInit(args []string) {
 				continue
 			}
 			if li.Mode()&os.ModeSymlink != 0 {
-				continue // skip symlinks (already managed)
+				continue
 			}
 			base := e.Name()
 			if !li.IsDir() && strings.HasSuffix(base, ".md") {
-				// Bare .md — wrap into <name>/SKILL.md.
 				skillName := strings.TrimSuffix(base, ".md")
 				skillDir := filepath.Join(skillStore, skillName)
 				if _, err := os.Stat(skillDir); err == nil {
@@ -1064,7 +977,6 @@ func cmdInit(args []string) {
 		fmt.Printf("%sℹ%s  No bare files/dirs to migrate\n", ansiBlue, ansiReset)
 	}
 
-	// 3b. Ensure ~/.claude/skills is a symlink to ~/.agents/skills.
 	ensureClaudeSkillsSymlink(claudeSkills, agentSkills)
 	fmt.Printf("%s✓%s  Set up ~/.claude/skills → ~/.agents/skills\n", ansiGreen, ansiReset)
 
@@ -1097,7 +1009,6 @@ skills:
 			ansiBlue, ansiReset, ansiCyan, ansiReset)
 	}
 
-	// Run the native scan so init stays self-contained. Failures are non-fatal.
 	fmt.Println()
 	cmdScan(nil)
 
@@ -1114,10 +1025,9 @@ skills:
 	fmt.Printf("  }%s\n", ansiReset)
 }
 
-// ensureClaudeSkillsSymlink mirrors bash ensure_claude_skills_symlink for the
-// home case: if ~/.claude/skills is already the right symlink, no-op;
-// otherwise remove (migrating contents into ~/.agents/skills if it was a
-// real directory) and recreate as a relative symlink to "../.agents/skills".
+// ensureClaudeSkillsSymlink makes claudeDir a relative symlink to
+// "../.agents/skills". If claudeDir is a real directory, its contents are
+// migrated into agentsDir before recreating the symlink.
 func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) {
 	if li, err := os.Lstat(claudeDir); err == nil && li.Mode()&os.ModeSymlink != 0 {
 		target, _ := os.Readlink(claudeDir)
@@ -1160,22 +1070,33 @@ func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) {
 	_ = os.Symlink("../.agents/skills", claudeDir)
 }
 
-// cmdScan mirrors bash cmd_scan but repo-only: plugin sources were dropped.
-// Sweeps ~/.agents/skills/ into the store, cleans broken store symlinks,
-// iterates every registered repo (checking for remote updates + syncing
-// skills), then prints counts + warnings. Cached by mtime of .last-scan
-// (60 s) unless --force.
+type scanOpts struct {
+	verbose, force, skipFetch bool
+	out                       io.Writer // nil means os.Stdout
+}
+
+// cmdScan sweeps ~/.agents/skills/ into the store, cleans broken store
+// symlinks, then iterates every registered repo (checking for remote updates
+// and syncing skills). Cached by mtime of .last-scan (60s) unless --force.
 func cmdScan(args []string) {
-	verbose, force := false, false
+	var opts scanOpts
 	for _, a := range args {
 		switch a {
 		case "-v", "--verbose":
-			verbose = true
+			opts.verbose = true
 		case "-f", "--force":
-			force = true
+			opts.force = true
 		}
 	}
+	runScan(opts)
+}
 
+func runScan(opts scanOpts) {
+	out := opts.out
+	if out == nil {
+		out = os.Stdout
+	}
+	verbose, force, skipFetch := opts.verbose, opts.force, opts.skipFetch
 	store := skills.Store()
 	_ = os.MkdirAll(store, 0o755)
 
@@ -1185,7 +1106,7 @@ func cmdScan(args []string) {
 			age := time.Since(info.ModTime())
 			if age < 60*time.Second {
 				if verbose {
-					fmt.Printf("%sℹ%s  Scan cached (%ds ago, use --force to rescan)\n",
+					fmt.Fprintf(out, "%sℹ%s  Scan cached (%ds ago, use --force to rescan)\n",
 						ansiBlue, ansiReset, int(age.Seconds()))
 				}
 				return
@@ -1193,82 +1114,77 @@ func cmdScan(args []string) {
 		}
 	}
 
-	fmt.Printf("%sℹ%s  Scanning skill sources...\n", ansiBlue, ansiReset)
+	fmt.Fprintf(out, "%sℹ%s  Scanning skill sources...\n", ansiBlue, ansiReset)
 
-	home := os.Getenv("HOME")
-	if home == "" {
-		h, _ := os.UserHomeDir()
-		home = h
+	home := config.Home()
+	var log skills.LogFn
+	if verbose {
+		log = func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
 	}
 
-	verbosef := func(format string, a ...any) { fmt.Printf(format, a...) }
-
-	swept := skills.SweepAgentDir(home, verbose, verbosef)
+	swept := skills.SweepAgentDir(home, log)
 	if swept > 0 {
-		fmt.Printf("%sℹ%s  Swept %d new skill(s) from agent dirs into store\n", ansiBlue, ansiReset, swept)
+		fmt.Fprintf(out, "%sℹ%s  Swept %d new skill(s) from agent dirs into store\n", ansiBlue, ansiReset, swept)
 	}
 
-	brokenRemoved := skills.CleanBrokenStoreLinks(verbose, verbosef)
+	brokenRemoved := skills.CleanBrokenStoreLinks(log)
 	if brokenRemoved > 0 {
-		fmt.Printf("%sℹ%s  Removed %d broken symlink(s) from store\n", ansiBlue, ansiReset, brokenRemoved)
+		fmt.Fprintf(out, "%sℹ%s  Removed %d broken symlink(s) from store\n", ansiBlue, ansiReset, brokenRemoved)
 	}
 
-	totalRepo, updates, shadowed, perRepo := skills.SyncRepos(verbose, verbosef)
+	totalRepo, updates, shadowed, perRepo := skills.SyncRepos(log, skipFetch)
 	for _, r := range perRepo {
 		if r.Warning != "" {
 			switch r.Warning {
 			case "not cloned":
-				fmt.Printf("%s⚠%s  Repo '%s': not cloned. Run %scaddie repo update %s%s\n",
+				fmt.Fprintf(out, "%s⚠%s  Repo '%s': not cloned. Run %scaddie repo update %s%s\n",
 					ansiYellow, ansiReset, r.Name, ansiCyan, r.Name, ansiReset)
 			case "skills_path not found":
-				fmt.Printf("%s⚠%s  Repo '%s': skills_path '%s' not found\n",
+				fmt.Fprintf(out, "%s⚠%s  Repo '%s': skills_path '%s' not found\n",
 					ansiYellow, ansiReset, r.Name, r.SkillsPath)
 			}
 			continue
 		}
-		fmt.Printf("%sℹ%s  Repo '%s': %d skills from %s/\n",
+		fmt.Fprintf(out, "%sℹ%s  Repo '%s': %d skills from %s/\n",
 			ansiBlue, ansiReset, r.Name, r.Count, r.SkillsPath)
 	}
 
 	localCount, total := skills.CountStore()
-	fmt.Println()
-	now := time.Now()
-	if err := os.Chtimes(cachePath, now, now); err != nil {
-		_ = os.WriteFile(cachePath, nil, 0o644)
-	}
+	fmt.Fprintln(out)
+	touch(cachePath)
 
-	fmt.Printf("%s✓%s  Scan complete: %s%d%s skills in canonical store (%d local, %d from repos)\n",
+	fmt.Fprintf(out, "%s✓%s  Scan complete: %s%d%s skills in canonical store (%d local, %d from repos)\n",
 		ansiGreen, ansiReset, ansiBold, total, ansiReset, localCount, totalRepo)
 
 	if len(updates) > 0 {
-		fmt.Println()
-		fmt.Printf("%sℹ%s  Repo updates available:\n", ansiBlue, ansiReset)
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%sℹ%s  Repo updates available:\n", ansiBlue, ansiReset)
 		for _, u := range updates {
-			fmt.Printf("  %s•%s %s%s%s: %s commit(s) behind\n",
+			fmt.Fprintf(out, "  %s•%s %s%s%s: %s commit(s) behind\n",
 				ansiYellow, ansiReset, ansiBold, u.Name, ansiReset, u.Behind)
 		}
-		fmt.Printf("  %sRun %scaddie repo update%s%s to pull changes%s\n",
+		fmt.Fprintf(out, "  %sRun %scaddie repo update%s%s to pull changes%s\n",
 			ansiDim, ansiCyan, ansiReset, ansiDim, ansiReset)
 	}
 
 	if len(shadowed) > 0 {
-		fmt.Println()
-		fmt.Printf("%s⚠%s  Local skills shadowing repo versions:\n", ansiYellow, ansiReset)
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "%s⚠%s  Local skills shadowing repo versions:\n", ansiYellow, ansiReset)
 		for _, s := range shadowed {
-			fmt.Printf("  %s•%s %s%s%s shadows repo '%s'\n",
+			fmt.Fprintf(out, "  %s•%s %s%s%s shadows repo '%s'\n",
 				ansiYellow, ansiReset, ansiBold, s.SkillName, ansiReset, s.RepoName)
 		}
-		fmt.Printf("  %sTo use the repo version, remove the local copy:%s\n", ansiDim, ansiReset)
-		fmt.Printf("  %s  rm -rf %s/<skill-name> && caddie scan --force%s\n", ansiDim, store, ansiReset)
+		fmt.Fprintf(out, "  %sTo use the repo version, remove the local copy:%s\n", ansiDim, ansiReset)
+		fmt.Fprintf(out, "  %s  rm -rf %s/<skill-name> && caddie scan --force%s\n", ansiDim, store, ansiReset)
 	}
 
-	// Orphaned skill pattern warnings — scan every environment's `skills:`
-	// list for patterns that match zero store items.
+	// Orphaned-pattern warnings: any env pattern matching zero store items.
 	envDir := config.EnvDir()
 	envEntries, err := os.ReadDir(envDir)
 	if err != nil {
 		return
 	}
+	scannedItems, _ := skills.Scan()
 	hasWarn := false
 	for _, ef := range envEntries {
 		if ef.IsDir() || !strings.HasSuffix(ef.Name(), ".yaml") {
@@ -1280,40 +1196,22 @@ func cmdScan(args []string) {
 			if p == "" {
 				continue
 			}
-			if skills.PatternMatches(p) == 0 {
+			if skills.PatternMatchesIn(scannedItems, p) == 0 {
 				if !hasWarn {
-					fmt.Println()
+					fmt.Fprintln(out)
 					hasWarn = true
 				}
-				fmt.Printf("%s⚠%s  Environment %s%s%s: pattern %s\"%s\"%s matches 0 skills — source may have been removed\n",
+				fmt.Fprintf(out, "%s⚠%s  Environment %s%s%s: pattern %s\"%s\"%s matches 0 skills — source may have been removed\n",
 					ansiYellow, ansiReset, ansiBold, envName, ansiReset, ansiCyan, p, ansiReset)
 			}
 		}
 	}
 }
 
-// expandTilde replaces a leading `~` with $HOME (bash `${var/#\~/$HOME}`).
-func expandTilde(p string) string {
-	if !strings.HasPrefix(p, "~") {
-		return p
-	}
-	home := os.Getenv("HOME")
-	if home == "" {
-		h, _ := os.UserHomeDir()
-		home = h
-	}
-	return home + strings.TrimPrefix(p, "~")
-}
-
-// cmdActivate mirrors bash cmd_activate. Resolves the target environment
-// (explicit arg, .caddie.yaml, interactive picker), syncs repos, resolves
-// skills, fingerprints, and minimally reconciles the target .agents/skills
-// directory (+ .claude/skills symlink). Writes a fingerprint + .gitignore
-// entries for project-local targets.
-//
-// Deliberate divergence from bash: no SOURCES.md manifest is generated. The
-// .gitignore entry list keeps ".agents/SOURCES.md" so legacy files are still
-// tracked as ignored when present, but we do not create one here.
+// cmdActivate resolves the target environment (explicit arg → .caddie.yaml
+// → directory match → interactive picker), syncs repos, resolves skills,
+// fingerprints, and minimally reconciles the target .agents/skills directory.
+// Writes a fingerprint + .gitignore entries for project-local targets.
 func cmdActivate(args []string) {
 	name := ""
 	dryRun := false
@@ -1334,8 +1232,8 @@ func cmdActivate(args []string) {
 
 	cwd, _ := os.Getwd()
 
-	// Always probe the project config so we can use it as a fallback for
-	// project_dir even when an explicit name is given.
+	// Always probe the project config so it remains a project_dir fallback
+	// even when name is explicit.
 	projectConfig := config.FindProjectConfig(cwd)
 
 	if name == "" {
@@ -1350,7 +1248,6 @@ func cmdActivate(args []string) {
 			}
 		}
 		if name == "" {
-			// Fall back to the directory: matching rule.
 			if n, _, ok := config.ResolveFromCwd(cwd); ok {
 				name = n
 			}
@@ -1382,10 +1279,16 @@ func cmdActivate(args []string) {
 				die("Invalid choice.")
 			}
 			name = envs[idx-1]
-			// Remember the choice.
-			projectConfig = filepath.Join(cwd, ".caddie.yaml")
-			_ = os.WriteFile(projectConfig, []byte(fmt.Sprintf("environment: \"%s\"\n", name)), 0o644)
-			fmt.Printf("%s✓%s  Created .caddie.yaml → %s\n\n", ansiGreen, ansiReset, name)
+			candidate := filepath.Join(cwd, ".caddie.yaml")
+			if err := os.WriteFile(candidate, []byte(fmt.Sprintf("environment: \"%s\"\n", name)), 0o644); err != nil {
+				// Fall back to global activation if we can't persist the choice;
+				// otherwise the next run would prompt again *and* this run would
+				// silently use project-local layout based on a non-existent file.
+				fmt.Printf("%s⚠%s  Could not save .caddie.yaml: %v (using global activation)\n\n", ansiYellow, ansiReset, err)
+			} else {
+				projectConfig = candidate
+				fmt.Printf("%s✓%s  Created .caddie.yaml → %s\n\n", ansiGreen, ansiReset, name)
+			}
 		}
 	}
 
@@ -1396,9 +1299,7 @@ func cmdActivate(args []string) {
 	file := config.EnvFile(name)
 	displayName := config.ReadScalar(file, "name")
 	directory := config.ReadScalar(file, "directory")
-	if directory != "" {
-		directory = expandTilde(directory)
-	}
+	directory = config.ExpandTilde(directory)
 
 	projectDir := ""
 	if directory != "" {
@@ -1407,11 +1308,7 @@ func cmdActivate(args []string) {
 		projectDir = filepath.Dir(projectConfig)
 	}
 
-	home := os.Getenv("HOME")
-	if home == "" {
-		h, _ := os.UserHomeDir()
-		home = h
-	}
+	home := config.Home()
 
 	var targetAgents, fingerprintDir string
 	if projectDir != "" {
@@ -1423,18 +1320,10 @@ func cmdActivate(args []string) {
 	}
 	fingerprintFile := filepath.Join(fingerprintDir, ".caddie-fingerprint")
 
-	label := displayName
-	if label == "" {
-		label = name
-	}
-	projLabel := projectDir
-	if projLabel == "" {
-		projLabel = "global"
-	}
+	label := cmp.Or(displayName, name)
+	projLabel := cmp.Or(projectDir, "global")
 	fmt.Printf("%s%s%s %s→ %s%s\n", ansiBold, label, ansiReset, ansiDim, projLabel, ansiReset)
 
-	// Repo sync step. Pulls registered git repos at most hourly (or always
-	// with --force), then runs scan to refresh the skill store.
 	activateSyncRepos(force)
 
 	patterns := config.ReadList(file, "skills")
@@ -1461,15 +1350,18 @@ func cmdActivate(args []string) {
 	}
 
 	newFP := skills.ComputeFingerprint(name, matched)
+	store := skills.Store()
 	if data, err := os.ReadFile(fingerprintFile); err == nil {
 		old := strings.TrimRight(string(data), "\n")
-		if old == newFP {
+		// Trust the fingerprint only if the on-disk symlinks still point into
+		// the current store. This catches stale links left over from a config
+		// dir rename — without this, ReconcileSkillDir would never run.
+		if old == newFP && symlinksHealthy(targetAgents, store, matched) {
 			fmt.Printf("%s✓%s %d skills (unchanged)\n", ansiGreen, ansiReset, skillCount)
 			return
 		}
 	}
 
-	store := skills.Store()
 	res, err := skills.ReconcileSkillDir(targetAgents, matched, store)
 	if err != nil {
 		die(err.Error())
@@ -1478,7 +1370,7 @@ func cmdActivate(args []string) {
 
 	if projectDir != "" {
 		ensureClaudeSkillsSymlink(filepath.Join(projectDir, ".claude", "skills"), targetAgents)
-		// Clear the global dirs when using project-local (prevent stale syms).
+		// Clear global dirs when using project-local to prevent stale symlinks.
 		globalAgents := filepath.Join(home, ".agents", "skills")
 		_, _ = skills.ReconcileSkillDir(globalAgents, nil, store)
 		ensureClaudeSkillsSymlink(filepath.Join(home, ".claude", "skills"), globalAgents)
@@ -1488,7 +1380,10 @@ func cmdActivate(args []string) {
 	}
 
 	_ = os.MkdirAll(filepath.Dir(fingerprintFile), 0o755)
-	_ = os.WriteFile(fingerprintFile, []byte(newFP+"\n"), 0o644)
+	if err := os.WriteFile(fingerprintFile, []byte(newFP+"\n"), 0o644); err != nil {
+		fmt.Printf("%s⚠%s  Could not write fingerprint (next activate will reconcile again): %v\n",
+			ansiYellow, ansiReset, err)
+	}
 
 	changeDesc := ""
 	switch {
@@ -1503,7 +1398,7 @@ func cmdActivate(args []string) {
 }
 
 // resolveMatchedWithSummary returns sorted matched skill dirnames and a
-// "prefix: count, prefix: count" summary mirroring bash's python block.
+// "prefix: count, prefix: count" summary used by activate's status line.
 func resolveMatchedWithSummary(patterns []string) ([]string, string) {
 	if len(patterns) == 0 {
 		return nil, ""
@@ -1512,19 +1407,19 @@ func resolveMatchedWithSummary(patterns []string) ([]string, string) {
 	if err != nil {
 		return nil, ""
 	}
-	matchedDirs := map[string]string{} // dirname -> prefix
+	dirToPrefix := map[string]string{}
 	for _, it := range items {
 		id := it.SkillID()
 		for _, p := range patterns {
-			if ok, _ := filepath.Match(p, id); ok {
-				matchedDirs[it.DirName] = it.Prefix
+			if ok, _ := path.Match(p, id); ok {
+				dirToPrefix[it.DirName] = it.Prefix
 				break
 			}
 		}
 	}
-	dirs := make([]string, 0, len(matchedDirs))
+	dirs := make([]string, 0, len(dirToPrefix))
 	counts := map[string]int{}
-	for d, p := range matchedDirs {
+	for d, p := range dirToPrefix {
 		dirs = append(dirs, d)
 		counts[p]++
 	}
@@ -1543,10 +1438,11 @@ func resolveMatchedWithSummary(patterns []string) ([]string, string) {
 }
 
 // activateSyncRepos pulls registered git repos at most once per hour (or
-// every call when force is true), then runs the native scan to refresh the
-// skill store. Repo-update output stays visible so the user sees when a
-// source actually changed; scan output is suppressed to keep activate's
-// summary clean.
+// every call when force is true), then runs scan to refresh the skill store.
+// Repo-update output stays visible; scan output is suppressed to keep
+// activate's summary clean. The .last-pull mtime is only refreshed when at
+// least one repo successfully updated, so a transient network failure does
+// not suppress retries for an hour.
 func activateSyncRepos(force bool) {
 	pullPath := filepath.Join(config.Dir(), ".last-pull")
 	shouldPull := force
@@ -1556,49 +1452,55 @@ func activateSyncRepos(force bool) {
 			shouldPull = true
 		}
 	}
+	pulled := false
 	if shouldPull {
-		// Only attempt if there are repos registered; otherwise stay silent.
 		if has, err := repos.HasReposSection(); err == nil && has {
-			cmdRepoUpdate(nil)
+			updated, attempted := runRepoUpdate(nil)
+			// Only mark fresh when at least one pull made progress, or we had
+			// nothing to do (no repos found in the file).
+			if attempted == 0 || updated > 0 {
+				touch(pullPath)
+			}
+			pulled = attempted > 0
+		} else {
+			touch(pullPath)
 		}
-		now := time.Now()
-		if f, err := os.OpenFile(pullPath, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-			_ = f.Close()
-		}
-		_ = os.Chtimes(pullPath, now, now)
 	}
 
-	scanArgs := []string(nil)
-	if force {
-		scanArgs = []string{"--force"}
-	}
-
-	// Suppress scan output.
-	orig := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		cmdScan(scanArgs)
-		return
-	}
-	os.Stdout = w
-	done := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(io.Discard, r)
-		close(done)
-	}()
-	defer func() {
-		_ = w.Close()
-		<-done
-		os.Stdout = orig
-	}()
-	cmdScan(scanArgs)
+	// Run scan with output discarded — keep activate's summary clean.
+	runScan(scanOpts{force: force, skipFetch: pulled, out: io.Discard})
 }
 
-// ensureProjectGitignore is the Go port of bash _ensure_gitignore. Appends
-// managed entries to <project>/.gitignore (idempotently) when the project
-// has a .git directory. The ".agents/SOURCES.md" entry is preserved because
-// historical installs may still have the file on disk, even though Go no
-// longer creates one.
+// symlinksHealthy verifies every expected symlink under targetDir points at
+// the matching entry inside store. Used to invalidate a stale fingerprint
+// after the config dir is renamed (or the store path otherwise changes) —
+// without this, ReconcileSkillDir is short-circuited and stale links live
+// forever. Readlink is sub-microsecond so checking all of them is fine.
+func symlinksHealthy(targetDir, store string, expected []string) bool {
+	for _, name := range expected {
+		if name == "" {
+			continue
+		}
+		want := filepath.Join(store, name)
+		got, err := os.Readlink(filepath.Join(targetDir, name))
+		if err != nil || got != want {
+			return false
+		}
+	}
+	return true
+}
+
+// touch updates p's mtime to now, creating the file if it doesn't exist.
+func touch(p string) {
+	now := time.Now()
+	if f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+		_ = f.Close()
+	}
+	_ = os.Chtimes(p, now, now)
+}
+
+// ensureProjectGitignore appends managed entries to <project>/.gitignore
+// (idempotently) when the project has a .git directory.
 func ensureProjectGitignore(projectDir string) {
 	if info, err := os.Stat(filepath.Join(projectDir, ".git")); err != nil || !info.IsDir() {
 		return
@@ -1633,7 +1535,6 @@ func ensureProjectGitignore(projectDir string) {
 
 	var out strings.Builder
 	out.Write(body)
-	// Mirror bash: ensure trailing newline before appending.
 	if len(body) > 0 && body[len(body)-1] != '\n' {
 		out.WriteByte('\n')
 	}
@@ -1649,13 +1550,8 @@ func ensureProjectGitignore(projectDir string) {
 	_ = os.WriteFile(gitignore, []byte(out.String()), 0o644)
 }
 
-// cmdExport mirrors bash cmd_export: parse flags, resolve skills via the
-// same patterns path that activate uses, then hand off to internal/export
-// for either local-dir or s3 delivery. Keeps the bash quirks:
-//   - `--clean` runs before copy (so a stale matched name still gets
-//     re-copied fresh)
-//   - missing `--to` is a usage error that includes the expected syntax
-//   - empty match set emits the "No skills matched." warning and returns 0
+// cmdExport resolves the env's skills (or all skills with --all), then
+// dispatches to internal/export for either a local directory or an s3:// URL.
 func cmdExport(args []string) {
 	var (
 		name   string
@@ -1698,7 +1594,6 @@ func cmdExport(args []string) {
 		die(fmt.Sprintf("Environment '%s' not found.", name))
 	}
 
-	// Resolve patterns → matched store dirs (same logic as activate/show).
 	var patterns []string
 	if all {
 		patterns = []string{"*:*"}
@@ -1711,18 +1606,12 @@ func cmdExport(args []string) {
 		die(err.Error())
 	}
 
-	// Build entries with the real (symlink-resolved) directory. Matches
-	// bash's `real_path = skill_md.resolve(); real_path.parent` semantics by
-	// EvalSymlinks'ing the store dir itself — our store entries are
-	// directories (real or symlinked), not the SKILL.md file.
+	// Resolve symlinks so the export copies the real source directory.
 	store := skills.Store()
 	var entries []export.Entry
 	for _, dir := range matched {
-		full := filepath.Join(store, dir)
-		real, err := filepath.EvalSymlinks(full)
+		real, err := filepath.EvalSymlinks(filepath.Join(store, dir))
 		if err != nil {
-			// Skip orphan symlinks — bash's python silently exits the loop
-			// if skill_md doesn't exist after resolve().
 			continue
 		}
 		entries = append(entries, export.Entry{Name: dir, RealDir: real})
