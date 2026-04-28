@@ -1,4 +1,9 @@
-# caddie — Skill Profile Manager
+<p align="center">
+  <img src="docs/images/caddie.png" alt="caddie mascot — a small character carrying a golf bag full of clubs" width="200">
+</p>
+
+<h1 align="center">caddie</h1>
+<p align="center"><em>Skill Profile Manager for Claude Code & other coding agents</em></p>
 
 caddie manages skills from registered git repos and creates project-specific skill profiles for Claude Code and other agents. It maintains a canonical skill store and configures agent-specific skill directories via symlinks.
 
