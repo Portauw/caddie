@@ -40,9 +40,7 @@ func buildGoBinary(t *testing.T) string {
 	return sharedGoBinary
 }
 
-// buildSharedBinary compiles cmd/ai-env once for the test process. It also
-// refreshes internal/legacy/ai-env-legacy.sh (the //go:embed target) from the
-// frozen bash script at the repo root, matching scripts/build.sh.
+// buildSharedBinary compiles cmd/caddie once for the test process.
 func buildSharedBinary() (string, error) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -50,22 +48,12 @@ func buildSharedBinary() (string, error) {
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 
-	src := filepath.Join(root, "ai-env-frozen")
-	dst := filepath.Join(root, "internal", "legacy", "ai-env-legacy.sh")
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return "", fmt.Errorf("read bash script: %w", err)
-	}
-	if err := os.WriteFile(dst, data, 0o755); err != nil {
-		return "", fmt.Errorf("seed embed file: %w", err)
-	}
-
-	tmpDir, err := os.MkdirTemp("", "ai-env-contract-")
+	tmpDir, err := os.MkdirTemp("", "caddie-contract-")
 	if err != nil {
 		return "", err
 	}
-	out := filepath.Join(tmpDir, "ai-env")
-	cmd := exec.Command("go", "build", "-o", out, "./cmd/ai-env")
+	out := filepath.Join(tmpDir, "caddie")
+	cmd := exec.Command("go", "build", "-o", out, "./cmd/caddie")
 	cmd.Dir = root
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -134,7 +122,14 @@ func runWith(t *testing.T, bin string, opts runOpts, args ...string) runResult {
 			t.Fatalf("run %s: %v", bin, err)
 		}
 	}
-	return runResult{stdout: stdout.String(), stderr: stderr.String(), exitCode: code}
+	out, errOut := stdout.String(), stderr.String()
+	// The frozen bash predates the caddie rename and emits "ai-env" in
+	// user-facing strings. Normalize so byte-diff parity tests still pass.
+	if strings.HasSuffix(bin, "ai-env-frozen") {
+		out = strings.ReplaceAll(out, "ai-env", "caddie")
+		errOut = strings.ReplaceAll(errOut, "ai-env", "caddie")
+	}
+	return runResult{stdout: out, stderr: errOut, exitCode: code}
 }
 
 // TestVersionContract: native --version handler in Go must match the bash
@@ -177,6 +172,7 @@ func TestWhichContract(t *testing.T) {
 	t.Run("project_config", func(t *testing.T) {
 		aiEnvDir, projectDir := setupFixture(t)
 		mustWrite(t, filepath.Join(aiEnvDir, "environments", "my-proj.yaml"), "skills:\n  - \"*\"\n")
+		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "environment: \"my-proj\"\n")
 		mustWrite(t, filepath.Join(projectDir, ".ai-env.yaml"), "environment: \"my-proj\"\n")
 		opts := runOpts{cwd: projectDir, aiEnvDir: aiEnvDir}
 
@@ -187,6 +183,7 @@ func TestWhichContract(t *testing.T) {
 
 	t.Run("unknown_env_reference", func(t *testing.T) {
 		aiEnvDir, projectDir := setupFixture(t)
+		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "environment: \"ghost\"\n")
 		mustWrite(t, filepath.Join(projectDir, ".ai-env.yaml"), "environment: \"ghost\"\n")
 		opts := runOpts{cwd: projectDir, aiEnvDir: aiEnvDir}
 
@@ -218,6 +215,7 @@ func TestWhichContract(t *testing.T) {
 	t.Run("active_alias", func(t *testing.T) {
 		aiEnvDir, projectDir := setupFixture(t)
 		mustWrite(t, filepath.Join(aiEnvDir, "environments", "my-proj.yaml"), "skills:\n  - \"*\"\n")
+		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "environment: \"my-proj\"\n")
 		mustWrite(t, filepath.Join(projectDir, ".ai-env.yaml"), "environment: \"my-proj\"\n")
 		opts := runOpts{cwd: projectDir, aiEnvDir: aiEnvDir}
 
@@ -228,7 +226,7 @@ func TestWhichContract(t *testing.T) {
 }
 
 // setupEnvDir creates a fresh AI_ENV_DIR containing an empty environments/
-// subdir and returns its path. Use for tests that need a valid ai-env layout.
+// subdir and returns its path. Use for tests that need a valid caddie layout.
 func setupEnvDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -807,7 +805,7 @@ func TestHelpContract(t *testing.T) {
 			if r.exitCode != 0 {
 				t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
 			}
-			for _, must := range []string{"USAGE", "SETUP", "GIT REPOS", "ENVIRONMENTS", "ai-env repo add"} {
+			for _, must := range []string{"USAGE", "SETUP", "GIT REPOS", "ENVIRONMENTS", "caddie repo add"} {
 				if !strings.Contains(r.stdout, must) {
 					t.Errorf("help missing %q:\n%s", must, r.stdout)
 				}
@@ -1484,7 +1482,7 @@ func TestScanContract(t *testing.T) {
 	})
 }
 
-// setupActivateFixture creates a ready-to-activate env: ai-env dir with a
+// setupActivateFixture creates a ready-to-activate env: caddie dir with a
 // cloned repo + sources.yaml + env YAML binding `directory:` to projectDir.
 // Returns (goBin, aiEnvDir, home, projectDir).
 func setupActivateFixture(t *testing.T, envName, directory string, skillPatterns []string) (aiEnvDir, home, projectDir string) {
@@ -1528,7 +1526,7 @@ func TestActivateContract(t *testing.T) {
 		if li, err := os.Lstat(claude); err != nil || li.Mode()&os.ModeSymlink == 0 {
 			t.Errorf(".claude/skills missing or not a symlink: %v", err)
 		}
-		if _, err := os.Stat(filepath.Join(projectDir, ".claude", ".ai-env-fingerprint")); err != nil {
+		if _, err := os.Stat(filepath.Join(projectDir, ".claude", ".caddie-fingerprint")); err != nil {
 			t.Errorf("fingerprint not written: %v", err)
 		}
 	})
@@ -1548,6 +1546,7 @@ func TestActivateContract(t *testing.T) {
 
 	t.Run("cwd_auto_resolve", func(t *testing.T) {
 		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
+		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "environment: \"proj\"\n")
 		mustWrite(t, filepath.Join(projectDir, ".ai-env.yaml"), "environment: \"proj\"\n")
 		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate")
 		if r.exitCode != 0 {
@@ -1571,7 +1570,7 @@ func TestActivateContract(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(projectDir, ".agents", "skills")); !os.IsNotExist(err) {
 			t.Errorf(".agents/skills should not exist after dry-run: %v", err)
 		}
-		if _, err := os.Stat(filepath.Join(projectDir, ".claude", ".ai-env-fingerprint")); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(projectDir, ".claude", ".caddie-fingerprint")); !os.IsNotExist(err) {
 			t.Errorf("fingerprint should not be written on dry-run: %v", err)
 		}
 	})
@@ -1612,7 +1611,7 @@ func TestActivateContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("gitignore missing: %v", err)
 		}
-		for _, e := range []string{".claude/skills/", ".agents/skills/", ".claude/.ai-env-fingerprint"} {
+		for _, e := range []string{".claude/skills/", ".agents/skills/", ".claude/.caddie-fingerprint"} {
 			count := strings.Count(string(body), e+"\n")
 			if count != 1 {
 				t.Errorf("entry %q appears %d times (want 1) in: %s", e, count, string(body))

@@ -4,15 +4,15 @@ flowchart LR
     classDef proj fill:#e8f5e9,stroke:#2e7d32,stroke-width:3px,color:#1b5e20
     classDef label fill:none,stroke:none,color:#555
 
-    A["🌐 SKILL REPOS<br/>─────────────<br/>git repos cloned to<br/>~/.config/ai-env/repos/"]:::src
-    B["🗂️ ai-env INDEX<br/>─────────────<br/>~/.config/ai-env/skills/<br/>symlinks, namespaced"]:::idx
+    A["🌐 SKILL REPOS<br/>─────────────<br/>git repos cloned to<br/>~/.config/caddie/repos/"]:::src
+    B["🗂️ caddie INDEX<br/>─────────────<br/>~/.config/caddie/skills/<br/>symlinks, namespaced"]:::idx
     C["📁 PROJECT<br/>─────────────<br/>.agents/skills/<br/>.claude/skills → .agents/skills"]:::proj
 
     A -->|"scan"| B -->|"activate<br/>(filter by profile)"| C
 
     L1["sources.yaml"]:::label
     L2["prefix:name<br/>namespacing rules"]:::label
-    L3[".ai-env.yaml<br/>(binds dir → profile)"]:::label
+    L3[".caddie.yaml<br/>(binds dir → profile)"]:::label
 
     L1 -.-> A
     L2 -.-> B

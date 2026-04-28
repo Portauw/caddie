@@ -1,6 +1,6 @@
-# ai-env — Skill Profile Manager
+# caddie — Skill Profile Manager
 
-ai-env manages skills from registered git repos and creates project-specific skill profiles for Claude Code and other agents. It maintains a canonical skill store and configures agent-specific skill directories via symlinks.
+caddie manages skills from registered git repos and creates project-specific skill profiles for Claude Code and other agents. It maintains a canonical skill store and configures agent-specific skill directories via symlinks.
 
 ## Quick Install
 
@@ -8,57 +8,57 @@ Requires Go 1.22+ (`brew install go`).
 
 ```bash
 ./scripts/build.sh
-cp dist/ai-env /usr/local/bin/ai-env
+cp dist/caddie /usr/local/bin/caddie
 
 # Initialize (creates config directories, skill store, ~/.claude/skills symlink)
-ai-env init
+caddie init
 ```
 
 The repo also keeps `ai-env-frozen` — the original bash implementation, used as an escape hatch and as the parity oracle for contract tests. It is not installed by default.
 
 ## First-time Setup
 
-`ai-env init` does the heavy lifting:
+`caddie init` does the heavy lifting:
 
-1. Creates `~/.config/ai-env/` with default configuration
-2. Creates `~/.config/ai-env/environments/` for your project profiles
-3. Creates an empty `~/.config/ai-env/sources.yaml` repo registry
+1. Creates `~/.config/caddie/` with default configuration
+2. Creates `~/.config/caddie/environments/` for your project profiles
+3. Creates an empty `~/.config/caddie/sources.yaml` repo registry
 4. Backs up your existing `~/.claude/skills/` to `~/.claude/skills.bak.YYYY-MM-DD`
 5. Migrates any hand-written skills to `~/.agents/skills/` (canonical store)
-6. Replaces `~/.claude/skills/` with symlinks managed by ai-env
+6. Replaces `~/.claude/skills/` with symlinks managed by caddie
 
-After init, register git repos with `ai-env repo add <name> <url>` and run `ai-env scan`.
+After init, register git repos with `caddie repo add <name> <url>` and run `caddie scan`.
 
 ## Usage Flow
 
 ### 1. Scan & discover skills
 ```bash
-ai-env scan        # discover all skills from registered sources
-ai-env inventory   # list all available skills with source prefixes
+caddie scan        # discover all skills from registered sources
+caddie inventory   # list all available skills with source prefixes
 ```
 
 ### 2. Manage sources (optional)
 ```bash
-ai-env source list                     # show registered sources
-ai-env source add mylib ~/my/skills    # register new skill source
-ai-env source remove mylib             # unregister source
+caddie source list                     # show registered sources
+caddie source add mylib ~/my/skills    # register new skill source
+caddie source remove mylib             # unregister source
 ```
 
 ### 3. Create & manage environments
 ```bash
-ai-env create my-project               # create new environment interactively
-ai-env list                            # list all environments
-ai-env show my-project                 # view environment config + resolved skills
-ai-env edit my-project                 # edit config in $EDITOR
-ai-env clone my-project staging        # duplicate config
-ai-env delete my-project               # remove environment
+caddie create my-project               # create new environment interactively
+caddie list                            # list all environments
+caddie show my-project                 # view environment config + resolved skills
+caddie edit my-project                 # edit config in $EDITOR
+caddie clone my-project staging        # duplicate config
+caddie delete my-project               # remove environment
 ```
 
 ### 4. Activate environment & skills
 ```bash
-ai-env activate my-project             # scan + rebuild symlinks + print summary
-ai-env activate my-project --dry-run   # preview what would happen
-ai-env which                           # show currently active environment
+caddie activate my-project             # scan + rebuild symlinks + print summary
+caddie activate my-project --dry-run   # preview what would happen
+caddie which                           # show currently active environment
 ```
 
 ## Skill Namespacing
@@ -76,7 +76,7 @@ For plugin sources, the source name becomes the prefix (e.g., `superpowers`, `it
 
 ## Environment Config Format
 
-Environments live as YAML files in `~/.config/ai-env/environments/<name>.yaml`:
+Environments live as YAML files in `~/.config/caddie/environments/<name>.yaml`:
 
 ```yaml
 name: "My Project"
@@ -106,22 +106,22 @@ agents:
 
 ## Binding a Directory to a Profile
 
-Drop a `.ai-env.yaml` file in any project directory to bind it to a profile:
+Drop a `.caddie.yaml` file in any project directory to bind it to a profile:
 
 ```yaml
 environment: "my-project"
 ```
 
-When you run `ai-env activate` from that directory (or any subdirectory), it auto-detects the profile and sets up skills locally in `.agents/skills/` and `.claude/skills/`.
+When you run `caddie activate` from that directory (or any subdirectory), it auto-detects the profile and sets up skills locally in `.agents/skills/` and `.claude/skills/`.
 
-If no `.ai-env.yaml` exists, `activate` prompts you to pick a profile and creates the file automatically.
+If no `.caddie.yaml` exists, `activate` prompts you to pick a profile and creates the file automatically.
 
-Profiles are reusable — the same profile can be bound to multiple directories via separate `.ai-env.yaml` files.
+Profiles are reusable — the same profile can be bound to multiple directories via separate `.caddie.yaml` files.
 
 ## Key Directories
 
 ```
-~/.config/ai-env/
+~/.config/caddie/
   sources.yaml                 # registered plugin sources
   environments/                # your project profiles
     my-project.yaml
@@ -134,7 +134,7 @@ Profiles are reusable — the same profile can be bound to multiple directories 
   brainstorming/
   ...
 
-~/.claude/skills/              # managed by ai-env (symlinks only)
+~/.claude/skills/              # managed by caddie (symlinks only)
   gws-drive -> ../../.agents/skills/gws-drive
   brainstorming -> ../../.agents/skills/brainstorming
   ...
@@ -148,19 +148,19 @@ Export resolves symlink chains and copies the real SKILL.md files to a target di
 
 ```bash
 # Export an environment's skills to a local directory
-ai-env export my-project --to ./exported-skills/
+caddie export my-project --to ./exported-skills/
 
 # Export directly to S3
-ai-env export my-project --to s3://my-bucket/skills/
+caddie export my-project --to s3://my-bucket/skills/
 
 # Export all skills (no environment filter)
-ai-env export --all --to /tmp/all-skills/
+caddie export --all --to /tmp/all-skills/
 
 # Preview without copying
-ai-env export my-project --to ./skills/ --dry-run
+caddie export my-project --to ./skills/ --dry-run
 
 # Remove stale skills from target that are no longer in the export set
-ai-env export my-project --to ./skills/ --clean
+caddie export my-project --to ./skills/ --clean
 ```
 
 **Flags:**
@@ -183,8 +183,8 @@ exported-skills/
 ## Shell Aliases
 
 ```bash
-alias ae="ai-env"
-alias aea="ai-env activate"
+alias ae="caddie"
+alias aea="caddie activate"
 ```
 
 Quick usage:
@@ -198,42 +198,42 @@ aea my-project
 
 ```bash
 # Initialization
-ai-env init                        # first-time setup + auto-detect sources
+caddie init                        # first-time setup + auto-detect sources
 
 # Discovery
-ai-env scan                        # discover skills from all sources
-ai-env inventory                   # list all discovered skills
+caddie scan                        # discover skills from all sources
+caddie inventory                   # list all discovered skills
 
 # Environment management
-ai-env create <name>               # create new environment
-ai-env list                        # list environments
-ai-env show <name>                 # show config + resolved skills
-ai-env edit <name>                 # edit in $EDITOR
-ai-env clone <src> <dest>          # duplicate config
-ai-env delete <name>               # remove environment
+caddie create <name>               # create new environment
+caddie list                        # list environments
+caddie show <name>                 # show config + resolved skills
+caddie edit <name>                 # edit in $EDITOR
+caddie clone <src> <dest>          # duplicate config
+caddie delete <name>               # remove environment
 
 # Activation
-ai-env activate <name>             # scan + rebuild symlinks + summary
-ai-env activate <name> --dry-run   # preview changes
-ai-env which                       # show active environment
+caddie activate <name>             # scan + rebuild symlinks + summary
+caddie activate <name> --dry-run   # preview changes
+caddie which                       # show active environment
 
 # Export
-ai-env export <name> --to <dir>    # copy resolved skills to directory
-ai-env export <name> --to s3://b/  # upload resolved skills to S3
-ai-env export --all --to <target>  # export all skills
-ai-env export <name> --to <t> --clean     # remove stale skills from target
-ai-env export <name> --to <t> --dry-run   # preview only
+caddie export <name> --to <dir>    # copy resolved skills to directory
+caddie export <name> --to s3://b/  # upload resolved skills to S3
+caddie export --all --to <target>  # export all skills
+caddie export <name> --to <t> --clean     # remove stale skills from target
+caddie export <name> --to <t> --dry-run   # preview only
 
 # Source management
-ai-env source list                 # show registered sources
-ai-env source add <name> <glob>    # register new source
-ai-env source remove <name>        # unregister source
+caddie source list                 # show registered sources
+caddie source add <name> <glob>    # register new source
+caddie source remove <name>        # unregister source
 ```
 
 ## Activation Output
 
 ```
-$ ai-env activate my-project
+$ caddie activate my-project
 
 ✓ Activated: My Project
   Directory: ~/Dev/my-project
@@ -243,4 +243,4 @@ $ ai-env activate my-project
   cd ~/Dev/my-project && claude
 ```
 
-ai-env configures your skills but does not launch Claude Code — you launch it manually.
+caddie configures your skills but does not launch Claude Code — you launch it manually.

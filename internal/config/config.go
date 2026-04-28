@@ -1,4 +1,4 @@
-// Package config mirrors the subset of ai-env configuration reads needed by
+// Package config mirrors the subset of caddie configuration reads needed by
 // the commands ported so far. It reproduces the bash yaml_get semantics
 // byte-for-byte — do not switch to a real YAML library until every YAML-reading
 // command has been ported, or the contract will drift.
@@ -11,13 +11,13 @@ import (
 	"strings"
 )
 
-// Dir returns the ai-env config directory: $AI_ENV_DIR or ~/.config/ai-env.
+// Dir returns the caddie config directory: $AI_ENV_DIR or ~/.config/caddie.
 func Dir() string {
 	if d := os.Getenv("AI_ENV_DIR"); d != "" {
 		return d
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "ai-env")
+	return filepath.Join(home, ".config", "caddie")
 }
 
 // EnvDir returns the directory that holds per-environment YAML files.
@@ -125,12 +125,12 @@ func ReadList(path, key string) []string {
 	return out
 }
 
-// FindProjectConfig walks from dir up to "/" looking for .ai-env.yaml.
+// FindProjectConfig walks from dir up to "/" looking for .caddie.yaml.
 // Returns the path if found, "" otherwise.
 func FindProjectConfig(dir string) string {
 	dir = expandHome(dir)
 	for dir != "/" && dir != "" {
-		candidate := filepath.Join(dir, ".ai-env.yaml")
+		candidate := filepath.Join(dir, ".caddie.yaml")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
@@ -145,16 +145,16 @@ func FindProjectConfig(dir string) string {
 
 // ResolveFromCwd mirrors bash resolve_env_from_cwd for `which`.
 // Returns (name, warnings, ok). warnings are lines to emit to stdout
-// (matching bash behavior) before the result — e.g. when .ai-env.yaml
+// (matching bash behavior) before the result — e.g. when .caddie.yaml
 // references a missing environment.
 func ResolveFromCwd(cwd string) (name string, warnings []string, ok bool) {
-	// Strategy 1: nearest .ai-env.yaml
+	// Strategy 1: nearest .caddie.yaml
 	if cfg := FindProjectConfig(cwd); cfg != "" {
 		if ref := ReadScalar(cfg, "environment"); ref != "" {
 			if EnvExists(ref) {
 				return ref, warnings, true
 			}
-			warnings = append(warnings, ".ai-env.yaml references unknown environment: "+ref)
+			warnings = append(warnings, ".caddie.yaml references unknown environment: "+ref)
 		}
 	}
 

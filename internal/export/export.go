@@ -1,4 +1,4 @@
-// Package export implements `ai-env export` — copying resolved skills into
+// Package export implements `caddie export` — copying resolved skills into
 // either a local directory or an S3 prefix. Mirrors the bash helpers
 // _export_to_dir and _export_to_s3 byte-for-byte: the dry-run plan lines,
 // the summary sentences, and the clean-before-copy ordering must stay intact
@@ -18,7 +18,7 @@ import (
 	"strings"
 )
 
-// ANSI codes duplicated from cmd/ai-env/main.go. Keeping a local copy avoids
+// ANSI codes duplicated from cmd/caddie/main.go. Keeping a local copy avoids
 // importing the main package and keeps this package self-contained; there
 // are only ~6 codes and they're effectively a public contract.
 const (

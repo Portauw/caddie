@@ -5,14 +5,14 @@ flowchart LR
     classDef result fill:#c8e6c9,stroke:#2e7d32,color:#1b5e20
 
     subgraph M["🌅 Morning: backend-api"]
-        M1["$ cd ~/Dev/backend-api<br/>$ ai-env activate"]:::cmd
+        M1["$ cd ~/Dev/backend-api<br/>$ caddie activate"]:::cmd
         M2["✓ Backend API<br/>Skills: 30 active<br/>(superpowers:22, gws:3, sterling:5)"]:::result
         M3["$ claude<br/>→ only backend-relevant skills"]:::cmd
         M1 --> M2 --> M3
     end
 
     subgraph A["🌇 Afternoon: marketing-site"]
-        A1["$ cd ~/Dev/marketing-site<br/>$ ai-env activate"]:::cmd
+        A1["$ cd ~/Dev/marketing-site<br/>$ caddie activate"]:::cmd
         A2["✓ Frontend<br/>Skills: 18 active<br/>(superpowers:12, sterling:6)"]:::result
         A3["$ claude<br/>→ only frontend-relevant skills"]:::cmd
         A1 --> A2 --> A3

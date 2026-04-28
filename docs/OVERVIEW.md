@@ -1,20 +1,20 @@
-# ai-env — Visual Guide
+# caddie — Visual Guide
 
-> **TL;DR** — ai-env is a **skill profile manager** for Claude Code (and other coding agents).
+> **TL;DR** — caddie is a **skill profile manager** for Claude Code (and other coding agents).
 > It gives every project its own curated toolbox of skills, pulled from git repos, wired up with symlinks.
 
 ---
 
 ## 🧩 The Problem
 
-Claude Code reads skills from `.claude/skills/`. Without ai-env you either have:
+Claude Code reads skills from `.claude/skills/`. Without caddie you either have:
 
 - **One global pile** in `~/.claude/skills/` — every project sees every skill, noisy and wrong-tool-for-the-job, or
 - **Manual copies** per project — drift, stale forks, no shared source.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  ~/.claude/skills/   (before ai-env)                         │
+│  ~/.claude/skills/   (before caddie)                         │
 ├──────────────────────────────────────────────────────────────┤
 │  📦 brainstorming/         📦 gmail-send/                    │
 │  📦 fastapi-review/        📦 figma-export/                  │
@@ -34,14 +34,14 @@ Claude Code reads skills from `.claude/skills/`. Without ai-env you either have:
 
 ---
 
-## ✨ What ai-env Does
+## ✨ What caddie Does
 
 ```
 ┌──────────────┐   ┌──────────────────┐   ┌───────────────────┐
-│  Skill repos │   │  ai-env index    │   │ Per-project skills│
+│  Skill repos │   │  caddie index    │   │ Per-project skills│
 │              │──▶│                  │──▶│                   │
 │ git repos    │   │ ~/.config/       │   │ <project>/        │
-│ (many)       │   │   ai-env/skills/ │   │   .agents/skills/ │
+│ (many)       │   │   caddie/skills/ │   │   .agents/skills/ │
 │              │   │ (symlink layer)  │   │ (filtered symlinks)│
 └──────────────┘   └──────────────────┘   └───────────────────┘
      clone+pull       namespace               activate
@@ -64,11 +64,11 @@ flowchart LR
     end
 
     subgraph R["📥 Local clones"]
-        RC["~/.config/ai-env/repos/<br/>superpowers/<br/>sterling-skills/<br/>gws/<br/>lenny/"]
+        RC["~/.config/caddie/repos/<br/>superpowers/<br/>sterling-skills/<br/>gws/<br/>lenny/"]
     end
 
-    subgraph I["🗂️ ai-env index (namespaced)"]
-        IX["~/.config/ai-env/skills/<br/>── symlinks, prefix:name ──<br/>superpowers-brainstorming → repo<br/>sterling-write-as-pieter → repo<br/>gws-gmail-send → repo"]
+    subgraph I["🗂️ caddie index (namespaced)"]
+        IX["~/.config/caddie/skills/<br/>── symlinks, prefix:name ──<br/>superpowers-brainstorming → repo<br/>sterling-write-as-pieter → repo<br/>gws-gmail-send → repo"]
     end
 
     subgraph E["🎯 Environments (profiles)"]
@@ -77,7 +77,7 @@ flowchart LR
     end
 
     subgraph P["📁 Project directory"]
-        P1[".ai-env.yaml → backend-api"]
+        P1[".caddie.yaml → backend-api"]
         PA[".agents/skills/<br/>(filtered symlinks into index)"]
         PC[".claude/skills → .agents/skills"]
     end
@@ -85,7 +85,7 @@ flowchart LR
     S1 & S2 & S3 & S4 -->|git clone / pull| RC --> IX
     IX -->|pattern match| E1 & E2
     E1 --> P1
-    P1 -->|ai-env activate| PA
+    P1 -->|caddie activate| PA
     PA --> PC
 ```
 
@@ -95,7 +95,7 @@ flowchart LR
 
 ### 1. **Skill repos** — where skills come from
 
-Declared in `~/.config/ai-env/sources.yaml`:
+Declared in `~/.config/caddie/sources.yaml`:
 
 ```yaml
 repos:
@@ -109,15 +109,15 @@ repos:
     prefix: sterling
 ```
 
-Repos are cloned to `~/.config/ai-env/repos/<name>/` and auto-pulled on activate.
+Repos are cloned to `~/.config/caddie/repos/<name>/` and auto-pulled on activate.
 
-### 2. **ai-env index** — one namespaced view of all skills
+### 2. **caddie index** — one namespaced view of all skills
 
 ```
-~/.config/ai-env/skills/
-  ├── superpowers-brainstorming   → ~/.config/ai-env/repos/superpowers/skills/brainstorming
-  ├── sterling-write-as-pieter    → ~/.config/ai-env/repos/sterling-skills/skills/write-as-pieter
-  └── gws-gmail-send              → ~/.config/ai-env/repos/gws/skills/gmail-send
+~/.config/caddie/skills/
+  ├── superpowers-brainstorming   → ~/.config/caddie/repos/superpowers/skills/brainstorming
+  ├── sterling-write-as-pieter    → ~/.config/caddie/repos/sterling-skills/skills/write-as-pieter
+  └── gws-gmail-send              → ~/.config/caddie/repos/gws/skills/gmail-send
 ```
 
 Everything is a **symlink**, prefixed by source. This is the layer profiles filter against.
@@ -125,7 +125,7 @@ Everything is a **symlink**, prefixed by source. This is the layer profiles filt
 ### 3. **Environments** — named skill profiles
 
 ```yaml
-# ~/.config/ai-env/environments/backend-api.yaml
+# ~/.config/caddie/environments/backend-api.yaml
 name: "Backend API"
 skills:
   - "superpowers:*"        # all superpowers
@@ -137,13 +137,13 @@ skills:
 
 ```
 ~/Dev/my-backend/
-  ├── .ai-env.yaml         ← environment: "backend-api"
-  ├── .agents/skills/      ← created by ai-env activate
+  ├── .caddie.yaml         ← environment: "backend-api"
+  ├── .agents/skills/      ← created by caddie activate
   ├── .claude/skills  ───▶ .agents/skills
   └── src/
 ```
 
-Run `ai-env activate` from anywhere inside that tree and the right profile lights up.
+Run `caddie activate` from anywhere inside that tree and the right profile lights up.
 
 ---
 
@@ -151,25 +151,25 @@ Run `ai-env activate` from anywhere inside that tree and the right profile light
 
 ```
     ┌─────────────────────────────────────────────────────────┐
-    │  $ cd ~/Dev/my-backend && ai-env activate               │
+    │  $ cd ~/Dev/my-backend && caddie activate               │
     └──────────────────────────┬──────────────────────────────┘
                                │
                                ▼
           ┌────────────────────────────────────────┐
-          │ 1. Read .ai-env.yaml                   │
+          │ 1. Read .caddie.yaml                   │
           │    → environment: "backend-api"        │
           └────────────────────────────────────────┘
                                │
                                ▼
           ┌────────────────────────────────────────┐
           │ 2. git pull every registered repo      │
-          │    → ~/.config/ai-env/repos/*          │
+          │    → ~/.config/caddie/repos/*          │
           └────────────────────────────────────────┘
                                │
                                ▼
           ┌────────────────────────────────────────┐
           │ 3. Rebuild the index                   │
-          │    → ~/.config/ai-env/skills/*         │
+          │    → ~/.config/caddie/skills/*         │
           │      (symlinks, namespaced)            │
           └────────────────────────────────────────┘
                                │
@@ -201,14 +201,14 @@ Each project has its **own** `.agents/skills/` — a different filtered view of 
 
 ## 🎯 Problems Solved
 
-| Problem | How ai-env solves it |
+| Problem | How caddie solves it |
 |---|---|
 | 🔊 Skill noise across projects | Each project only symlinks its profile's skills |
 | 🗂️ Skills scattered across many repos | Unified via `sources.yaml`, namespaced `prefix:name` |
 | 🔁 Copy-paste skill sync | Repos auto-pull on activate |
 | 👥 Team can't share setups | Profiles are YAML, check them into a repo |
-| 🐳 Symlinks don't ship to Docker/Lambda | `ai-env export` resolves links, copies real files (local or S3) |
-| 🤷 "Which skills am I running?" | `ai-env which` shows the active profile and resolved skills |
+| 🐳 Symlinks don't ship to Docker/Lambda | `caddie export` resolves links, copies real files (local or S3) |
+| 🤷 "Which skills am I running?" | `caddie which` shows the active profile and resolved skills |
 
 ---
 
@@ -218,7 +218,7 @@ Each project has its **own** `.agents/skills/` — a different filtered view of 
 Morning                                      Afternoon
 ───────                                      ─────────
 $ cd ~/Dev/backend-api                       $ cd ~/Dev/marketing-site
-$ ai-env activate                            $ ai-env activate
+$ caddie activate                            $ caddie activate
   ✓ Backend API                                ✓ Frontend
   Skills: 30 active                            Skills: 18 active
   (superpowers:22, gws:3, sterling:5)          (superpowers:12, sterling:6)
@@ -233,7 +233,7 @@ Same laptop. Same Claude. Two **completely different toolkits**, activated by `c
 
 ## 📤 Shipping Skills to Production
 
-Symlinks don't survive Docker builds or Lambda packaging. `ai-env export` resolves every link and copies the real `SKILL.md` files:
+Symlinks don't survive Docker builds or Lambda packaging. `caddie export` resolves every link and copies the real `SKILL.md` files:
 
 ```
 ┌────────────────────────┐       ┌──────────────────────────┐
@@ -249,8 +249,8 @@ Symlinks don't survive Docker builds or Lambda packaging. `ai-env export` resolv
 ```
 
 ```bash
-ai-env export backend-api --to ./dist/skills/
-ai-env export backend-api --to s3://my-bucket/skills/
+caddie export backend-api --to ./dist/skills/
+caddie export backend-api --to s3://my-bucket/skills/
 ```
 
 ---
@@ -259,18 +259,18 @@ ai-env export backend-api --to s3://my-bucket/skills/
 
 ```
 ┌──────────────┐   scan    ┌──────────────┐  activate  ┌────────────────┐
-│  SKILL REPOS │  ───────▶ │  ai-env      │  ────────▶ │  PROJECT       │
+│  SKILL REPOS │  ───────▶ │  caddie      │  ────────▶ │  PROJECT       │
 │              │           │  INDEX       │  (filter)  │                │
 │  git repos   │           │              │            │  .agents/      │
 │  cloned to   │           │  ~/.config/  │            │    skills/     │
-│  ~/.config/  │           │  ai-env/     │            │  .claude/      │
-│  ai-env/     │           │  skills/     │            │    skills →    │
+│  ~/.config/  │           │  caddie/     │            │  .claude/      │
+│  caddie/     │           │  skills/     │            │    skills →    │
 │  repos/      │           │  (symlinks,  │            │    .agents/... │
 │              │           │   namespaced)│            │                │
 └──────────────┘           └──────────────┘            └────────────────┘
        ▲                          ▲                           ▲
        │                          │                           │
-   sources.yaml              prefix:name                 .ai-env.yaml
+   sources.yaml              prefix:name                 .caddie.yaml
                           namespacing rules          (binds dir → profile)
 ```
 

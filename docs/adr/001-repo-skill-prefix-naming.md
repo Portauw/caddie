@@ -6,13 +6,13 @@
 
 ## Context and Problem Statement
 
-ai-env aggregates skills from registered git repos into a flat canonical store (`~/.config/ai-env/skills/`). Both Claude Code and OpenCode discover skills by scanning folder names in this flat directory — nested subdirectories are not supported.
+caddie aggregates skills from registered git repos into a flat canonical store (`~/.config/caddie/skills/`). Both Claude Code and OpenCode discover skills by scanning folder names in this flat directory — nested subdirectories are not supported.
 
 When two repos contain a skill with the same folder name (e.g. both `lenny` and `sterling-skills` could have a `brainstorming/` folder), the last one scanned silently overwrites the first. There is no collision warning or namespacing mechanism.
 
 ## Decision
 
-Repos can declare an optional `prefix` field in `sources.yaml`. When set, ai-env prepends `{prefix}-` to each skill folder name during scan, unless the skill already starts with that prefix.
+Repos can declare an optional `prefix` field in `sources.yaml`. When set, caddie prepends `{prefix}-` to each skill folder name during scan, unless the skill already starts with that prefix.
 
 ```yaml
 repos:
@@ -43,7 +43,7 @@ This means the folder name and the `name` field in SKILL.md will diverge when a 
 
 ### Environment pattern matching
 
-ai-env's `_get_prefix()` resolves the logical source by tracing the symlink target back to the repo path. Environment patterns use `{repo-name}:{folder-name}` format:
+caddie's `_get_prefix()` resolves the logical source by tracing the symlink target back to the repo path. Environment patterns use `{repo-name}:{folder-name}` format:
 
 ```yaml
 skills:
@@ -77,5 +77,5 @@ Trust that repos won't collide. Rejected — not sustainable as the number of re
 ## Consequences
 
 - Skill invocation changes when a prefix is added: `/write-as-pieter` becomes `/sterling-write-as-pieter`
-- The `name` field in SKILL.md stays unchanged in the source repo — the prefix is applied at the ai-env layer only
+- The `name` field in SKILL.md stays unchanged in the source repo — the prefix is applied at the caddie layer only
 - The `scan --force` command must be paired with a clean of stale symlinks when prefix config changes, or counts inflate from orphaned entries

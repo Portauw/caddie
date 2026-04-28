@@ -3,10 +3,10 @@ flowchart TB
     classDef start fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#e65100
     classDef done fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20
 
-    A["💻 $ cd ~/Dev/my-backend &amp;&amp; ai-env activate"]:::start
-    A --> B["1️⃣  Read .ai-env.yaml<br/>→ environment: backend-api"]:::step
-    B --> C["2️⃣  git pull every registered repo<br/>→ ~/.config/ai-env/repos/*"]:::step
-    C --> D["3️⃣  Rebuild the index<br/>→ ~/.config/ai-env/skills/* (symlinks)"]:::step
+    A["💻 $ cd ~/Dev/my-backend &amp;&amp; caddie activate"]:::start
+    A --> B["1️⃣  Read .caddie.yaml<br/>→ environment: backend-api"]:::step
+    B --> C["2️⃣  git pull every registered repo<br/>→ ~/.config/caddie/repos/*"]:::step
+    C --> D["3️⃣  Rebuild the index<br/>→ ~/.config/caddie/skills/* (symlinks)"]:::step
     D --> E["4️⃣  Resolve profile patterns<br/>superpowers:* → 22 skills<br/>gws:gmail-* → 3 skills<br/>sterling:* → 5 skills<br/>━━━━━━━━━━━━━━━━━<br/>Total: 30 active skills"]:::step
     E --> F["5️⃣  Wire up project symlinks<br/>&lt;proj&gt;/.agents/skills/* → index<br/>&lt;proj&gt;/.claude/skills → .agents/skills"]:::step
     F --> G["✅ Ready. Launch Claude."]:::done

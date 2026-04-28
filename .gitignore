@@ -1,15 +1,14 @@
 .idea/
 .DS_Store
 
-# ai-env managed skill directories
-.claude/skills/
-.agents/skills/
-.claude/.ai-env-fingerprint
+# caddie managed skill directories
+.claude/skills
+.agents/skills
+.claude/.caddie-fingerprint
+.claude/worktrees/
 
-# ai-env managed skill directories
+# caddie managed skill directories
 .agents/SOURCES.md
 
 # Go build
 /dist/
-# Build artifact: refreshed by scripts/build.sh from ./ai-env-frozen
-/internal/legacy/ai-env-legacy.sh

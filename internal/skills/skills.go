@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Portauw/ai-env/internal/config"
-	"github.com/Portauw/ai-env/internal/repos"
+	"github.com/Portauw/caddie/internal/config"
+	"github.com/Portauw/caddie/internal/repos"
 )
 
 // Store returns the canonical skill store path ($CONFIG_DIR/skills).

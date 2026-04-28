@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Portauw/ai-env/internal/repos"
+	"github.com/Portauw/caddie/internal/repos"
 )
 
 // RepoUpdate is a single entry for the "Repo updates available" summary.

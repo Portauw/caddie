@@ -1,3 +1,3 @@
-module github.com/Portauw/ai-env
+module github.com/Portauw/caddie
 
 go 1.22

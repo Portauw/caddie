@@ -1,9 +1,8 @@
-// Command ai-env is the Go entry point for the ai-env tool.
+// Command caddie is the Go entry point for the caddie tool.
 //
 // Strangler-pattern migration: the port is complete — every subcommand is
-// handled by nativeCommands. internal/legacy remains in-tree as an emergency
-// rollback escape hatch but is no longer wired into dispatch. Each native
-// handler must be byte-compatible with the frozen bash — see tests/contract.
+// handled by nativeCommands. Each native handler must be byte-compatible
+// with the frozen bash — see tests/contract.
 package main
 
 import (
@@ -17,11 +16,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Portauw/ai-env/internal/config"
-	"github.com/Portauw/ai-env/internal/export"
-	"github.com/Portauw/ai-env/internal/repos"
-	"github.com/Portauw/ai-env/internal/skills"
-	"github.com/Portauw/ai-env/internal/version"
+	"github.com/Portauw/caddie/internal/config"
+	"github.com/Portauw/caddie/internal/export"
+	"github.com/Portauw/caddie/internal/repos"
+	"github.com/Portauw/caddie/internal/skills"
+	"github.com/Portauw/caddie/internal/version"
 )
 
 type handler func(args []string)
@@ -97,21 +96,19 @@ func main() {
 		return
 	}
 
-	// internal/legacy is kept in-tree as an emergency rollback escape hatch,
-	// but the normal dispatch path no longer falls through to bash — an
-	// unknown subcommand is a hard error, matching bash main()'s `die`.
-	die(fmt.Sprintf("Unknown command: %s\nRun 'ai-env --help' for usage.", args[0]))
+	// Unknown subcommand is a hard error, matching bash main()'s `die`.
+	die(fmt.Sprintf("Unknown command: %s\nRun 'caddie --help' for usage.", args[0]))
 }
 
 func cmdVersion(_ []string) {
-	fmt.Printf("ai-env v%s\n", version.Version)
+	fmt.Printf("caddie v%s\n", version.Version)
 }
 
 func cmdList(_ []string) {
 	envs := config.ListEnvs()
 	if len(envs) == 0 {
 		fmt.Printf("%s⚠%s  No environments found.\n", ansiYellow, ansiReset)
-		fmt.Printf("%sℹ%s  Run %sai-env create <name>%s to get started.\n", ansiBlue, ansiReset, ansiCyan, ansiReset)
+		fmt.Printf("%sℹ%s  Run %scaddie create <name>%s to get started.\n", ansiBlue, ansiReset, ansiCyan, ansiReset)
 		return
 	}
 
@@ -135,19 +132,19 @@ func cmdList(_ []string) {
 		fmt.Println()
 	}
 
-	fmt.Printf("  %sAuto-detect: %sai-env activate%s%s (resolves from cwd)%s\n\n",
+	fmt.Printf("  %sAuto-detect: %scaddie activate%s%s (resolves from cwd)%s\n\n",
 		ansiDim, ansiCyan, ansiReset, ansiDim, ansiReset)
 }
 
 // cmdSource rejects the removed source subcommand family. Plugin sources
 // were dropped in favor of git repos as the only skill origin.
 func cmdSource(_ []string) {
-	die("`ai-env source` has been removed. Use `ai-env repo` to manage skill sources.")
+	die("`caddie source` has been removed. Use `caddie repo` to manage skill sources.")
 }
 
 func cmdEdit(args []string) {
 	if len(args) == 0 || args[0] == "" {
-		die("Usage: ai-env edit <name>")
+		die("Usage: caddie edit <name>")
 	}
 	name := args[0]
 	if !config.EnvExists(name) {
@@ -172,7 +169,7 @@ func cmdEdit(args []string) {
 
 func cmdDelete(args []string) {
 	if len(args) == 0 || args[0] == "" {
-		die("Usage: ai-env delete <name>")
+		die("Usage: caddie delete <name>")
 	}
 	name := args[0]
 	if !config.EnvExists(name) {
@@ -205,7 +202,7 @@ func cmdDelete(args []string) {
 
 func cmdClone(args []string) {
 	if len(args) < 2 || args[0] == "" || args[1] == "" {
-		die("Usage: ai-env clone <source> <destination>")
+		die("Usage: caddie clone <source> <destination>")
 	}
 	src, dest := args[0], args[1]
 	if !config.EnvExists(src) {
@@ -224,7 +221,7 @@ func cmdClone(args []string) {
 		die(err.Error())
 	}
 	fmt.Printf("%s✓%s  Cloned: %s -> %s\n", ansiGreen, ansiReset, src, dest)
-	fmt.Printf("%sℹ%s  Edit with: %sai-env edit %s%s\n", ansiBlue, ansiReset, ansiCyan, dest, ansiReset)
+	fmt.Printf("%sℹ%s  Edit with: %scaddie edit %s%s\n", ansiBlue, ansiReset, ansiCyan, dest, ansiReset)
 }
 
 // cmdRepo dispatches `repo <subcmd>`. Only list|ls is ported natively; every
@@ -232,7 +229,7 @@ func cmdClone(args []string) {
 // funneled through the single existing implementation.
 func cmdRepo(args []string) {
 	if len(args) == 0 {
-		die("Usage: ai-env repo <list|add|remove|update>")
+		die("Usage: caddie repo <list|add|remove|update>")
 	}
 	sub := args[0]
 	switch sub {
@@ -255,7 +252,7 @@ func cmdRepoList(_ []string) {
 		die(err.Error())
 	}
 	if len(entries) == 0 {
-		fmt.Printf("%s⚠%s  No git repos registered. Add one with: %sai-env repo add <name> <url>%s\n",
+		fmt.Printf("%s⚠%s  No git repos registered. Add one with: %scaddie repo add <name> <url>%s\n",
 			ansiYellow, ansiReset, ansiCyan, ansiReset)
 		return
 	}
@@ -294,10 +291,10 @@ func cmdRepoList(_ []string) {
 // cmdRepoAdd mirrors bash cmd_repo_add: register a git repo under `repos:`
 // in sources.yaml, then `git clone --depth 1` the URL into $CONFIG_DIR/repos/<name>.
 // Clone failures print a warning (matching bash) but don't fail the command —
-// the registration still succeeds so `ai-env repo update` can retry later.
+// the registration still succeeds so `caddie repo update` can retry later.
 func cmdRepoAdd(args []string) {
 	if len(args) < 2 || args[0] == "" || args[1] == "" {
-		die("Usage: ai-env repo add <name> <url> [skills_path]\n  Example: ai-env repo add lenny https://github.com/RefoundAI/lenny-skills skills")
+		die("Usage: caddie repo add <name> <url> [skills_path]\n  Example: caddie repo add lenny https://github.com/RefoundAI/lenny-skills skills")
 	}
 	name, url := args[0], args[1]
 	skillsPath := "skills"
@@ -312,7 +309,7 @@ func cmdRepoAdd(args []string) {
 		die(err.Error())
 	}
 	if exists {
-		die(fmt.Sprintf("Repo '%s' already registered. Remove it first with: ai-env repo remove %s", name, name))
+		die(fmt.Sprintf("Repo '%s' already registered. Remove it first with: caddie repo remove %s", name, name))
 	}
 
 	if err := repos.Append(repos.Entry{Name: name, URL: url, SkillsPath: skillsPath}); err != nil {
@@ -341,12 +338,12 @@ func cmdRepoAdd(args []string) {
 					ansiYellow, ansiReset, displayPath)
 			}
 		} else {
-			fmt.Printf("%s⚠%s  Clone failed. Run %sai-env repo update %s%s to retry.\n", ansiYellow, ansiReset, ansiCyan, name, ansiReset)
+			fmt.Printf("%s⚠%s  Clone failed. Run %scaddie repo update %s%s to retry.\n", ansiYellow, ansiReset, ansiCyan, name, ansiReset)
 		}
 	}
 
 	fmt.Printf("%s✓%s  Registered repo: %s%s%s\n", ansiGreen, ansiReset, ansiBold, name, ansiReset)
-	fmt.Printf("%sℹ%s  Run %sai-env scan --force%s to sync skills into the store.\n", ansiBlue, ansiReset, ansiCyan, ansiReset)
+	fmt.Printf("%sℹ%s  Run %scaddie scan --force%s to sync skills into the store.\n", ansiBlue, ansiReset, ansiCyan, ansiReset)
 }
 
 // cmdRepoRemove mirrors bash cmd_repo_remove: unregister a repo from
@@ -354,7 +351,7 @@ func cmdRepoAdd(args []string) {
 // checkout, and rm -rf the checkout directory.
 func cmdRepoRemove(args []string) {
 	if len(args) == 0 || args[0] == "" {
-		die("Usage: ai-env repo remove <name>")
+		die("Usage: caddie repo remove <name>")
 	}
 	name := args[0]
 
@@ -416,7 +413,7 @@ func cmdInventory(args []string) {
 		filter = args[0]
 	}
 	if !skills.StoreExists() {
-		die(fmt.Sprintf("Canonical store not found. Run %sai-env init%s first.", ansiCyan, ansiReset))
+		die(fmt.Sprintf("Canonical store not found. Run %scaddie init%s first.", ansiCyan, ansiReset))
 	}
 
 	fmt.Printf("%sSkill Inventory%s (%s%s%s)\n\n", ansiBold, ansiReset, ansiDim, skills.Store(), ansiReset)
@@ -461,10 +458,10 @@ func cmdInventory(args []string) {
 func cmdHelp(_ []string) {
 	B, R, C, D, V := ansiBold, ansiReset, ansiCyan, ansiDim, version.Version
 	fmt.Print(
-		B + "ai-env" + R + " v" + V + " — Skill Profile Manager for AI Coding Agents\n" +
+		B + "caddie" + R + " v" + V + " — Skill Profile Manager for AI Coding Agents\n" +
 			"\n" +
 			B + "USAGE" + R + "\n" +
-			"  ai-env <command> [arguments] [flags]\n" +
+			"  caddie <command> [arguments] [flags]\n" +
 			"\n" +
 			B + "SETUP" + R + "\n" +
 			"  " + C + "init" + R + "                        Initialize: migrate skills, first scan\n" +
@@ -512,35 +509,35 @@ func cmdHelp(_ []string) {
 			"    \"*\"                everything\n" +
 			"\n" +
 			B + "EXAMPLES" + R + "\n" +
-			"  ai-env init                              # First-time setup\n" +
-			"  ai-env create my-project                 # Create environment\n" +
-			"  ai-env activate                          # Auto-detect profile from cwd\n" +
-			"  ai-env activate my-project               # Explicit profile activation\n" +
-			"  ai-env activate --dry-run                # Preview what would change\n" +
-			"  ai-env repo add lenny https://github.com/RefoundAI/lenny-skills  # Add git repo\n" +
-			"  ai-env inventory                         # See all available skills\n" +
+			"  caddie init                              # First-time setup\n" +
+			"  caddie create my-project                 # Create environment\n" +
+			"  caddie activate                          # Auto-detect profile from cwd\n" +
+			"  caddie activate my-project               # Explicit profile activation\n" +
+			"  caddie activate --dry-run                # Preview what would change\n" +
+			"  caddie repo add lenny https://github.com/RefoundAI/lenny-skills  # Add git repo\n" +
+			"  caddie inventory                         # See all available skills\n" +
 			"\n" +
 			B + "SHELL INTEGRATION" + R + "\n" +
 			"  Add to ~/.zshrc (or ~/.bashrc):\n" +
 			"\n" +
 			"    claude() {\n" +
-			"      ai-env activate && command claude \"$@\"\n" +
+			"      caddie activate && command claude \"$@\"\n" +
 			"    }\n" +
 			"\n" +
 			B + "PROJECT CONFIG" + R + "\n" +
-			"  Create .ai-env.yaml in your project root:\n" +
+			"  Create .caddie.yaml in your project root:\n" +
 			"\n" +
 			"    environment: \"my-project\"\n" +
 			"\n" +
 			B + "DIRECTORIES" + R + "\n" +
-			"  " + D + "~/.config/ai-env/skills/" + R + "            Skill store (source of truth)\n" +
-			"  " + D + "~/.config/ai-env/repos/" + R + "             Cloned git repos\n" +
-			"  " + D + "~/.config/ai-env/config.yaml" + R + "        Global settings (default_environment)\n" +
+			"  " + D + "~/.config/caddie/skills/" + R + "            Skill store (source of truth)\n" +
+			"  " + D + "~/.config/caddie/repos/" + R + "             Cloned git repos\n" +
+			"  " + D + "~/.config/caddie/config.yaml" + R + "        Global settings (default_environment)\n" +
 			"  " + D + "<project>/.agents/skills/" + R + "            Project skills (managed symlinks)\n" +
 			"  " + D + "<project>/.claude/skills" + R + "             Symlink to .agents/skills\n" +
-			"  " + D + "<project>/.ai-env.yaml" + R + "              Project profile binding\n" +
-			"  " + D + "~/.config/ai-env/environments/" + R + "       Environment YAML files\n" +
-			"  " + D + "~/.config/ai-env/sources.yaml" + R + "        Repo registry\n",
+			"  " + D + "<project>/.caddie.yaml" + R + "              Project profile binding\n" +
+			"  " + D + "~/.config/caddie/environments/" + R + "       Environment YAML files\n" +
+			"  " + D + "~/.config/caddie/sources.yaml" + R + "        Repo registry\n",
 	)
 	// Bash `$(cat << EOF)` strips trailing newlines from the heredoc body;
 	// `printf '%b\n'` then adds one. Net tail is a single "\n" — matched above.
@@ -632,7 +629,7 @@ func cmdRepoUpdate(args []string) {
 
 	if updated > 0 {
 		fmt.Println()
-		fmt.Printf("%sℹ%s  Run %sai-env scan --force%s to sync updated skills into the store.\n",
+		fmt.Printf("%sℹ%s  Run %scaddie scan --force%s to sync updated skills into the store.\n",
 			ansiBlue, ansiReset, ansiCyan, ansiReset)
 	}
 }
@@ -640,7 +637,7 @@ func cmdRepoUpdate(args []string) {
 // cmdReset mirrors bash cmd_reset: clean managed symlinks in ~/.agents/skills,
 // remove ~/.claude/skills symlink, clean project-local skill symlinks for every
 // registered environment, rm -rf the skill store, remove state files, and
-// re-enable disabled plugins registered via ai-env sources.
+// re-enable disabled plugins registered via caddie sources.
 //
 // Skipped vs bash: the plugin-enable step uses python to rewrite ~/.claude/
 // settings.json — we delegate by reimplementing the narrow behavior (scan
@@ -651,7 +648,7 @@ func cmdReset(args []string) {
 		force = true
 	}
 
-	fmt.Printf("%sai-env reset%s — restore to clean state\n\n", ansiBold, ansiReset)
+	fmt.Printf("%scaddie reset%s — restore to clean state\n\n", ansiBold, ansiReset)
 
 	home := os.Getenv("HOME")
 	if home == "" {
@@ -689,13 +686,13 @@ func cmdReset(args []string) {
 	if claudeIsSymlink {
 		fmt.Printf("  ~/.claude/skills/ → ~/.agents/skills/ (symlink)\n")
 	}
-	fmt.Printf("  %d item(s) in skill store (~/.config/ai-env/skills/)\n", storeCount)
+	fmt.Printf("  %d item(s) in skill store (~/.config/caddie/skills/)\n", storeCount)
 	fmt.Printf("  State files (.last-scan)\n")
 	fmt.Printf("  Project-local skill symlinks (for all environments with directory: set)\n")
 	fmt.Println()
 	fmt.Printf("%sWill keep:%s\n", ansiBold, ansiReset)
-	fmt.Printf("  Environment configs (~/.config/ai-env/environments/)\n")
-	fmt.Printf("  Repo registry (~/.config/ai-env/sources.yaml)\n")
+	fmt.Printf("  Environment configs (~/.config/caddie/environments/)\n")
+	fmt.Printf("  Repo registry (~/.config/caddie/sources.yaml)\n")
 	fmt.Println()
 
 	// Bash uses `echo -n "Proceed?..."; read -r confirm` here — an echo, not
@@ -765,7 +762,7 @@ func cmdReset(args []string) {
 			if li, err := os.Lstat(claudeLink); err == nil && li.Mode()&os.ModeSymlink != 0 {
 				_ = os.Remove(claudeLink)
 			}
-			_ = os.Remove(filepath.Join(ed, ".claude", ".ai-env-fingerprint"))
+			_ = os.Remove(filepath.Join(ed, ".claude", ".caddie-fingerprint"))
 		}
 	}
 	if projectCleaned > 0 {
@@ -781,7 +778,7 @@ func cmdReset(args []string) {
 	fmt.Printf("%sℹ%s  Removed state files\n", ansiBlue, ansiReset)
 
 	fmt.Println()
-	fmt.Printf("%s✓%s  Reset complete. To rebuild, run: %sai-env scan && ai-env activate <env>%s\n",
+	fmt.Printf("%s✓%s  Reset complete. To rebuild, run: %scaddie scan && caddie activate <env>%s\n",
 		ansiGreen, ansiReset, ansiCyan, ansiReset)
 }
 
@@ -806,7 +803,7 @@ func cmdWhich(_ []string) {
 // derived from the store via resolve_skills. Byte-exact stdout vs bash.
 func cmdShow(args []string) {
 	if len(args) == 0 || args[0] == "" {
-		die("Usage: ai-env show <name>")
+		die("Usage: caddie show <name>")
 	}
 	name := args[0]
 	if !config.EnvExists(name) {
@@ -835,7 +832,7 @@ func cmdShow(args []string) {
 		}
 		fmt.Printf("  %sSkills managed in:%s\n", ansiDim, ansiReset)
 		fmt.Printf("    %s%s/.agents/skills/ (.claude/skills → symlink)%s\n", ansiDim, expanded, ansiReset)
-		if _, err := os.Stat(filepath.Join(expanded, ".claude", ".ai-env-fingerprint")); err == nil {
+		if _, err := os.Stat(filepath.Join(expanded, ".claude", ".caddie-fingerprint")); err == nil {
 			fmt.Printf("    %s(fingerprint: active)%s\n", ansiDim, ansiReset)
 		}
 		fmt.Println()
@@ -878,11 +875,11 @@ func cmdShow(args []string) {
 // not a tty.
 func cmdCreate(args []string) {
 	if len(args) == 0 || args[0] == "" {
-		die("Usage: ai-env create <name>")
+		die("Usage: caddie create <name>")
 	}
 	name := args[0]
 	if config.EnvExists(name) {
-		die(fmt.Sprintf("Environment '%s' already exists. Use 'ai-env edit %s' to modify it.", name, name))
+		die(fmt.Sprintf("Environment '%s' already exists. Use 'caddie edit %s' to modify it.", name, name))
 	}
 	file := config.EnvFile(name)
 
@@ -953,9 +950,9 @@ func cmdCreate(args []string) {
 	fmt.Println()
 	fmt.Printf("%s✓%s  Created environment: %s%s%s\n", ansiGreen, ansiReset, ansiBold, name, ansiReset)
 	fmt.Printf("%sℹ%s  Config: %s%s%s\n", ansiBlue, ansiReset, ansiDim, file, ansiReset)
-	fmt.Printf("  Edit:     %sai-env edit %s%s\n", ansiCyan, name, ansiReset)
-	fmt.Printf("  Preview:  %sai-env activate %s --dry-run%s\n", ansiCyan, name, ansiReset)
-	fmt.Printf("  Activate: %sai-env activate %s%s\n", ansiCyan, name, ansiReset)
+	fmt.Printf("  Edit:     %scaddie edit %s%s\n", ansiCyan, name, ansiReset)
+	fmt.Printf("  Preview:  %scaddie activate %s --dry-run%s\n", ansiCyan, name, ansiReset)
+	fmt.Printf("  Activate: %scaddie activate %s%s\n", ansiCyan, name, ansiReset)
 }
 
 // cmdInit mirrors bash cmd_init: idempotent filesystem setup (config dirs,
@@ -963,7 +960,7 @@ func cmdCreate(args []string) {
 // plugin sources, example env). Delegates the final `cmd_scan` step to the
 // legacy bash script because scan hasn't been ported yet.
 func cmdInit(args []string) {
-	fmt.Printf("%sInitializing ai-env skill profile manager...%s\n\n", ansiBold, ansiReset)
+	fmt.Printf("%sInitializing caddie skill profile manager...%s\n\n", ansiBold, ansiReset)
 
 	home := os.Getenv("HOME")
 	if home == "" {
@@ -1073,7 +1070,7 @@ func cmdInit(args []string) {
 		if err := os.WriteFile(sourcesFile, []byte("sources:\n"), 0o644); err != nil {
 			die(err.Error())
 		}
-		fmt.Printf("%sℹ%s  Add repos with: %sai-env repo add <name> <url>%s\n",
+		fmt.Printf("%sℹ%s  Add repos with: %scaddie repo add <name> <url>%s\n",
 			ansiBlue, ansiReset, ansiCyan, ansiReset)
 	} else {
 		fmt.Printf("%sℹ%s  Sources file already exists: %s\n", ansiBlue, ansiReset, sourcesFile)
@@ -1094,7 +1091,7 @@ skills:
 #     permission_mode: "plan"
 `
 		_ = os.WriteFile(example, []byte(exampleBody), 0o644)
-		fmt.Printf("%sℹ%s  Created example environment: %sai-env show example%s\n",
+		fmt.Printf("%sℹ%s  Created example environment: %scaddie show example%s\n",
 			ansiBlue, ansiReset, ansiCyan, ansiReset)
 	}
 
@@ -1104,14 +1101,14 @@ skills:
 
 	fmt.Println()
 	fmt.Printf("%sℹ%s  Next steps:\n", ansiBlue, ansiReset)
-	fmt.Printf("  %sai-env repo list%s             Review registered repos\n", ansiCyan, ansiReset)
-	fmt.Printf("  %sai-env inventory%s             See all discovered skills\n", ansiCyan, ansiReset)
-	fmt.Printf("  %sai-env create my-project%s     Create your first environment\n", ansiCyan, ansiReset)
+	fmt.Printf("  %scaddie repo list%s             Review registered repos\n", ansiCyan, ansiReset)
+	fmt.Printf("  %scaddie inventory%s             See all discovered skills\n", ansiCyan, ansiReset)
+	fmt.Printf("  %scaddie create my-project%s     Create your first environment\n", ansiCyan, ansiReset)
 	fmt.Println()
 	fmt.Printf("%sℹ%s  Shell integration (add to ~/.zshrc):\n", ansiBlue, ansiReset)
 	fmt.Println()
 	fmt.Printf("  %sclaude() {\n", ansiDim)
-	fmt.Printf("    ai-env activate && command claude \"\\$@\"\n")
+	fmt.Printf("    caddie activate && command claude \"\\$@\"\n")
 	fmt.Printf("  }%s\n", ansiReset)
 }
 
@@ -1219,7 +1216,7 @@ func cmdScan(args []string) {
 		if r.Warning != "" {
 			switch r.Warning {
 			case "not cloned":
-				fmt.Printf("%s⚠%s  Repo '%s': not cloned. Run %sai-env repo update %s%s\n",
+				fmt.Printf("%s⚠%s  Repo '%s': not cloned. Run %scaddie repo update %s%s\n",
 					ansiYellow, ansiReset, r.Name, ansiCyan, r.Name, ansiReset)
 			case "skills_path not found":
 				fmt.Printf("%s⚠%s  Repo '%s': skills_path '%s' not found\n",
@@ -1248,7 +1245,7 @@ func cmdScan(args []string) {
 			fmt.Printf("  %s•%s %s%s%s: %s commit(s) behind\n",
 				ansiYellow, ansiReset, ansiBold, u.Name, ansiReset, u.Behind)
 		}
-		fmt.Printf("  %sRun %sai-env repo update%s%s to pull changes%s\n",
+		fmt.Printf("  %sRun %scaddie repo update%s%s to pull changes%s\n",
 			ansiDim, ansiCyan, ansiReset, ansiDim, ansiReset)
 	}
 
@@ -1260,7 +1257,7 @@ func cmdScan(args []string) {
 				ansiYellow, ansiReset, ansiBold, s.SkillName, ansiReset, s.RepoName)
 		}
 		fmt.Printf("  %sTo use the repo version, remove the local copy:%s\n", ansiDim, ansiReset)
-		fmt.Printf("  %s  rm -rf %s/<skill-name> && ai-env scan --force%s\n", ansiDim, store, ansiReset)
+		fmt.Printf("  %s  rm -rf %s/<skill-name> && caddie scan --force%s\n", ansiDim, store, ansiReset)
 	}
 
 	// Orphaned skill pattern warnings — scan every environment's `skills:`
@@ -1307,7 +1304,7 @@ func expandTilde(p string) string {
 }
 
 // cmdActivate mirrors bash cmd_activate. Resolves the target environment
-// (explicit arg, .ai-env.yaml, interactive picker), syncs repos, resolves
+// (explicit arg, .caddie.yaml, interactive picker), syncs repos, resolves
 // skills, fingerprints, and minimally reconciles the target .agents/skills
 // directory (+ .claude/skills symlink). Writes a fingerprint + .gitignore
 // entries for project-local targets.
@@ -1342,7 +1339,7 @@ func cmdActivate(args []string) {
 				if config.EnvExists(ref) {
 					name = ref
 				} else {
-					fmt.Printf("%s⚠%s  .ai-env.yaml references unknown environment: %s\n",
+					fmt.Printf("%s⚠%s  .caddie.yaml references unknown environment: %s\n",
 						ansiYellow, ansiReset, ref)
 				}
 			}
@@ -1356,7 +1353,7 @@ func cmdActivate(args []string) {
 		if name == "" {
 			envs := config.ListEnvs()
 			if len(envs) == 0 {
-				die(fmt.Sprintf("No profiles found. Run %sai-env create <name>%s first.", ansiCyan, ansiReset))
+				die(fmt.Sprintf("No profiles found. Run %scaddie create <name>%s first.", ansiCyan, ansiReset))
 			}
 			base := filepath.Base(cwd)
 			fmt.Printf("%sNo profile for %s%s\n\n", ansiBold, base, ansiReset)
@@ -1381,14 +1378,14 @@ func cmdActivate(args []string) {
 			}
 			name = envs[idx-1]
 			// Remember the choice.
-			projectConfig = filepath.Join(cwd, ".ai-env.yaml")
+			projectConfig = filepath.Join(cwd, ".caddie.yaml")
 			_ = os.WriteFile(projectConfig, []byte(fmt.Sprintf("environment: \"%s\"\n", name)), 0o644)
-			fmt.Printf("%s✓%s  Created .ai-env.yaml → %s\n\n", ansiGreen, ansiReset, name)
+			fmt.Printf("%s✓%s  Created .caddie.yaml → %s\n\n", ansiGreen, ansiReset, name)
 		}
 	}
 
 	if !config.EnvExists(name) {
-		die(fmt.Sprintf("Environment '%s' not found. Run 'ai-env list' to see available environments.", name))
+		die(fmt.Sprintf("Environment '%s' not found. Run 'caddie list' to see available environments.", name))
 	}
 
 	file := config.EnvFile(name)
@@ -1419,7 +1416,7 @@ func cmdActivate(args []string) {
 		targetAgents = filepath.Join(home, ".agents", "skills")
 		fingerprintDir = config.Dir()
 	}
-	fingerprintFile := filepath.Join(fingerprintDir, ".ai-env-fingerprint")
+	fingerprintFile := filepath.Join(fingerprintDir, ".caddie-fingerprint")
 
 	label := displayName
 	if label == "" {
@@ -1580,7 +1577,7 @@ func ensureProjectGitignore(projectDir string) {
 		".claude/skills/",
 		".agents/skills/",
 		".agents/SOURCES.md",
-		".claude/.ai-env-fingerprint",
+		".claude/.caddie-fingerprint",
 	}
 
 	var body []byte
@@ -1610,7 +1607,7 @@ func ensureProjectGitignore(projectDir string) {
 		out.WriteByte('\n')
 	}
 	out.WriteByte('\n')
-	out.WriteString("# ai-env managed skill directories\n")
+	out.WriteString("# caddie managed skill directories\n")
 	for _, e := range entries {
 		if !existing[e] {
 			out.WriteString(e)
@@ -1661,10 +1658,10 @@ func cmdExport(args []string) {
 	}
 
 	if target == "" {
-		die("Usage: ai-env export [<env>|--all] --to <dir-or-s3> [--clean] [--dry-run]")
+		die("Usage: caddie export [<env>|--all] --to <dir-or-s3> [--clean] [--dry-run]")
 	}
 	if !all && name == "" {
-		die("Specify an environment name or use --all.\nUsage: ai-env export [<env>|--all] --to <target> [--clean] [--dry-run]")
+		die("Specify an environment name or use --all.\nUsage: caddie export [<env>|--all] --to <target> [--clean] [--dry-run]")
 	}
 	if !all && !config.EnvExists(name) {
 		die(fmt.Sprintf("Environment '%s' not found.", name))

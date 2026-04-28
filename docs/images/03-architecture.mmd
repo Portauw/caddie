@@ -13,11 +13,11 @@ flowchart LR
     end
 
     subgraph R["📥 Local clones"]
-        RC["~/.config/ai-env/repos/"]:::store
+        RC["~/.config/caddie/repos/"]:::store
     end
 
-    subgraph I["🗂️ ai-env index (namespaced)"]
-        IX["~/.config/ai-env/skills/<br/>• superpowers-brainstorming<br/>• sterling-write-as-pieter<br/>• gws-gmail-send"]:::idx
+    subgraph I["🗂️ caddie index (namespaced)"]
+        IX["~/.config/caddie/skills/<br/>• superpowers-brainstorming<br/>• sterling-write-as-pieter<br/>• gws-gmail-send"]:::idx
     end
 
     subgraph E["🎯 Environments (profiles)"]
@@ -26,11 +26,11 @@ flowchart LR
     end
 
     subgraph P["📁 Project directory"]
-        P1[".ai-env.yaml → backend-api"]:::proj
+        P1[".caddie.yaml → backend-api"]:::proj
         PA[".agents/skills/<br/>(filtered symlinks)"]:::proj
         PC[".claude/skills → .agents/skills"]:::proj
     end
 
     S1 & S2 & S3 & S4 -->|git clone/pull| RC --> IX
     IX -->|pattern match| E1 & E2
-    E1 --> P1 -->|ai-env activate| PA --> PC
+    E1 --> P1 -->|caddie activate| PA --> PC

@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Portauw/ai-env/internal/config"
+	"github.com/Portauw/caddie/internal/config"
 )
 
 // stripQuotes removes a single layer of matched surrounding quotes.
