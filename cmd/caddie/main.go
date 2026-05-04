@@ -1011,11 +1011,15 @@ skills:
 	fmt.Printf("  %scaddie inventory%s             See all discovered skills\n", ansiCyan, ansiReset)
 	fmt.Printf("  %scaddie create my-project%s     Create your first environment\n", ansiCyan, ansiReset)
 	fmt.Println()
-	fmt.Printf("%sℹ%s  Shell integration (add to ~/.zshrc):\n", ansiBlue, ansiReset)
+	fmt.Printf("%sℹ%s  Shell integration (optional — auto-switches profile per project):\n", ansiBlue, ansiReset)
 	fmt.Println()
-	fmt.Printf("  %sclaude() {\n", ansiDim)
+	fmt.Printf("  %s# macOS / Linux (~/.zshrc or ~/.bashrc)\n", ansiDim)
+	fmt.Printf("  claude() {\n")
 	fmt.Printf("    caddie activate && command claude \"\\$@\"\n")
-	fmt.Printf("  }%s\n", ansiReset)
+	fmt.Printf("  }\n")
+	fmt.Printf("\n")
+	fmt.Printf("  # Windows PowerShell ($PROFILE)\n")
+	fmt.Printf("  function claude { caddie activate; & claude.cmd $args }%s\n", ansiReset)
 }
 
 // ensureClaudeSkillsSymlink makes claudeDir a relative symlink to

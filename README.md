@@ -7,9 +7,13 @@
 
 caddie manages skills from registered git repos and creates project-specific skill profiles for Claude Code and other agents. It maintains a canonical skill store and configures agent-specific skill directories via symlinks.
 
+**Platform support:** macOS ✓ · Linux ✓ · Windows 10/11 ✓
+
 ## Quick Install
 
-Requires Go 1.22+ (`brew install go`).
+### macOS / Linux
+
+Requires Go 1.22+ (`brew install go` on macOS, or your distro's package manager).
 
 ```bash
 ./scripts/build.sh
@@ -18,6 +22,23 @@ cp dist/caddie /usr/local/bin/caddie
 # Initialize (creates config directories, skill store, ~/.claude/skills symlink)
 caddie init
 ```
+
+### Windows
+
+Requires Go 1.22+ (`winget install GoLang.Go`) and Git for Windows.
+
+```powershell
+pwsh ./scripts/build.ps1
+# Copy dist\caddie.exe to a directory on your %PATH%, e.g.:
+Copy-Item dist\caddie.exe "$env:USERPROFILE\bin\caddie.exe"
+
+# Initialize
+caddie init
+```
+
+**Symlink note:** caddie uses directory symlinks to manage skill profiles. On Windows, either:
+- Enable **Developer Mode** in *Settings → System → For developers* (recommended — gives real symlinks, best performance), or
+- Leave it off — caddie automatically falls back to NTFS directory junctions, which require no elevation and work for all standard use cases. A one-time notice is printed the first time a junction is created.
 
 The repo also keeps `ai-env-frozen` — the original bash implementation, retained as the parity oracle for the contract test suite. It is not installed by default.
 
@@ -266,13 +287,25 @@ caddie export --all --to <target>  # export every skill (no env filter)
 
 ## Shell Integration
 
-caddie configures skills but does not launch Claude. Wire it into your `claude` invocation so the right profile is always active:
+caddie configures skills but does not launch Claude. `caddie activate` creates
+**persistent symlinks on disk** — Claude Code (VS Code extension, any terminal,
+any launcher) reads `~/.claude/skills/` directly, so the wrapper below is
+optional convenience, not a requirement.
 
+The wrapper auto-switches to the right skill profile whenever you open a new
+terminal in a different project. Without it, run `caddie activate` once per
+project (or add it to your VS Code workspace `tasks.json`).
+
+**macOS / Linux** — add to `~/.zshrc` or `~/.bashrc`:
 ```bash
-# ~/.zshrc or ~/.bashrc
 claude() {
   caddie activate && command claude "$@"
 }
+```
+
+**Windows PowerShell** — add to your `$PROFILE`:
+```powershell
+function claude { caddie activate; & claude.cmd $args }
 ```
 
 `activate` short-circuits via a fingerprint cache when nothing changed, so the overhead is sub-100ms on the hot path.
