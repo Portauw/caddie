@@ -907,8 +907,7 @@ func cmdInit(args []string) {
 			fmt.Printf("%sℹ%s  Backup already exists: %s\n", ansiBlue, ansiReset, backup)
 			continue
 		}
-		cmd := exec.Command("cp", "-a", d, backup)
-		if cmd.Run() == nil {
+		if err := platform.CopyTree(d, backup); err == nil {
 			fmt.Printf("%s✓%s  Backed up %s to %s\n", ansiGreen, ansiReset, d, backup)
 		}
 	}
