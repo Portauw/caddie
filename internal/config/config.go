@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Portauw/caddie/internal/platform"
 )
 
 // Home returns the user's home directory, preferring $HOME (so tests and
@@ -135,11 +137,12 @@ func ReadList(path, key string) []string {
 	return out
 }
 
-// FindProjectConfig walks from dir up to "/" looking for .caddie.yaml.
-// Returns the path if found, "" otherwise.
+// FindProjectConfig walks from dir up to the filesystem root looking for
+// .caddie.yaml. Returns the path if found, "" otherwise.
 func FindProjectConfig(dir string) string {
 	dir = ExpandTilde(dir)
-	for dir != "/" && dir != "" {
+	root := platform.FilesystemRoot(dir)
+	for dir != root && dir != "" {
 		candidate := filepath.Join(dir, ".caddie.yaml")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
