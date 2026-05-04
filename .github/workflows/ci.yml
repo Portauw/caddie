@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Enable symlink creation without elevation on Windows (Developer Mode).
+      # This exercises the os.Symlink fast path; the junction fallback is tested
+      # by the windows-junction job below.
+      - name: Enable Developer Mode (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-ItemProperty `
+            -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" `
+            -Name AllowDevelopmentWithoutDevLicense `
+            -Value 1 -PropertyType DWORD -Force | Out-Null
+
+      - run: go vet ./...
+
+      - run: go test ./...
+
+      - run: go build ./...
+
+  # Test the junction fallback path: Windows without Developer Mode.
+  test-windows-junction:
+    name: test (windows / junction fallback)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Developer Mode intentionally NOT enabled — junctions are the fallback.
+
+      - run: go vet ./...
+
+      - run: go test ./...
+
+      - run: go build ./...
