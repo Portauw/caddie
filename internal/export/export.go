@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/Portauw/caddie/internal/platform"
 )
 
 // ANSI codes — duplicated from cmd/caddie/main.go to keep this package
@@ -79,12 +81,28 @@ func copyDir(src, dst string) error {
 		}
 		switch {
 		case li.Mode()&os.ModeSymlink != 0:
+			// On Unix, preserve symlinks verbatim so the export mirrors the
+			// store layout. On Windows, os.Symlink may fail without Developer
+			// Mode, so resolve the target and copy the real content instead.
 			target, err := os.Readlink(srcPath)
 			if err != nil {
 				return err
 			}
 			if err := os.Symlink(target, dstPath); err != nil {
-				return err
+				// Symlink failed (e.g. Windows without Developer Mode).
+				// Fall back to resolving and copying the real content.
+				resolved := target
+				if !filepath.IsAbs(target) {
+					resolved = filepath.Join(filepath.Dir(srcPath), target)
+				}
+				info, statErr := os.Stat(resolved)
+				if statErr != nil {
+					return err // return original symlink error
+				}
+				if info.IsDir() {
+					return platform.CopyTree(resolved, dstPath)
+				}
+				return copyFile(resolved, dstPath, info.Mode()&os.ModePerm)
 			}
 		case li.IsDir():
 			if err := copyDir(srcPath, dstPath); err != nil {
