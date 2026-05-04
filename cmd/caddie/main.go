@@ -18,6 +18,7 @@ import (
 
 	"github.com/Portauw/caddie/internal/config"
 	"github.com/Portauw/caddie/internal/export"
+	"github.com/Portauw/caddie/internal/platform"
 	"github.com/Portauw/caddie/internal/repos"
 	"github.com/Portauw/caddie/internal/skills"
 	"github.com/Portauw/caddie/internal/version"
@@ -145,14 +146,7 @@ func cmdEdit(args []string) {
 		die(fmt.Sprintf("Environment '%s' not found.", name))
 	}
 	file := config.EnvFile(name)
-
-	editor := cmp.Or(os.Getenv("EDITOR"), "vim")
-	// `sh -c` preserves $EDITOR's word-splitting (e.g. "code --wait").
-	cmd := exec.Command("sh", "-c", editor+` "$0"`, file)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
+	_ = platform.RunEditor(file)
 	fmt.Printf("%s✓%s  Updated: %s\n", ansiGreen, ansiReset, name)
 }
 
