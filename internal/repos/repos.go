@@ -246,10 +246,14 @@ func (e Entry) UsesPrefix() bool {
 	return e.Prefix != "" && e.Prefix != "false"
 }
 
-// LinkPointsTo reports whether target (a symlink target string) refers into
-// the checkout for repo `name`. Used to scrub stale store links when a repo
-// is removed or its prefix changes.
+// LinkPointsTo reports whether target (a symlink or junction target string)
+// refers into the checkout for repo `name`. Used to scrub stale store links
+// when a repo is removed or its prefix changes.
+// filepath.Clean normalises the target before matching so that Windows
+// junction targets (which may carry a \??\ prefix after stripping) compare
+// correctly against the constructed needle.
 func LinkPointsTo(target, name string) bool {
+	target = filepath.Clean(target)
 	needle := string(os.PathSeparator) + "repos" + string(os.PathSeparator) + name + string(os.PathSeparator)
 	return strings.Contains(target, needle)
 }

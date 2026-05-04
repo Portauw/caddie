@@ -53,6 +53,9 @@ func buildSharedBinary() (string, error) {
 		return "", err
 	}
 	out := filepath.Join(tmpDir, "caddie")
+	if runtime.GOOS == "windows" {
+		out += ".exe"
+	}
 	cmd := exec.Command("go", "build", "-o", out, "./cmd/caddie")
 	cmd.Dir = root
 	cmd.Stderr = os.Stderr

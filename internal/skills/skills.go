@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Portauw/caddie/internal/config"
+	"github.com/Portauw/caddie/internal/platform"
 	"github.com/Portauw/caddie/internal/repos"
 )
 
@@ -28,7 +29,7 @@ func EachSymlink(dir string, fn func(name, full string)) int {
 	for _, e := range entries {
 		full := filepath.Join(dir, e.Name())
 		li, err := os.Lstat(full)
-		if err != nil || li.Mode()&os.ModeSymlink == 0 {
+		if err != nil || !platform.IsLinked(li, full) {
 			continue
 		}
 		if fn != nil {
@@ -44,7 +45,7 @@ func EachSymlink(dir string, fn func(name, full string)) int {
 // costs an extra Readlink syscall per entry.
 func EachSymlinkTarget(dir string, fn func(name, full, target string)) int {
 	return EachSymlink(dir, func(name, full string) {
-		target, _ := os.Readlink(full)
+		target, _ := platform.ReadTarget(full)
 		fn(name, full, target)
 	})
 }

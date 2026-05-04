@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Portauw/caddie/internal/platform"
 	"github.com/Portauw/caddie/internal/repos"
 )
 
@@ -62,7 +63,7 @@ func SweepAgentDir(home string, log LogFn) int {
 	for _, e := range entries {
 		full := filepath.Join(agentDir, e.Name())
 		li, err := os.Lstat(full)
-		if err != nil || li.Mode()&os.ModeSymlink != 0 || !li.IsDir() {
+		if err != nil || platform.IsLinked(li, full) || !li.IsDir() {
 			continue
 		}
 		target := filepath.Join(store, e.Name())
@@ -198,17 +199,16 @@ func syncRepoSkills(e repos.Entry, walked []RepoSkill, store string, log LogFn, 
 		target := filepath.Join(store, skillName)
 		li, err := os.Lstat(target)
 		if err == nil {
-			isSymlink := li.Mode()&os.ModeSymlink != 0
-			if !isSymlink && li.IsDir() {
+			if !platform.IsLinked(li, target) && li.IsDir() {
 				log.write("  \033[2mskip: %s (local override)\033[0m\n", skillName)
 				*shadowed = append(*shadowed, Shadow{SkillName: skillName, RepoName: e.Name})
 				continue
 			}
-			if isSymlink {
-				current, _ := os.Readlink(target)
+			if platform.IsLinked(li, target) {
+				current, _ := platform.ReadTarget(target)
 				if current != rs.AbsPath {
 					_ = os.Remove(target)
-					if err := os.Symlink(rs.AbsPath, target); err == nil {
+					if _, err := platform.Materialize(rs.AbsPath, target); err == nil {
 						log.write("  \033[2mupdate: %s -> %s\033[0m\n", skillName, rs.AbsPath)
 					}
 				}
@@ -216,7 +216,7 @@ func syncRepoSkills(e repos.Entry, walked []RepoSkill, store string, log LogFn, 
 				continue
 			}
 		}
-		if err := os.Symlink(rs.AbsPath, target); err == nil {
+		if _, err := platform.Materialize(rs.AbsPath, target); err == nil {
 			log.write("  \033[0;32m+\033[0m %s -> %s\n", skillName, rs.AbsPath)
 			count++
 		}
@@ -227,10 +227,10 @@ func syncRepoSkills(e repos.Entry, walked []RepoSkill, store string, log LogFn, 
 func cleanStaleUnprefixedLink(store, repoName, originalName, newName string, log LogFn) {
 	stale := filepath.Join(store, originalName)
 	li, err := os.Lstat(stale)
-	if err != nil || li.Mode()&os.ModeSymlink == 0 {
+	if err != nil || !platform.IsLinked(li, stale) {
 		return
 	}
-	target, err := os.Readlink(stale)
+	target, err := platform.ReadTarget(stale)
 	if err != nil || !repos.LinkPointsTo(target, repoName) {
 		return
 	}

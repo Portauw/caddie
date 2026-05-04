@@ -1023,12 +1023,8 @@ skills:
 // "../.agents/skills". If claudeDir is a real directory, its contents are
 // migrated into agentsDir before recreating the symlink.
 func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) {
-	if li, err := os.Lstat(claudeDir); err == nil && li.Mode()&os.ModeSymlink != 0 {
-		target, _ := os.Readlink(claudeDir)
-		if target == "../.agents/skills" {
-			return
-		}
-		// Check whether it resolves to agentsDir.
+	if li, err := os.Lstat(claudeDir); err == nil && platform.IsLinked(li, claudeDir) {
+		// Already a managed link — verify it resolves to agentsDir.
 		resolved, err1 := filepath.EvalSymlinks(claudeDir)
 		absAgents, err2 := filepath.EvalSymlinks(agentsDir)
 		if err1 == nil && err2 == nil && resolved == absAgents {
@@ -1046,14 +1042,14 @@ func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) {
 				if err != nil {
 					continue
 				}
-				if li.Mode()&os.ModeSymlink == 0 && li.IsDir() {
+				if !platform.IsLinked(li, src) && li.IsDir() {
 					if _, err := os.Stat(dst); os.IsNotExist(err) {
 						_ = os.Rename(src, dst)
 					}
-				} else if li.Mode()&os.ModeSymlink != 0 {
+				} else if platform.IsLinked(li, src) {
 					if _, err := os.Lstat(dst); os.IsNotExist(err) {
-						target, _ := os.Readlink(src)
-						_ = os.Symlink(target, dst)
+						target, _ := platform.ReadTarget(src)
+						_, _ = platform.Materialize(target, dst)
 					}
 				}
 			}
@@ -1061,7 +1057,7 @@ func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) {
 		_ = os.RemoveAll(claudeDir)
 	}
 	_ = os.MkdirAll(filepath.Dir(claudeDir), 0o755)
-	_ = os.Symlink("../.agents/skills", claudeDir)
+	_, _ = platform.Materialize("../.agents/skills", claudeDir)
 }
 
 type scanOpts struct {

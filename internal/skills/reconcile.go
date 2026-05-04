@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Portauw/caddie/internal/platform"
 )
 
 // ComputeFingerprint returns the SHA-256 of the env name and sorted skill
@@ -54,7 +56,7 @@ func ReconcileSkillDir(targetDir string, expected []string, store string) (Recon
 		for _, e := range entries {
 			full := filepath.Join(targetDir, e.Name())
 			li, err := os.Lstat(full)
-			if err != nil || li.Mode()&os.ModeSymlink == 0 {
+			if err != nil || !platform.IsLinked(li, full) {
 				continue
 			}
 			if _, ok := want[e.Name()]; !ok {
@@ -72,18 +74,18 @@ func ReconcileSkillDir(targetDir string, expected []string, store string) (Recon
 			continue
 		}
 		if li, err := os.Lstat(tgt); err == nil {
-			// Already a symlink — only keep it if the target matches.
-			if li.Mode()&os.ModeSymlink != 0 {
-				if current, err := os.Readlink(tgt); err == nil && current == src {
+			// Already a managed link — only keep it if the target matches.
+			if platform.IsLinked(li, tgt) {
+				if current, err := platform.ReadTarget(tgt); err == nil && current == src {
 					continue
 				}
 				_ = os.Remove(tgt)
 			} else {
-				// Non-symlink existing entry (real file/dir) — leave it alone.
+				// Non-link existing entry (real file/dir) — leave it alone.
 				continue
 			}
 		}
-		if err := os.Symlink(src, tgt); err == nil {
+		if _, err := platform.Materialize(src, tgt); err == nil {
 			res.Added++
 		}
 	}
