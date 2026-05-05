@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>caddie — Sharing Session</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@200;300;400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,wght@0,300;0,400;0,600;1,300;1,400&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --font-primary: 'Barlow', system-ui, sans-serif;
+      --font-condensed: 'Barlow Semi Condensed', system-ui, sans-serif;
+      --font-serif: 'Source Serif 4', Georgia, serif;
+
+      --color-black: #000000;
+      --color-white: #FFFFFF;
+      --color-cream: #F5F3F0;
+      --color-cream-light: #EFEBE5;
+      --color-beige: #E9E2DA;
+      --color-taupe: #A39489;
+      --color-gray: #666666;
+
+      --color-yellow: #FFCC1F;
+      --color-orange: #FF5722;
+      --color-mint: #30D4AA;
+      --color-teal: #22899F;
+
+      --space-xs: 0.25rem;
+      --space-sm: 0.5rem;
+      --space-md: 1rem;
+      --space-lg: 1.5rem;
+      --space-xl: 2rem;
+      --space-2xl: 3rem;
+      --space-3xl: 5rem;
+      --space-4xl: 7.5rem;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+      background: var(--color-black);
+      font-family: var(--font-primary);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      color: var(--color-black);
+    }
+
+    .deck {
+      position: relative;
+      width: calc(100vw - 240px);
+      height: 100vh;
+      margin-left: 240px;
+    }
+
+    /* ───── sidebar index ───── */
+    .toc {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 240px;
+      height: 100vh;
+      background: var(--color-cream);
+      color: var(--color-black);
+      padding: var(--space-xl) var(--space-lg);
+      overflow-y: auto;
+      border-right: 1px solid var(--color-beige);
+      z-index: 50;
+      transition: transform 0.3s ease;
+    }
+    .toc.collapsed { transform: translateX(-240px); }
+    .toc.collapsed + .deck { margin-left: 0; width: 100vw; }
+
+    .toc__brand {
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-weight: 400;
+      font-size: 1.5rem;
+      margin-bottom: 4px;
+      color: var(--color-black);
+    }
+    .toc__sub {
+      font-family: var(--font-condensed);
+      font-size: 0.65rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-taupe);
+      margin-bottom: var(--space-xl);
+    }
+    .toc__list {
+      list-style: none;
+      counter-reset: toc;
+    }
+    .toc__list li {
+      counter-increment: toc;
+      padding: var(--space-sm) 0;
+      cursor: pointer;
+      font-family: var(--font-primary);
+      font-weight: 300;
+      font-size: 0.92rem;
+      line-height: 1.3;
+      color: var(--color-taupe);
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: var(--space-sm);
+      align-items: baseline;
+      border-left: 2px solid transparent;
+      padding-left: var(--space-sm);
+      transition: color 0.15s ease, border-color 0.15s ease;
+    }
+    .toc__list li::before {
+      content: counter(toc, decimal-leading-zero);
+      font-family: var(--font-condensed);
+      font-size: 0.65rem;
+      letter-spacing: 0.1em;
+      color: var(--color-gray);
+    }
+    .toc__list li:hover { color: var(--color-black); }
+    .toc__list li.active {
+      color: var(--color-black);
+      border-left-color: var(--color-orange);
+    }
+    .toc__list li.active::before { color: var(--color-orange); }
+
+    .toc__toggle {
+      position: fixed;
+      top: var(--space-md);
+      left: 248px;
+      z-index: 60;
+      background: var(--color-black);
+      color: var(--color-cream-light);
+      border: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 1rem;
+      font-family: var(--font-primary);
+      transition: left 0.3s ease;
+    }
+    .toc.collapsed ~ .toc__toggle { left: var(--space-md); }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      padding: var(--space-3xl) 8%;
+      background: var(--color-white);
+      overflow: hidden;
+    }
+
+    .slide.active { display: flex; }
+
+    .slide--dark { background: var(--color-black); color: var(--color-white); }
+    .slide--cream { background: var(--color-cream); }
+
+    /* ───── label ───── */
+    .label {
+      font-family: var(--font-condensed);
+      font-weight: 300;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--color-taupe);
+      margin-bottom: var(--space-lg);
+    }
+
+    /* ───── headlines ───── */
+    .h1 {
+      font-family: var(--font-serif);
+      font-weight: 300;
+      font-style: italic;
+      font-size: clamp(48px, 7vw, 96px);
+      line-height: 1.0;
+      letter-spacing: -0.01em;
+    }
+
+    .h2 {
+      font-family: var(--font-serif);
+      font-weight: 300;
+      font-style: italic;
+      font-size: clamp(36px, 5vw, 64px);
+      line-height: 1.05;
+      margin-bottom: var(--space-xl);
+    }
+
+    .h3 {
+      font-family: var(--font-primary);
+      font-weight: 300;
+      font-size: clamp(24px, 3vw, 36px);
+      line-height: 1.15;
+    }
+
+    .lead {
+      font-family: var(--font-primary);
+      font-weight: 300;
+      font-size: clamp(20px, 2vw, 26px);
+      line-height: 1.45;
+      max-width: 60ch;
+    }
+
+    .lead strong { font-weight: 500; }
+
+    .small {
+      font-family: var(--font-condensed);
+      font-weight: 300;
+      font-size: 0.95rem;
+      letter-spacing: 0.05em;
+      color: var(--color-taupe);
+    }
+
+    /* ───── chrome ───── */
+    .chrome {
+      position: absolute;
+      bottom: var(--space-lg);
+      left: 8%;
+      right: 8%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: var(--font-condensed);
+      font-size: 0.7rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-taupe);
+      pointer-events: none;
+    }
+    .slide--dark .chrome { color: var(--color-taupe); }
+
+    .progress {
+      position: absolute;
+      top: 0; left: 0;
+      height: 2px;
+      background: var(--color-yellow);
+      transition: width 0.3s ease;
+      z-index: 100;
+    }
+
+    /* ───── cover ───── */
+    .cover {
+      align-items: flex-start;
+      justify-content: center;
+      background: var(--color-cream);
+      padding-left: 10%;
+    }
+    .cover .h1 { max-width: 14ch; }
+    .cover .meta {
+      margin-top: var(--space-2xl);
+      font-family: var(--font-condensed);
+      font-size: 0.85rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-taupe);
+    }
+    .cover .mascot {
+      position: absolute;
+      right: 6%;
+      bottom: 8%;
+      width: 22vw;
+      max-width: 280px;
+      opacity: 0.95;
+    }
+
+    /* ───── two-column ───── */
+    .columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-3xl);
+      align-items: center;
+    }
+    .columns--asym { grid-template-columns: 5fr 7fr; }
+
+    /* ───── lists ───── */
+    .pain-list {
+      list-style: none;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-lg) var(--space-2xl);
+      margin-top: var(--space-xl);
+    }
+    .pain-list li {
+      font-family: var(--font-primary);
+      font-size: 1.1rem;
+      font-weight: 300;
+      line-height: 1.4;
+      padding-left: var(--space-md);
+      border-left: 2px solid var(--color-orange);
+    }
+    .pain-list li strong {
+      display: block;
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-weight: 400;
+      font-size: 1.4rem;
+      margin-bottom: 4px;
+    }
+
+    /* ───── concept cards ───── */
+    .concepts {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: var(--space-xl);
+      margin-top: var(--space-2xl);
+    }
+    .concept {
+      padding: var(--space-xl);
+      background: rgba(255,255,255,0.04);
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .concept .num {
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-size: 2rem;
+      color: var(--color-yellow);
+      line-height: 1;
+      margin-bottom: var(--space-md);
+    }
+    .concept h4 {
+      font-family: var(--font-serif);
+      font-weight: 400;
+      font-style: italic;
+      font-size: 1.4rem;
+      margin-bottom: var(--space-sm);
+    }
+    .concept p {
+      font-family: var(--font-primary);
+      font-weight: 300;
+      font-size: 0.95rem;
+      line-height: 1.45;
+      color: var(--color-cream-light);
+    }
+
+    /* ───── code ───── */
+    pre, code {
+      font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    }
+    pre {
+      background: var(--color-black);
+      color: var(--color-cream-light);
+      padding: var(--space-lg);
+      border-radius: 10px;
+      font-size: 0.85rem;
+      line-height: 1.55;
+      overflow-x: auto;
+    }
+    .slide--dark pre {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    pre .c { color: var(--color-taupe); font-style: italic; }
+    pre .k { color: var(--color-yellow); }
+    pre .s { color: var(--color-mint); }
+
+    /* ───── flow ───── */
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--space-xl);
+      align-items: stretch;
+      margin-top: var(--space-xl);
+      position: relative;
+    }
+    .flow-step {
+      padding: var(--space-xl);
+      background: var(--color-white);
+      border-radius: 12px;
+      box-shadow: -2px 2px 12px rgba(0,0,0,0.08);
+    }
+    .flow-step .label { color: var(--color-orange); margin-bottom: var(--space-sm); }
+    .flow-step h4 {
+      font-family: var(--font-serif);
+      font-weight: 400;
+      font-style: italic;
+      font-size: 1.6rem;
+      margin-bottom: var(--space-sm);
+    }
+    .flow-step p {
+      font-size: 0.95rem;
+      line-height: 1.45;
+      color: var(--color-gray);
+    }
+    .flow-arrow {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 1.5rem;
+      color: var(--color-taupe);
+    }
+
+    /* ───── pipeline (vertical) ───── */
+    .pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-md);
+      margin-top: var(--space-lg);
+      max-width: 700px;
+    }
+    .pipeline-step {
+      display: grid;
+      grid-template-columns: 60px 1fr;
+      gap: var(--space-lg);
+      align-items: baseline;
+      padding: var(--space-md) 0;
+      border-top: 1px solid var(--color-beige);
+    }
+    .pipeline-step:first-child { border-top: none; }
+    .pipeline-step .n {
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-size: 2.2rem;
+      color: var(--color-orange);
+      line-height: 1;
+    }
+    .pipeline-step h4 {
+      font-family: var(--font-primary);
+      font-weight: 400;
+      font-size: 1.3rem;
+      margin-bottom: 4px;
+    }
+    .pipeline-step p {
+      font-family: var(--font-condensed);
+      font-weight: 300;
+      font-size: 0.85rem;
+      letter-spacing: 0.05em;
+      color: var(--color-gray);
+    }
+
+    /* ───── split (day in life) ───── */
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-2xl);
+      margin-top: var(--space-xl);
+    }
+    .split-card {
+      padding: var(--space-2xl);
+      border-radius: 12px;
+    }
+    .split-card--am { background: var(--color-cream-light); }
+    .split-card--pm { background: var(--color-black); color: var(--color-white); }
+    .split-card .when {
+      font-family: var(--font-condensed);
+      font-size: 0.75rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      margin-bottom: var(--space-md);
+      color: var(--color-taupe);
+    }
+    .split-card h4 {
+      font-family: var(--font-serif);
+      font-weight: 400;
+      font-style: italic;
+      font-size: 2rem;
+      margin-bottom: var(--space-md);
+      line-height: 1;
+    }
+    .split-card pre {
+      background: rgba(0,0,0,0.04);
+      color: var(--color-black);
+      padding: var(--space-md);
+      font-size: 0.8rem;
+    }
+    .split-card--pm pre { background: rgba(255,255,255,0.06); color: var(--color-cream-light); }
+    .split-card .skills {
+      margin-top: var(--space-md);
+      font-family: var(--font-condensed);
+      font-size: 0.8rem;
+      letter-spacing: 0.05em;
+      color: var(--color-taupe);
+    }
+
+    /* ───── steps ───── */
+    .steps {
+      counter-reset: step;
+      list-style: none;
+      margin-top: var(--space-lg);
+    }
+    .steps li {
+      counter-increment: step;
+      padding: var(--space-md) 0;
+      border-top: 1px solid var(--color-beige);
+      display: grid;
+      grid-template-columns: 40px 1fr;
+      gap: var(--space-md);
+      align-items: baseline;
+    }
+    .steps li::before {
+      content: counter(step, decimal-leading-zero);
+      font-family: var(--font-condensed);
+      font-size: 0.8rem;
+      letter-spacing: 0.1em;
+      color: var(--color-orange);
+    }
+    .steps li strong {
+      font-family: var(--font-serif);
+      font-style: italic;
+      font-weight: 400;
+      font-size: 1.4rem;
+      display: block;
+      margin-bottom: 4px;
+    }
+    .steps li code {
+      background: var(--color-cream);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.85em;
+    }
+
+    /* ───── nav hint ───── */
+    .nav-hint {
+      position: fixed;
+      bottom: 12px;
+      right: 16px;
+      font-family: var(--font-condensed);
+      font-size: 0.65rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-taupe);
+      opacity: 0.5;
+      z-index: 200;
+    }
+
+    /* ───── accent text ───── */
+    .accent { color: var(--color-orange); font-style: italic; font-family: var(--font-serif); font-weight: 400; }
+    .yellow { color: var(--color-yellow); }
+    .mint   { color: var(--color-mint); }
+
+    /* ───── final ───── */
+    .final {
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+    .final .h1 { max-width: 18ch; margin-bottom: var(--space-xl); }
+
+    /* ───── responsive ───── */
+    @media (max-width: 900px) {
+      .columns, .columns--asym, .split { grid-template-columns: 1fr; }
+      .concepts { grid-template-columns: 1fr 1fr; }
+      .pain-list { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .toc { transform: translateX(-240px); }
+      .deck { margin-left: 0; width: 100vw; }
+    }
+
+    @media print {
+      html, body { overflow: visible; }
+      .slide { display: flex !important; page-break-after: always; height: 100vh; }
+      .nav-hint, .progress, .toc, .toc__toggle { display: none; }
+      .deck { margin-left: 0; width: 100vw; }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress" id="progress"></div>
+
+  <aside class="toc" id="toc">
+    <div class="toc__brand">caddie</div>
+    <div class="toc__sub">Sharing session</div>
+    <ul class="toc__list" id="tocList">
+      <li data-slide="0">Cover</li>
+      <li data-slide="1">The hook</li>
+      <li data-slide="2">The problem</li>
+      <li data-slide="3">The wish</li>
+      <li data-slide="4">Meet caddie</li>
+      <li data-slide="5">Four concepts</li>
+      <li data-slide="6">Architecture</li>
+      <li data-slide="7">Activation pipeline</li>
+      <li data-slide="8">A day in the life</li>
+      <li data-slide="9">Export to prod</li>
+      <li data-slide="10">Live demo</li>
+      <li data-slide="11">Get started</li>
+      <li data-slide="12">Thanks &amp; Q&amp;A</li>
+    </ul>
+  </aside>
+  <div class="deck" id="deck">
+
+    <!-- 1. COVER -->
+    <section class="slide cover active">
+      <div class="label">Sharing Session · 2026</div>
+      <h1 class="h1">caddie<br><span style="font-style:normal;font-family:var(--font-primary);font-weight:200;font-size:0.45em;color:var(--color-taupe);">a skill profile manager<br>for Claude Code.</span></h1>
+      <div class="meta">Pieter Portauw · In The Pocket</div>
+      <img class="mascot" src="images/caddie.png" alt="caddie mascot">
+      <div class="chrome"><span>caddie</span><span>01</span></div>
+    </section>
+
+    <!-- 2. THE HOOK -->
+    <section class="slide slide--cream">
+      <div class="label">The hook</div>
+      <h2 class="h1" style="font-size:clamp(40px,5.5vw,80px);max-width:18ch;">
+        Claude&nbsp;Code is great&nbsp;<span class="accent">— until</span> you've collected 70 skills and every project sees all of them.
+      </h2>
+      <div class="chrome"><span>The why</span><span>02</span></div>
+    </section>
+
+    <!-- 3. THE PROBLEM -->
+    <section class="slide">
+      <div class="label">The problem</div>
+      <h2 class="h2">One global pile. Or manual copies. <span class="accent">Both lose.</span></h2>
+      <ul class="pain-list">
+        <li><strong>Skill noise</strong>Every project sees every skill — Claude picks the wrong tool for the job.</li>
+        <li><strong>Scattered repos</strong>Skills live across many git repos. Manual clone, manual copy, drift.</li>
+        <li><strong>No per-project config</strong>Model, permissions, CLAUDE.md — all global, all the time.</li>
+        <li><strong>Can't share a setup</strong>"Works on my machine" — but for AI tooling.</li>
+        <li><strong>Sync is copy-paste</strong>A skill updates? Re-clone, re-copy, hope nothing drifted.</li>
+        <li><strong>Symlinks die in Docker</strong>You can't ship the same skills to Lambda or CI.</li>
+      </ul>
+      <div class="chrome"><span>The why</span><span>03</span></div>
+    </section>
+
+    <!-- 4. THE WISH -->
+    <section class="slide slide--dark">
+      <div class="label">The wish</div>
+      <h2 class="h1" style="font-size:clamp(38px,5vw,72px);max-width:22ch;">
+        I want <span class="yellow">cd</span> into a project to give Claude <span class="accent">exactly the right toolkit</span>.
+      </h2>
+      <p class="lead" style="margin-top:var(--space-2xl);color:var(--color-cream-light);">
+        Like a golf caddie handing you the right club — <em>without you asking</em>.
+      </p>
+      <div class="chrome"><span>The why</span><span>04</span></div>
+    </section>
+
+    <!-- 5. MEET CADDIE -->
+    <section class="slide slide--cream">
+      <div class="label">The what</div>
+      <div class="columns columns--asym">
+        <img src="images/caddie.png" alt="caddie mascot" style="max-width:90%;">
+        <div>
+          <h2 class="h2">Meet <span style="font-style:normal;font-family:var(--font-primary);font-weight:300;">caddie</span>.</h2>
+          <p class="lead">
+            <strong>caddie scans many skill repos, indexes them under one namespace, and activates a curated subset per project — as symlinks.</strong>
+          </p>
+          <p class="lead" style="margin-top:var(--space-lg);color:var(--color-gray);">
+            Same laptop. Same Claude. <em>Different toolkit per directory.</em>
+          </p>
+        </div>
+      </div>
+      <div class="chrome"><span>The what</span><span>05</span></div>
+    </section>
+
+    <!-- 6. FOUR CONCEPTS -->
+    <section class="slide slide--dark">
+      <div class="label">Four concepts</div>
+      <h2 class="h2" style="color:var(--color-white);">Repos, index, environments, bindings.</h2>
+      <div class="concepts">
+        <div class="concept">
+          <div class="num">01</div>
+          <h4>Skill repos</h4>
+          <p>Git repos registered in <code>sources.yaml</code>. Auto-cloned, auto-pulled.</p>
+        </div>
+        <div class="concept">
+          <div class="num">02</div>
+          <h4>The index</h4>
+          <p>One namespaced view of every skill. <code>prefix:name</code>, e.g. <span class="mint">superpowers:brainstorming</span>.</p>
+        </div>
+        <div class="concept">
+          <div class="num">03</div>
+          <h4>Environments</h4>
+          <p>YAML profiles with glob patterns: <span class="mint">superpowers:*</span>, <span class="mint">gws:gmail-*</span>.</p>
+        </div>
+        <div class="concept">
+          <div class="num">04</div>
+          <h4>Bindings</h4>
+          <p>Drop a <code>.caddie.yaml</code> in a project. <code>caddie activate</code> wires up the rest.</p>
+        </div>
+      </div>
+      <div class="chrome"><span>The what</span><span>06</span></div>
+    </section>
+
+    <!-- 7. ARCHITECTURE -->
+    <section class="slide slide--cream">
+      <div class="label">Architecture at a glance</div>
+      <h2 class="h2">Scan → Index → Activate.</h2>
+      <img src="images/03-architecture.png" alt="caddie architecture diagram"
+           style="max-width:100%;max-height:55vh;object-fit:contain;align-self:center;">
+      <div class="chrome"><span>The what</span><span>07</span></div>
+    </section>
+
+    <!-- 8. ACTIVATION PIPELINE -->
+    <section class="slide">
+      <div class="label">The activation pipeline</div>
+      <h2 class="h2"><code style="font-family:'JetBrains Mono',monospace;font-size:0.7em;background:var(--color-cream);padding:6px 14px;border-radius:6px;font-style:normal;">$ caddie activate</code></h2>
+      <ol class="pipeline">
+        <li class="pipeline-step"><span class="n">1</span><div><h4>Read <code>.caddie.yaml</code></h4><p>Project tells caddie which environment to load.</p></div></li>
+        <li class="pipeline-step"><span class="n">2</span><div><h4>Pull every registered repo</h4><p>Auto-throttled — at most once per hour.</p></div></li>
+        <li class="pipeline-step"><span class="n">3</span><div><h4>Rebuild the index</h4><p>Symlinks under <code>~/.config/caddie/skills/</code>, namespaced.</p></div></li>
+        <li class="pipeline-step"><span class="n">4</span><div><h4>Resolve patterns</h4><p><code>superpowers:*</code> → 22 skills, <code>gws:gmail-*</code> → 3 skills...</p></div></li>
+        <li class="pipeline-step"><span class="n">5</span><div><h4>Wire up project symlinks</h4><p><code>.claude/skills</code> ready. Launch Claude.</p></div></li>
+      </ol>
+      <div class="chrome"><span>The what</span><span>08</span></div>
+    </section>
+
+    <!-- 9. DAY IN THE LIFE -->
+    <section class="slide slide--cream">
+      <div class="label">A day in the life</div>
+      <h2 class="h2">One laptop. <span class="accent">Two toolkits.</span></h2>
+      <div class="split">
+        <div class="split-card split-card--am">
+          <div class="when">Morning</div>
+          <h4>Backend API</h4>
+<pre>$ cd ~/Dev/backend-api
+$ caddie activate
+  ✓ Backend API
+  Skills: 30 active</pre>
+          <div class="skills">superpowers · 22  ·  gws · 3  ·  sterling · 5</div>
+        </div>
+        <div class="split-card split-card--pm">
+          <div class="when">Afternoon</div>
+          <h4>Marketing site</h4>
+<pre>$ cd ~/Dev/marketing-site
+$ caddie activate
+  ✓ Frontend
+  Skills: 18 active</pre>
+          <div class="skills">superpowers · 12  ·  sterling · 6</div>
+        </div>
+      </div>
+      <p class="lead" style="margin-top:var(--space-xl);text-align:center;width:100%;color:var(--color-gray);">
+        Same Claude. Two completely different sets of skills — activated by <code>cd</code>.
+      </p>
+      <div class="chrome"><span>The what</span><span>09</span></div>
+    </section>
+
+    <!-- 10. EXPORT -->
+    <section class="slide slide--dark">
+      <div class="label">Bonus</div>
+      <h2 class="h2" style="color:var(--color-white);">Symlinks die in Docker. <span class="accent">Export resurrects them.</span></h2>
+      <div class="columns" style="margin-top:var(--space-xl);">
+        <div>
+          <p class="lead" style="color:var(--color-cream-light);">
+            <code>caddie export</code> resolves every symlink and copies real <code>SKILL.md</code> files —
+            to a folder or straight to S3.
+          </p>
+          <p class="small" style="margin-top:var(--space-lg);">→ Docker · Lambda · ECS · CI/CD</p>
+        </div>
+<pre><span class="c"># local dir</span>
+caddie export backend-api \
+  --to ./dist/skills/
+
+<span class="c"># straight to S3</span>
+caddie export backend-api \
+  --to s3://my-bucket/skills/</pre>
+      </div>
+      <div class="chrome"><span>The what</span><span>10</span></div>
+    </section>
+
+    <!-- 11. DEMO -->
+    <section class="slide" style="background:var(--color-yellow);">
+      <div class="label" style="color:var(--color-black);">Live demo</div>
+      <h1 class="h1" style="font-size:clamp(60px,9vw,140px);max-width:14ch;">
+        Let's see it<br>in <span style="font-style:normal;font-family:var(--font-primary);font-weight:300;">action.</span>
+      </h1>
+      <p class="lead" style="margin-top:var(--space-xl);max-width:50ch;">
+        <code>caddie repo list</code> · <code>caddie inventory</code> · <code>caddie activate</code> · <code>caddie which</code>
+      </p>
+      <div class="chrome" style="color:var(--color-black);"><span>Demo</span><span>11</span></div>
+    </section>
+
+    <!-- 12. GET STARTED -->
+    <section class="slide slide--cream">
+      <div class="label">Get started yourself</div>
+      <h2 class="h2">Three commands and a config file.</h2>
+      <ol class="steps">
+        <li><div><strong>Install</strong><code>brew install go</code> · clone caddie · <code>./scripts/build.sh</code> · copy to <code>/usr/local/bin/</code></div></li>
+        <li><div><strong>Initialize</strong><code>caddie init</code> — backs up <code>~/.claude/skills/</code> and sets things up.</div></li>
+        <li><div><strong>Register a skill repo</strong><code>caddie repo add superpowers https://github.com/Portauw/superpowers.git</code></div></li>
+        <li><div><strong>Create an environment</strong><code>caddie create my-project</code> (interactive)</div></li>
+        <li><div><strong>Bind &amp; activate</strong>Drop <code>environment: my-project</code> in <code>.caddie.yaml</code> · run <code>caddie activate</code></div></li>
+      </ol>
+      <p class="small" style="margin-top:var(--space-xl);">
+        Read more → <code>README.md</code> · <code>docs/OVERVIEW.md</code> · <code>examples/</code>
+      </p>
+      <div class="chrome"><span>Get started</span><span>12</span></div>
+    </section>
+
+    <!-- 13. THANKS -->
+    <section class="slide slide--dark final">
+      <h1 class="h1" style="text-align:center;">
+        Thanks.<br>
+        <span class="accent" style="font-size:0.55em;">Questions?</span>
+      </h1>
+      <p class="small" style="color:var(--color-taupe);">github.com/Portauw/caddie  ·  pieter.portauw@inthepocket.com</p>
+      <div class="chrome"><span>Q&amp;A</span><span>13</span></div>
+    </section>
+
+  </div>
+
+  <div class="nav-hint">← →  ·  press F for fullscreen</div>
+
+  <script>
+    const slides = Array.from(document.querySelectorAll('.slide'));
+    const progress = document.getElementById('progress');
+    const tocItems = Array.from(document.querySelectorAll('#tocList li'));
+    let i = 0;
+
+    function show(n) {
+      i = Math.max(0, Math.min(slides.length - 1, n));
+      slides.forEach((s, k) => s.classList.toggle('active', k === i));
+      tocItems.forEach((li, k) => li.classList.toggle('active', k === i));
+      progress.style.width = ((i + 1) / slides.length * 100) + '%';
+      location.hash = i + 1;
+    }
+
+    tocItems.forEach(li => {
+      li.addEventListener('click', () => show(parseInt(li.dataset.slide, 10)));
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); show(i + 1); }
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); show(i - 1); }
+      else if (e.key === 'Home') { show(0); }
+      else if (e.key === 'End') { show(slides.length - 1); }
+      else if (e.key.toLowerCase() === 'f') {
+        if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+        else document.exitFullscreen();
+      }
+    });
+
+    // Click right half = next, left half = prev
+    document.addEventListener('click', e => {
+      if (e.target.closest('a, button, code, pre, .toc')) return;
+      const x = e.clientX / window.innerWidth;
+      show(x > 0.5 ? i + 1 : i - 1);
+    });
+
+    // Deep-link via hash
+    const start = parseInt(location.hash.slice(1), 10);
+    show(Number.isFinite(start) && start > 0 ? start - 1 : 0);
+  </script>
+</body>
+</html>
