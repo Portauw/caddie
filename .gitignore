@@ -13,6 +13,9 @@
 # Go build
 /dist/
 
+# caddie environment binding (local, per-machine)
+.caddie.yaml
+
 # caddie managed skill directories
 .claude/skills/
 .agents/skills/
