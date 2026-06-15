@@ -90,6 +90,30 @@ func TestWalkRepoSkills(t *testing.T) {
 		}
 	})
 
+	t.Run("single_skill_at_repo_root", func(t *testing.T) {
+		// "one repo = one skill" layout: SKILL.md at the repo top level.
+		// Named after the repo directory, for skills_path "" and ".".
+		root := filepath.Join(t.TempDir(), "show-your-work")
+		mkSkill(t, root)
+		// Sibling dirs (assets/scripts/etc.) must not be mistaken for skills,
+		// and descent must stop once the root SKILL.md is found.
+		if err := os.MkdirAll(filepath.Join(root, "assets"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, sp := range []string{"", "."} {
+			got, err := WalkRepoSkills(root, sp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(names(got), []string{"show-your-work"}) {
+				t.Errorf("skillsPath=%q got %v want [show-your-work]", sp, names(got))
+			}
+			if len(got) == 1 && got[0].AbsPath != root {
+				t.Errorf("AbsPath = %s, want %s", got[0].AbsPath, root)
+			}
+		}
+	})
+
 	t.Run("missing_skills_path", func(t *testing.T) {
 		root := t.TempDir()
 		got, err := WalkRepoSkills(root, "skills")

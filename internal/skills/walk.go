@@ -24,6 +24,10 @@ type RepoSkill struct {
 //
 // Descent stops at the first SKILL.md found in a subtree, so a skill that
 // nests another skill won't double-count. Hidden directories are skipped.
+//
+// A SKILL.md at the walk root itself (the "one repo = one skill" layout, with
+// SKILL.md at the repo top level) counts as a single skill named after the
+// repo directory.
 func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 	root := repoDir
 	if skillsPath != "" && skillsPath != "." {
@@ -43,15 +47,19 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 	var out []RepoSkill
 	var walk func(dir string, parts []string)
 	walk = func(dir string, parts []string) {
-		if len(parts) > 0 {
-			// os.Stat (not Lstat) so a symlinked SKILL.md still counts.
-			if fi, err := os.Stat(filepath.Join(dir, "SKILL.md")); err == nil && fi.Mode().IsRegular() {
-				out = append(out, RepoSkill{
-					Name:    strings.Join(parts, "-"),
-					AbsPath: dir,
-				})
-				return
+		// os.Stat (not Lstat) so a symlinked SKILL.md still counts.
+		if fi, err := os.Stat(filepath.Join(dir, "SKILL.md")); err == nil && fi.Mode().IsRegular() {
+			name := strings.Join(parts, "-")
+			if name == "" {
+				// SKILL.md at the walk root: the repo itself is a single
+				// skill, named after the repo directory.
+				name = filepath.Base(repoDir)
 			}
+			out = append(out, RepoSkill{
+				Name:    name,
+				AbsPath: dir,
+			})
+			return
 		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {

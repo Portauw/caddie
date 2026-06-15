@@ -98,6 +98,16 @@ Skills are identified by `prefix:name`. The prefix comes from one of two places:
 
 > ⚠️ Repos without a `prefix:` share the global store namespace. If two repos contain a skill with the same directory name, **one will silently overwrite the other** at scan time. Setting `prefix: "true"` (or a literal prefix string) on every repo eliminates this risk.
 
+### Single-skill repos ("one repo = one skill")
+
+A repo whose `SKILL.md` lives at its **top level** (rather than under `skills/<name>/`) is treated as a single skill named after the repo. Register it with `skills_path: "."` (the repo root):
+
+```bash
+caddie repo add show-your-work https://github.com/diana-percy/show-your-work.git .
+```
+
+The skill resolves as `<repo>:<repo>` (e.g. `show-your-work:show-your-work`). Collection repos — many skills under `skills/` — are unaffected; only a `SKILL.md` at the scanned root triggers this behavior.
+
 ## Environment Config Format
 
 Environments live as YAML files in `~/.config/caddie/environments/<name>.yaml`:
