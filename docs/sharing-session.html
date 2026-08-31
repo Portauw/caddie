@@ -65,14 +65,15 @@
       left: 0;
       width: 240px;
       height: 100vh;
-      background: var(--color-cream);
+      background: var(--color-white);
       color: var(--color-black);
       padding: var(--space-xl) var(--space-lg);
       overflow-y: auto;
-      border-right: 1px solid var(--color-beige);
       z-index: 50;
-      transition: transform 0.3s ease;
+      transition: background 0.3s ease, color 0.3s ease;
+      pointer-events: auto;
     }
+    .toc--on-dark { color: var(--color-cream-light); }
     .toc.collapsed { transform: translateX(-240px); }
     .toc.collapsed + .deck { margin-left: 0; width: 100vw; }
 
@@ -82,7 +83,7 @@
       font-weight: 400;
       font-size: 1.5rem;
       margin-bottom: 4px;
-      color: var(--color-black);
+      color: inherit;
     }
     .toc__sub {
       font-family: var(--font-condensed);
@@ -91,6 +92,7 @@
       text-transform: uppercase;
       color: var(--color-taupe);
       margin-bottom: var(--space-xl);
+      opacity: 0.8;
     }
     .toc__list {
       list-style: none;
@@ -118,14 +120,18 @@
       font-family: var(--font-condensed);
       font-size: 0.65rem;
       letter-spacing: 0.1em;
-      color: var(--color-gray);
+      color: var(--color-taupe);
+      opacity: 0.6;
     }
-    .toc__list li:hover { color: var(--color-black); }
+    .toc__list li:hover { color: inherit; opacity: 1; }
     .toc__list li.active {
-      color: var(--color-black);
+      color: inherit;
+      opacity: 1;
       border-left-color: var(--color-orange);
     }
     .toc__list li.active::before { color: var(--color-orange); }
+    .toc--on-dark .toc__list li.active { border-left-color: var(--color-yellow); }
+    .toc--on-dark .toc__list li.active::before { color: var(--color-yellow); }
 
     .toc__toggle {
       position: fixed;
@@ -798,12 +804,15 @@ caddie export backend-api \
     const slides = Array.from(document.querySelectorAll('.slide'));
     const progress = document.getElementById('progress');
     const tocItems = Array.from(document.querySelectorAll('#tocList li'));
+    const toc = document.getElementById('toc');
     let i = 0;
 
     function show(n) {
       i = Math.max(0, Math.min(slides.length - 1, n));
       slides.forEach((s, k) => s.classList.toggle('active', k === i));
       tocItems.forEach((li, k) => li.classList.toggle('active', k === i));
+      toc.classList.toggle('toc--on-dark', slides[i].classList.contains('slide--dark'));
+      toc.style.background = getComputedStyle(slides[i]).backgroundColor;
       progress.style.width = ((i + 1) / slides.length * 100) + '%';
       location.hash = i + 1;
     }
