@@ -643,9 +643,8 @@ func cmdWhich(_ []string) {
 	}
 	profilePath := config.FindProfile(cwd)
 	if profilePath == "" {
-		fmt.Printf("%s⚠%s  No caddie profile found for %s\n   Run %scaddie init%s to create one.\n",
-			ansiYellow, ansiReset, cwd, ansiCyan, ansiReset)
-		os.Exit(1)
+		die(fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
+			cwd, ansiCyan, ansiReset))
 	}
 	fmt.Println(profilePath)
 }

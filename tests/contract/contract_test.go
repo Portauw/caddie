@@ -194,11 +194,14 @@ func TestWhichContract(t *testing.T) {
 		if got.exitCode != 1 {
 			t.Errorf("exit code = %d, want 1", got.exitCode)
 		}
-		if !strings.Contains(got.stdout, "No caddie profile found") {
-			t.Errorf("stdout %q missing the not-found message", got.stdout)
+		if strings.TrimSpace(got.stdout) != "" {
+			t.Errorf("stdout = %q, want empty so command substitution stays safe", got.stdout)
 		}
-		if !strings.Contains(got.stdout, "caddie init") {
-			t.Errorf("stdout %q missing the caddie init hint", got.stdout)
+		if !strings.Contains(got.stderr, "No caddie profile found") {
+			t.Errorf("stderr %q missing the not-found message", got.stderr)
+		}
+		if !strings.Contains(got.stderr, "caddie init") {
+			t.Errorf("stderr %q missing the caddie init hint", got.stderr)
 		}
 	})
 }
@@ -312,7 +315,7 @@ func TestEditContract(t *testing.T) {
 	})
 
 	t.Run("rejects_argument", func(t *testing.T) {
-		opts := runOpts{aiEnvDir: t.TempDir(), env: []string{"EDITOR=true"}}
+		opts := runOpts{cwd: t.TempDir(), aiEnvDir: t.TempDir(), env: []string{"EDITOR=true"}}
 		r := runWith(t, goBin, opts, "edit", "myenv")
 		if r.exitCode != 1 {
 			t.Errorf("exit code = %d, want 1", r.exitCode)
