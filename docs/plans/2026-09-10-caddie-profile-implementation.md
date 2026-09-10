@@ -1123,6 +1123,12 @@ profile, something above `/tmp` still holds a `.caddie.yaml`.
   branch is not merged until all 16 tasks land, so no user meets the
   intermediate state. Revisit only if this branch ever needs to ship partially.
 - **`~/.caddie.yaml` is deleted, not converted.** See Task 16 step 4.
+- **No removal stubs for the deleted commands.** `caddie list`, `show`, `delete`
+  and `clone` fall through to the generic unknown-command error. The `cmdSource`
+  stub is an existing precedent for the opposite choice, and a reviewer argued
+  for stubbing `list` and `show` as everyday commands. Declined: the refactor is
+  a deliberate hard break with no compatibility layer, and Task 14 makes
+  `--help` describe the real surface.
 
 ## Open items to resolve during implementation
 
