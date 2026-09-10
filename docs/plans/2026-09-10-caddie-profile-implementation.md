@@ -1124,7 +1124,19 @@ cd ~/Dev/skills && caddie activate --dry-run
 
 Expected: each prints its own profile name and a plausible skill count. The two folders that shared `skills` now hold independent copies, which is the accepted trade-off.
 
-**Step 4: Remove the registry and the home profile**
+**Step 4: Run setup once to clear the managed symlink**
+
+```bash
+caddie setup
+```
+
+Expected: `Removed the managed ~/.claude/skills symlink`. Task 11 puts that
+one-time cleanup in `setup`, and nothing else triggers it, so an existing
+machine keeps the stale symlink until `setup` is run. It points at an empty
+directory, so this is tidiness rather than repair, but it is the step that
+completes the migration on this machine.
+
+**Step 5: Remove the registry and the home profile**
 
 ```bash
 rm -rf ~/.config/caddie/environments
@@ -1167,12 +1179,19 @@ profile, something above `/tmp` still holds a `.caddie.yaml`.
   nothing. Kept as-is deliberately: Task 5 swaps the two commands, and the
   branch is not merged until all 16 tasks land, so no user meets the
   intermediate state. Revisit only if this branch ever needs to ship partially.
-- **`~/.caddie.yaml` is deleted, not converted.** See Task 16 step 4.
+- **`~/.caddie.yaml` is deleted, not converted.** See Task 16 step 5.
 - **`inventory` is no longer a pure parity test.** Task 5 changed
   `cmdInventory`'s missing-store hint from `caddie init` to `caddie setup`,
   which the frozen bash can never match. Its `no_store` subtest was converted
   to a Go-only assertion; the other four keep byte-diff parity. The parity
   survivors are therefore `version`, `repo *`, and four fifths of `inventory`.
+- **The one-time `~/.claude/skills` cleanup stays in `setup`.** A reviewer
+  argued for moving it into `runScan`, since nothing prompts an existing user
+  to re-run `setup` and `runScan` executes on every `activate`. Declined: the
+  stale symlink points at an empty directory, so leaving it is cosmetic, and
+  putting a home-directory deletion in the path that runs before every `claude`
+  invocation trades harmless clutter for the action-at-a-distance this refactor
+  exists to remove. Task 16 runs `setup` once to complete the migration here.
 - **No removal stubs for the deleted commands.** `caddie list`, `show`, `delete`
   and `clone` fall through to the generic unknown-command error. The `cmdSource`
   stub is an existing precedent for the opposite choice, and a reviewer argued
