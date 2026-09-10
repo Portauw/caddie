@@ -1430,9 +1430,13 @@ func makeExportStore(t *testing.T, aiEnvDir string, names ...string) {
 	}
 }
 
-// TestExportContract verifies the native export implementation byte-matches
-// bash for the local-dir modes and error paths. S3 subtests are deferred
-// (see NOTE at bottom) because they require a live aws CLI + S3 endpoint.
+// TestExportContract is Go-only except for dir_all_flag, which still runs as
+// a bash byte-diff parity test: --all never reads a profile, so it exercises
+// the frozen bash export machinery independent of the profile migration. The
+// rest assert against the native implementation directly, since export now
+// resolves the cwd .caddie.yaml instead of a named registry entry, and bash
+// has no equivalent behavior to diff against. S3 subtests are deferred (see
+// NOTE at bottom) because they require a live aws CLI + S3 endpoint.
 func TestExportContract(t *testing.T) {
 	goBin := buildGoBinary(t)
 	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
@@ -1530,6 +1534,14 @@ func TestExportContract(t *testing.T) {
 		if _, err := os.Stat(target); !os.IsNotExist(err) {
 			t.Errorf("%s should not exist after dry-run: %v", target, err)
 		}
+		// The fixture's "foo:*" pattern matches both foo-one and foo-two, and
+		// there is nothing to remove (target doesn't exist yet), so
+		// internal/export.Local's summary line reads "would export 2 skills,
+		// remove 0" (see the Dry run branch in internal/export/export.go).
+		const wantLine = "Dry run: would export 2 skills, remove 0"
+		if !strings.Contains(r.stdout, wantLine) {
+			t.Errorf("stdout %q missing dry-run summary %q", r.stdout, wantLine)
+		}
 	})
 
 	t.Run("no_profile_no_all", func(t *testing.T) {
@@ -1541,6 +1553,11 @@ func TestExportContract(t *testing.T) {
 		}
 		if !strings.Contains(r.stderr, "No caddie profile found") {
 			t.Errorf("stderr %q missing the not-found message", r.stderr)
+		}
+		// export's hint must point to --all as the alternative to a profile;
+		// the frozen bash said "Specify an environment name or use --all."
+		if !strings.Contains(r.stderr, "--all") {
+			t.Errorf("stderr %q missing the --all hint", r.stderr)
 		}
 	})
 
@@ -1575,6 +1592,9 @@ func TestExportContract(t *testing.T) {
 		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export", "demo", "--to", target)
 		if r.exitCode == 0 {
 			t.Errorf("expected non-zero exit for positional argument")
+		}
+		if !strings.Contains(r.stderr, "no longer takes a profile name") {
+			t.Errorf("stderr %q missing the positional-arg rejection message", r.stderr)
 		}
 	})
 

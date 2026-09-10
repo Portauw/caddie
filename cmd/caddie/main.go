@@ -73,16 +73,22 @@ func die(msg string) {
 }
 
 // resolveProfileOrDie returns the nearest .caddie.yaml profile for the current
-// working directory, or dies with the standard not-found message.
-func resolveProfileOrDie() string {
+// working directory, or dies with the standard not-found message. Extra hints
+// are appended as further lines, for commands that have an alternative to
+// creating a profile.
+func resolveProfileOrDie(hints ...string) string {
 	cwd, err := os.Getwd()
 	if err != nil {
 		die(err.Error())
 	}
 	profilePath := config.FindProfile(cwd)
 	if profilePath == "" {
-		die(fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
-			cwd, ansiCyan, ansiReset))
+		msg := fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
+			cwd, ansiCyan, ansiReset)
+		for _, h := range hints {
+			msg += "\n   " + h
+		}
+		die(msg)
 	}
 	return profilePath
 }
@@ -1365,7 +1371,8 @@ func cmdExport(args []string) {
 	if all {
 		patterns = []string{"*:*"}
 	} else {
-		patterns = config.ReadList(resolveProfileOrDie(), "skills")
+		patterns = config.ReadList(resolveProfileOrDie(
+			fmt.Sprintf("Or use %s--all%s to export every skill in the store.", ansiCyan, ansiReset)), "skills")
 	}
 
 	matched, err := skills.Resolve(patterns)
