@@ -1422,6 +1422,42 @@ func TestActivateContract(t *testing.T) {
 			t.Errorf("expected orphaned-pattern warning, got %q", r.stdout)
 		}
 	})
+
+	t.Run("orphaned_pattern_warning_fast_path", func(t *testing.T) {
+		// First activate reconciles (no fingerprint yet) and should warn.
+		// Second activate hits the unchanged fast path and must NOT repeat
+		// the warning, since nothing changed. --dry-run bypasses the fast
+		// path entirely and must keep warning regardless.
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"ghost-source:*"})
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}
+
+		r1 := runWith(t, goBin, opts, "activate")
+		if r1.exitCode != 0 {
+			t.Fatalf("first exit=%d stderr=%q", r1.exitCode, r1.stderr)
+		}
+		if !strings.Contains(r1.stdout, "matches 0 skills") {
+			t.Errorf("expected warning on first (reconciling) activate, got %q", r1.stdout)
+		}
+
+		r2 := runWith(t, goBin, opts, "activate")
+		if r2.exitCode != 0 {
+			t.Fatalf("second exit=%d stderr=%q", r2.exitCode, r2.stderr)
+		}
+		if !strings.Contains(r2.stdout, "unchanged") {
+			t.Errorf("expected 'unchanged' on second activate, got %q", r2.stdout)
+		}
+		if strings.Contains(r2.stdout, "matches 0 skills") {
+			t.Errorf("warning should not repeat on the fast path, got %q", r2.stdout)
+		}
+
+		r3 := runWith(t, goBin, opts, "activate", "--dry-run")
+		if r3.exitCode != 0 {
+			t.Fatalf("dry-run exit=%d stderr=%q", r3.exitCode, r3.stderr)
+		}
+		if !strings.Contains(r3.stdout, "matches 0 skills") {
+			t.Errorf("expected dry-run to still warn after fast path settled, got %q", r3.stdout)
+		}
+	})
 }
 
 // makeExportStore populates an AI_ENV_DIR's skill store with the given

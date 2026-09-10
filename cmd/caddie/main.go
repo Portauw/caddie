@@ -1037,12 +1037,18 @@ func cmdActivate(args []string) {
 
 	patterns := config.ReadList(profilePath, "skills")
 
+	var orphans []string
 	if items, err := skills.Scan(); err == nil {
 		for _, p := range patterns {
 			if p != "" && skills.PatternMatchesIn(items, p) == 0 {
-				fmt.Printf("%s⚠%s  Pattern %s\"%s\"%s matches 0 skills, the source may have been removed\n",
-					ansiYellow, ansiReset, ansiCyan, p, ansiReset)
+				orphans = append(orphans, p)
 			}
+		}
+	}
+	warnOrphans := func() {
+		for _, p := range orphans {
+			fmt.Printf("%s⚠%s  Pattern %s\"%s\"%s matches 0 skills, the source may have been removed\n",
+				ansiYellow, ansiReset, ansiCyan, p, ansiReset)
 		}
 	}
 
@@ -1051,6 +1057,10 @@ func cmdActivate(args []string) {
 	skillCount := len(matched)
 
 	if dryRun {
+		// Dry run is an explicit request to be told what is going on, so it
+		// always discloses stale patterns (unlike the reconciling path below,
+		// which only warns when something actually changed).
+		warnOrphans()
 		fmt.Println()
 		fmt.Printf("%sDry run — would activate:%s\n\n", ansiYellow, ansiReset)
 		fmt.Printf("  Profile: %s%s%s\n", ansiBold, label, ansiReset)
@@ -1079,6 +1089,11 @@ func cmdActivate(args []string) {
 			return
 		}
 	}
+
+	// Past the fast path: something changed, so this run reconciles. Warn
+	// about stale patterns now rather than on every activate — otherwise a
+	// long-lived stale pattern would print on every single invocation.
+	warnOrphans()
 
 	res, err := skills.ReconcileSkillDir(targetAgents, matched, store)
 	if err != nil {
