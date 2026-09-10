@@ -1133,4 +1133,14 @@ profile, something above `/tmp` still holds a `.caddie.yaml`.
 ## Open items to resolve during implementation
 
 - **Non-Claude runtimes reading `~/.agents/skills`.** Check before Task 11. `.agents/` is a cross-tool convention and opencode appears in `docs/plans/`. If something does read it, Task 11 needs a different shape.
+- **Profile fields are written without quote escaping.** `cmdInit` writes
+  `name`, `description` and every skill pattern with a bare
+  `fmt.Fprintf(&body, "key: \"%s\"\n", v)`. A value containing a double quote
+  produces a line no real YAML parser accepts. It round-trips correctly through
+  caddie's own reader, because `StripQuotes` removes only an outer matching
+  pair, so caddie always reads back what it wrote. Left unfixed deliberately:
+  the hand-rolled reader is a settled design decision and caddie is the only
+  reader today. It becomes a real problem the moment anything else parses
+  `.caddie.yaml`, which is plausible now the file lives in project folders
+  where editors and other tooling will see it.
 - **Whether `setup` should ever run implicitly.** The design leaves this open. The plan does not implement auto-run; `activate` dies with a hint if the config dir is missing. Decide before closing out.
