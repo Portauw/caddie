@@ -33,18 +33,6 @@ func Dir() string {
 	return cmp.Or(os.Getenv("AI_ENV_DIR"), filepath.Join(Home(), ".config", "caddie"))
 }
 
-// EnvDir returns the directory that holds per-environment YAML files.
-func EnvDir() string { return filepath.Join(Dir(), "environments") }
-
-// EnvFile returns the path to a specific environment's YAML file.
-func EnvFile(name string) string { return filepath.Join(EnvDir(), name+".yaml") }
-
-// EnvExists reports whether an environment YAML file exists.
-func EnvExists(name string) bool {
-	_, err := os.Stat(EnvFile(name))
-	return err == nil
-}
-
 // StripQuotes removes a single layer of matched surrounding ' or " quotes.
 func StripQuotes(v string) string {
 	if len(v) >= 2 {
@@ -78,22 +66,6 @@ func ReadScalar(path, key string) string {
 		return strings.TrimRight(StripQuotes(v), " \t")
 	}
 	return ""
-}
-
-// ListEnvs returns the sorted names of all environments (basename without .yaml).
-func ListEnvs() []string {
-	entries, err := os.ReadDir(EnvDir())
-	if err != nil {
-		return nil
-	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
-			continue
-		}
-		names = append(names, strings.TrimSuffix(e.Name(), ".yaml"))
-	}
-	return names
 }
 
 // ReadList returns items under "key:" indented with "  - " (dash + space),
@@ -157,46 +129,4 @@ func findProfileUntil(dir, stop string) string {
 		dir = parent
 	}
 	return ""
-}
-
-// ResolveFromCwd resolves the active environment for cwd: first via the
-// nearest .caddie.yaml, then by longest-matching `directory:` field.
-// Returns (name, warnings, ok) where warnings are user-facing notices.
-func ResolveFromCwd(cwd string) (name string, warnings []string, ok bool) {
-	if cfg := FindProfile(cwd); cfg != "" {
-		if ref := ReadScalar(cfg, "environment"); ref != "" {
-			if EnvExists(ref) {
-				return ref, warnings, true
-			}
-			warnings = append(warnings, ".caddie.yaml references unknown environment: "+ref)
-		}
-	}
-
-	entries, err := os.ReadDir(EnvDir())
-	if err != nil {
-		return "", warnings, false
-	}
-	var best string
-	var bestLen int
-	check := strings.TrimRight(cwd, "/")
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
-			continue
-		}
-		envDir := ReadScalar(filepath.Join(EnvDir(), e.Name()), "directory")
-		if envDir == "" {
-			continue
-		}
-		envDir = strings.TrimRight(ExpandTilde(envDir), "/")
-		if check == envDir || strings.HasPrefix(check, envDir+"/") {
-			if len(envDir) > bestLen {
-				bestLen = len(envDir)
-				best = strings.TrimSuffix(e.Name(), ".yaml")
-			}
-		}
-	}
-	if best != "" {
-		return best, warnings, true
-	}
-	return "", warnings, false
 }
