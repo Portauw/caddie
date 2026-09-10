@@ -624,11 +624,39 @@ git commit -m "feat(edit): open the nearest profile instead of a named environme
 
 ---
 
-### Task 7: export uses the cwd profile
+### Task 7: extract the resolver, then export uses the cwd profile
 
 **Files:**
-- Modify: `cmd/caddie/main.go:1554` (`cmdExport`)
-- Modify: `tests/contract/contract_test.go:1682` (`TestExportContract`)
+- Modify: `cmd/caddie/main.go` (`cmdExport`, `cmdWhich`, `cmdEdit`, `cmdActivate`)
+- Modify: `tests/contract/contract_test.go` (`TestExportContract`)
+
+**Added during execution: extract `resolveProfileOrDie` first, as its own commit.**
+Tasks 2, 3 and 6 each grew an identical five-line block: read cwd, call
+`config.FindProfile`, die with the same not-found message. `cmdExport` would be
+the fourth copy. Extract it before writing the fourth:
+
+```go
+// resolveProfileOrDie returns the nearest .caddie.yaml profile for the current
+// working directory, or dies with the standard not-found message.
+func resolveProfileOrDie() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		die(err.Error())
+	}
+	profilePath := config.FindProfile(cwd)
+	if profilePath == "" {
+		die(fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
+			cwd, ansiCyan, ansiReset))
+	}
+	return profilePath
+}
+```
+
+No parameters: every call site wants the profile for the real process cwd, and
+none needs `cwd` afterwards except for the message. Adopt in `cmdWhich` first,
+whose body becomes two lines and whose contract test already pins the exact
+stdout and stderr behaviour, then `cmdEdit`, then `cmdActivate`. `cmdExport`
+uses it from the start rather than adding a fourth copy.
 
 **Step 1: Rewrite the argument handling**
 
