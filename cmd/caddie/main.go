@@ -1234,7 +1234,7 @@ func cmdActivate(args []string) {
 
 	// Always probe the project config so it remains a project_dir fallback
 	// even when name is explicit.
-	projectConfig := config.FindProjectConfig(cwd)
+	projectConfig := config.FindProfile(cwd)
 
 	if name == "" {
 		if projectConfig != "" {

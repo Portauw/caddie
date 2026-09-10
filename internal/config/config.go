@@ -135,9 +135,9 @@ func ReadList(path, key string) []string {
 	return out
 }
 
-// FindProjectConfig walks from dir up to "/" looking for .caddie.yaml.
-// Returns the path if found, "" otherwise.
-func FindProjectConfig(dir string) string {
+// FindProfile walks from dir up to "/" looking for .caddie.yaml, the caddie
+// profile. Returns the path to the nearest one, or "" if there is none.
+func FindProfile(dir string) string {
 	dir = ExpandTilde(dir)
 	for dir != "/" && dir != "" {
 		candidate := filepath.Join(dir, ".caddie.yaml")
@@ -157,7 +157,7 @@ func FindProjectConfig(dir string) string {
 // nearest .caddie.yaml, then by longest-matching `directory:` field.
 // Returns (name, warnings, ok) where warnings are user-facing notices.
 func ResolveFromCwd(cwd string) (name string, warnings []string, ok bool) {
-	if cfg := FindProjectConfig(cwd); cfg != "" {
+	if cfg := FindProfile(cwd); cfg != "" {
 		if ref := ReadScalar(cfg, "environment"); ref != "" {
 			if EnvExists(ref) {
 				return ref, warnings, true
