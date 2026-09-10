@@ -30,22 +30,14 @@ var nativeCommands = map[string]handler{
 	"-v":        cmdVersion,
 	"which":     cmdWhich,
 	"active":    cmdWhich,
-	"list":      cmdList,
-	"ls":        cmdList,
 	"source":    cmdSource,
 	"edit":      cmdEdit,
-	"delete":    cmdDelete,
-	"rm":        cmdDelete,
-	"clone":     cmdClone,
-	"cp":        cmdClone,
 	"repo":      cmdRepo,
 	"inventory": cmdInventory,
 	"help":      cmdHelp,
 	"--help":    cmdHelp,
 	"-h":        cmdHelp,
 	"reset":     cmdReset,
-	"show":      cmdShow,
-	"info":      cmdShow,
 	"create":    cmdCreate,
 	"new":       cmdCreate,
 	"init":      cmdInit,
@@ -98,38 +90,6 @@ func cmdVersion(_ []string) {
 	fmt.Printf("caddie v%s\n", version.Version)
 }
 
-func cmdList(_ []string) {
-	envs := config.ListEnvs()
-	if len(envs) == 0 {
-		fmt.Printf("%s⚠%s  No environments found.\n", ansiYellow, ansiReset)
-		fmt.Printf("%sℹ%s  Run %scaddie create <name>%s to get started.\n", ansiBlue, ansiReset, ansiCyan, ansiReset)
-		return
-	}
-
-	fmt.Printf("%sEnvironments:%s\n\n", ansiBold, ansiReset)
-	for _, name := range envs {
-		file := config.EnvFile(name)
-		displayName := config.ReadScalar(file, "name")
-		description := config.ReadScalar(file, "description")
-		skillCount := len(config.ReadList(file, "skills"))
-
-		fmt.Printf("  %s%s%s%s\n", ansiBold, ansiCyan, name, ansiReset)
-		if displayName != "" && displayName != name {
-			fmt.Printf("    %s\n", displayName)
-		}
-		if description != "" {
-			fmt.Printf("    %s%s%s\n", ansiDim, description, ansiReset)
-		}
-		if skillCount > 0 {
-			fmt.Printf("    %s%d skill pattern(s)%s\n", ansiDim, skillCount, ansiReset)
-		}
-		fmt.Println()
-	}
-
-	fmt.Printf("  %sAuto-detect: %scaddie activate%s%s (resolves from cwd)%s\n\n",
-		ansiDim, ansiCyan, ansiReset, ansiDim, ansiReset)
-}
-
 // cmdSource prints a migration message for the removed `source` family.
 // Plugin sources were dropped in favor of git repos.
 func cmdSource(_ []string) {
@@ -154,58 +114,6 @@ func cmdEdit(args []string) {
 	cmd.Stderr = os.Stderr
 	_ = cmd.Run()
 	fmt.Printf("%s✓%s  Updated: %s\n", ansiGreen, ansiReset, name)
-}
-
-func cmdDelete(args []string) {
-	if len(args) == 0 || args[0] == "" {
-		die("Usage: caddie delete <name>")
-	}
-	name := args[0]
-	if !config.EnvExists(name) {
-		die(fmt.Sprintf("Environment '%s' not found.", name))
-	}
-
-	if isTerminal(os.Stdin) {
-		fmt.Printf("Are you sure you want to delete '%s'? [y/N] ", name)
-	}
-	one := make([]byte, 1)
-	n, _ := io.ReadFull(bufio.NewReader(os.Stdin), one)
-	fmt.Println()
-	confirm := ""
-	if n == 1 {
-		confirm = string(one)
-	}
-	if confirm != "y" && confirm != "Y" {
-		return
-	}
-
-	if err := os.Remove(config.EnvFile(name)); err != nil {
-		die(err.Error())
-	}
-	fmt.Printf("%s✓%s  Deleted: %s\n", ansiGreen, ansiReset, name)
-}
-
-func cmdClone(args []string) {
-	if len(args) < 2 || args[0] == "" || args[1] == "" {
-		die("Usage: caddie clone <source> <destination>")
-	}
-	src, dest := args[0], args[1]
-	if !config.EnvExists(src) {
-		die(fmt.Sprintf("Source environment '%s' not found.", src))
-	}
-	if config.EnvExists(dest) {
-		die(fmt.Sprintf("Destination environment '%s' already exists.", dest))
-	}
-
-	data, err := os.ReadFile(config.EnvFile(src))
-	if err != nil {
-		die(err.Error())
-	}
-	if err := os.WriteFile(config.EnvFile(dest), data, 0o644); err != nil {
-		die(err.Error())
-	}
-	fmt.Printf("%s✓%s  Cloned: %s -> %s\n", ansiGreen, ansiReset, src, dest)
-	fmt.Printf("%sℹ%s  Edit with: %scaddie edit %s%s\n", ansiBlue, ansiReset, ansiCyan, dest, ansiReset)
 }
 
 func cmdRepo(args []string) {
@@ -737,57 +645,6 @@ func cmdWhich(_ []string) {
 		os.Exit(1)
 	}
 	fmt.Println(profilePath)
-}
-
-func cmdShow(args []string) {
-	if len(args) == 0 || args[0] == "" {
-		die("Usage: caddie show <name>")
-	}
-	name := args[0]
-	if !config.EnvExists(name) {
-		die(fmt.Sprintf("Environment '%s' not found.", name))
-	}
-	file := config.EnvFile(name)
-	displayName := config.ReadScalar(file, "name")
-	directory := config.ReadScalar(file, "directory")
-
-	label := cmp.Or(displayName, name)
-	fmt.Printf("%sEnvironment: %s%s%s\n\n", ansiBold, ansiCyan, label, ansiReset)
-
-	if directory != "" {
-		expanded := config.ExpandTilde(directory)
-		fmt.Printf("  %sSkills managed in:%s\n", ansiDim, ansiReset)
-		fmt.Printf("    %s%s/.agents/skills/ (.claude/skills → symlink)%s\n", ansiDim, expanded, ansiReset)
-		if _, err := os.Stat(filepath.Join(expanded, ".claude", ".caddie-fingerprint")); err == nil {
-			fmt.Printf("    %s(fingerprint: active)%s\n", ansiDim, ansiReset)
-		}
-		fmt.Println()
-	}
-
-	data, err := os.ReadFile(file)
-	if err != nil {
-		die(err.Error())
-	}
-	os.Stdout.Write(data)
-
-	fmt.Println()
-	fmt.Printf("%sResolved skills:%s\n", ansiBold, ansiReset)
-
-	patterns := config.ReadList(file, "skills")
-	var ids []string
-	if skills.StoreExists() {
-		ids, _ = skills.ResolveIDs(patterns)
-	}
-	// Two zeros are emitted when there are no matches to mirror the historical
-	// `grep -c . || echo 0` shell quirk that contract tests pin.
-	if len(ids) == 0 {
-		fmt.Printf("  0\n0 skills matched\n\n")
-	} else {
-		fmt.Printf("  %d skills matched\n\n", len(ids))
-	}
-	for _, id := range ids {
-		fmt.Printf("  %s\n", id)
-	}
 }
 
 // cmdCreate prompts for display name, description, directory, and skill
