@@ -1208,10 +1208,11 @@ func runScan(opts scanOpts) {
 	}
 }
 
-// cmdActivate resolves the target environment (explicit arg → .caddie.yaml
-// → directory match → interactive picker), syncs repos, resolves skills,
-// fingerprints, and minimally reconciles the target .agents/skills directory.
-// Writes a fingerprint + .gitignore entries for project-local targets.
+// cmdActivate resolves the caddie profile by walking up from cwd to the
+// filesystem root looking for the nearest .caddie.yaml, syncs repos,
+// resolves skills, fingerprints them, and reconciles the profile folder's
+// .agents/skills directory (with .claude/skills symlinked to it). Always
+// writes a fingerprint file and gitignore entries for the profile folder.
 func cmdActivate(args []string) {
 	dryRun := false
 	force := false
@@ -1222,19 +1223,19 @@ func cmdActivate(args []string) {
 		case "--force", "-f":
 			force = true
 		default:
-			die("Unknown argument: " + a)
+			die(fmt.Sprintf("Unknown argument: %s\ncaddie activate no longer takes a profile name; it resolves the nearest .caddie.yaml from the current directory.", a))
 		}
 	}
 
 	cwd, _ := os.Getwd()
-	profile := config.FindProfile(cwd)
-	if profile == "" {
+	profilePath := config.FindProfile(cwd)
+	if profilePath == "" {
 		die(fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
 			cwd, ansiCyan, ansiReset))
 	}
 
-	profileDir := filepath.Dir(profile)
-	displayName := config.ReadScalar(profile, "name")
+	profileDir := filepath.Dir(profilePath)
+	displayName := config.ReadScalar(profilePath, "name")
 	label := cmp.Or(displayName, filepath.Base(profileDir))
 
 	targetAgents := filepath.Join(profileDir, ".agents", "skills")
@@ -1244,7 +1245,7 @@ func cmdActivate(args []string) {
 
 	activateSyncRepos(force)
 
-	patterns := config.ReadList(profile, "skills")
+	patterns := config.ReadList(profilePath, "skills")
 
 	// Resolve matched skills + per-prefix counts.
 	matched, prefixSummary := resolveMatchedWithSummary(patterns)
