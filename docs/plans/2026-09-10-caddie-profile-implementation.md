@@ -1154,6 +1154,13 @@ profile, something above `/tmp` still holds a `.caddie.yaml`.
 
 ## Decisions taken during execution
 
+- **Tasks 10 and 11 swap order.** Task 10 deletes the `internal/config`
+  environment helpers, but `config.EnvDir()` still has a live caller in
+  `cmdSetup`, and Task 11 is what removes it, so running 10 first would not
+  compile. Task 11 runs first; Task 10 then deletes all five helpers in one
+  commit with the compiler proving no caller remains. `EnvFile`, `EnvExists`,
+  `ListEnvs` and `ResolveFromCwd` are already caller-free.
+
 - **Task 2 landed the "Run `caddie init` to create one" message ahead of the
   command that makes it true.** At that commit `init` still did machine setup
   and `create` still wrote to the central registry, so the hint pointed at
@@ -1175,7 +1182,12 @@ profile, something above `/tmp` still holds a `.caddie.yaml`.
 
 ## Open items to resolve during implementation
 
-- **Non-Claude runtimes reading `~/.agents/skills`.** Check before Task 11. `.agents/` is a cross-tool convention and opencode appears in `docs/plans/`. If something does read it, Task 11 needs a different shape.
+- **RESOLVED: nothing else reads `~/.agents/skills`.** Checked before Task 11.
+  The only references outside caddie are `~/.codex/sessions/*.jsonl` transcript
+  logs and vendored plugin READMEs, neither of which reads the path.
+  `~/.config/opencode` exists but does not reference it. `~/.agents/skills` is
+  empty; `~/.agents/skills.backup` holds 94 entries from an old `caddie init`
+  backup and must be left alone.
 - **Profile fields are written without quote escaping.** `cmdInit` writes
   `name`, `description` and every skill pattern with a bare
   `fmt.Fprintf(&body, "key: \"%s\"\n", v)`. A value containing a double quote
