@@ -1073,16 +1073,43 @@ cd ~/Dev/skills && caddie activate --dry-run
 
 Expected: each prints its own profile name and a plausible skill count. The two folders that shared `skills` now hold independent copies, which is the accepted trade-off.
 
-**Step 4: Remove the registry**
+**Step 4: Remove the registry and the home profile**
 
 ```bash
 rm -rf ~/.config/caddie/environments
+rm ~/.caddie.yaml
 caddie activate --dry-run
 ```
 
 Expected: unchanged output. Nothing reads that directory any more.
 
+`~/.caddie.yaml` exists on this machine and contains `environment: "engineering"`.
+Left in place it resolves for every folder under `$HOME` that has no profile of
+its own, and since it carries no `skills:` key that is a silent zero-skill
+activation which also writes `~/.gitignore`, recreates `~/.claude/skills` and
+drops a fingerprint in `~/.claude/`. That is global mode resurrected by
+accident, which Task 11 exists to remove. Delete it rather than converting it.
+
+Verify afterwards that a folder with no profile fails as designed:
+
+```bash
+cd /tmp && caddie activate
+```
+
+Expected: exit 1, `No caddie profile found for /tmp`. If it instead reports a
+profile, something above `/tmp` still holds a `.caddie.yaml`.
+
 ---
+
+## Decisions taken during execution
+
+- **Task 2 landed the "Run `caddie init` to create one" message ahead of the
+  command that makes it true.** At that commit `init` still did machine setup
+  and `create` still wrote to the central registry, so the hint pointed at
+  nothing. Kept as-is deliberately: Task 5 swaps the two commands, and the
+  branch is not merged until all 16 tasks land, so no user meets the
+  intermediate state. Revisit only if this branch ever needs to ship partially.
+- **`~/.caddie.yaml` is deleted, not converted.** See Task 16 step 4.
 
 ## Open items to resolve during implementation
 
