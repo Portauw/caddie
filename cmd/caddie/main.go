@@ -703,7 +703,9 @@ func cmdInit(args []string) {
 }
 
 // cmdSetup performs idempotent filesystem setup: config dir, skill store,
-// sources file, then runs scan.
+// sources file, then runs scan. It also removes caddie's own managed
+// ~/.claude/skills symlink (the last leftover of the retired global skill
+// dirs) if one is still present.
 func cmdSetup(args []string) {
 	fmt.Printf("%sSetting up caddie...%s\n\n", ansiBold, ansiReset)
 

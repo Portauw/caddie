@@ -1,5 +1,5 @@
-// Scan sync logic: sweep agent dirs, clean broken symlinks, sync repo skills
-// into the canonical store.
+// Scan sync logic: clean broken symlinks, sync repo skills into the
+// canonical store.
 package skills
 
 import (

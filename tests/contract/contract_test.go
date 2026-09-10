@@ -1029,6 +1029,26 @@ func TestSetupContract(t *testing.T) {
 			t.Errorf("symlink target changed: got %q, want %q (err=%v)", target, elsewhere, err)
 		}
 	})
+
+	t.Run("removes_own_managed_claude_skills_symlink", func(t *testing.T) {
+		aiEnvDir := t.TempDir()
+		home := t.TempDir()
+		claudeSkills := filepath.Join(home, ".claude")
+		if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(claudeSkills, "skills")
+		if err := os.Symlink("../.agents/skills", link); err != nil {
+			t.Fatal(err)
+		}
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "setup")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
+		}
+		if _, err := os.Lstat(link); !os.IsNotExist(err) {
+			t.Errorf("managed ~/.claude/skills symlink not removed: err=%v", err)
+		}
+	})
 }
 
 // cloneBareInto runs `git clone <bare> <dest>` under a controlled environment.
