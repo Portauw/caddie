@@ -38,9 +38,8 @@ var nativeCommands = map[string]handler{
 	"--help":    cmdHelp,
 	"-h":        cmdHelp,
 	"reset":     cmdReset,
-	"create":    cmdCreate,
-	"new":       cmdCreate,
 	"init":      cmdInit,
+	"setup":     cmdSetup,
 	"scan":      cmdScan,
 	"activate":  cmdActivate,
 	"use":       cmdActivate,
@@ -647,20 +646,24 @@ func cmdWhich(_ []string) {
 	fmt.Println(profilePath)
 }
 
-// cmdCreate prompts for display name, description, directory, and skill
-// patterns; writes an environment YAML. Prompt text is gated on tty so the
-// contract tests that pipe stdin still match.
-func cmdCreate(args []string) {
-	if len(args) == 0 || args[0] == "" {
-		die("Usage: caddie create <name>")
+// cmdInit prompts for name, description and skill patterns, then writes
+// ./.caddie.yaml. Prompt text is gated on tty so piped-stdin tests still match.
+func cmdInit(args []string) {
+	if len(args) > 0 {
+		die("Usage: caddie init  (creates .caddie.yaml in the current folder)")
 	}
-	name := args[0]
-	if config.EnvExists(name) {
-		die(fmt.Sprintf("Environment '%s' already exists. Use 'caddie edit %s' to modify it.", name, name))
+	cwd, err := os.Getwd()
+	if err != nil {
+		die(err.Error())
 	}
-	file := config.EnvFile(name)
+	target := filepath.Join(cwd, ".caddie.yaml")
+	if _, err := os.Stat(target); err == nil {
+		die(fmt.Sprintf("A profile already exists here: %s\n   Edit it with %scaddie edit%s.",
+			target, ansiCyan, ansiReset))
+	}
 
-	fmt.Printf("%sCreating environment: %s%s%s\n\n", ansiBold, ansiCyan, name, ansiReset)
+	base := filepath.Base(cwd)
+	fmt.Printf("%sCreating profile in %s%s%s\n\n", ansiBold, ansiCyan, cwd, ansiReset)
 
 	tty := isTerminal(os.Stdin)
 	br := bufio.NewReader(os.Stdin)
@@ -675,19 +678,15 @@ func cmdCreate(args []string) {
 		return strings.TrimRight(line, "\n")
 	}
 
-	displayName := readLine(fmt.Sprintf("Display name [%s]: ", name))
+	displayName := readLine(fmt.Sprintf("Name [%s]: ", base))
 	if displayName == "" {
-		displayName = name
+		displayName = base
 	}
 	description := readLine("Description: ")
-	directory := readLine(fmt.Sprintf("Working directory [~/Dev/%s]: ", name))
-	if directory == "" {
-		directory = "~/Dev/" + name
-	}
 
 	fmt.Println()
 	fmt.Println("Skill patterns (enter one per line, empty line to finish):")
-	fmt.Println(`  Examples: "gws:*", "superpowers:*", "local:*", "*" (all)`)
+	fmt.Println(`  Examples: "superpowers:*", "gws:gmail-*", "*" (all)`)
 	var patterns []string
 	for {
 		p := readLine("  - ")
@@ -704,38 +703,27 @@ func cmdCreate(args []string) {
 	var body strings.Builder
 	fmt.Fprintf(&body, "name: \"%s\"\n", displayName)
 	fmt.Fprintf(&body, "description: \"%s\"\n", description)
-	fmt.Fprintf(&body, "directory: \"%s\"\n", directory)
 	body.WriteString("\n")
 	body.WriteString("skills:\n")
 	for _, p := range patterns {
 		fmt.Fprintf(&body, "  - \"%s\"\n", p)
 	}
-	body.WriteString("\n")
-	body.WriteString("# agents:\n")
-	body.WriteString("#   claude:\n")
-	body.WriteString("#     model: \"claude-sonnet-4-6\"\n")
-	body.WriteString("#     permission_mode: \"plan\"\n")
-	body.WriteString("#     system_prompt_file: \"./CLAUDE.md\"\n")
 
-	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+	if err := os.WriteFile(target, []byte(body.String()), 0o644); err != nil {
 		die(err.Error())
 	}
-	if err := os.WriteFile(file, []byte(body.String()), 0o644); err != nil {
-		die(err.Error())
-	}
+	ensureProjectGitignore(cwd)
 
 	fmt.Println()
-	fmt.Printf("%s✓%s  Created environment: %s%s%s\n", ansiGreen, ansiReset, ansiBold, name, ansiReset)
-	fmt.Printf("%sℹ%s  Config: %s%s%s\n", ansiBlue, ansiReset, ansiDim, file, ansiReset)
-	fmt.Printf("  Edit:     %scaddie edit %s%s\n", ansiCyan, name, ansiReset)
-	fmt.Printf("  Preview:  %scaddie activate %s --dry-run%s\n", ansiCyan, name, ansiReset)
-	fmt.Printf("  Activate: %scaddie activate %s%s\n", ansiCyan, name, ansiReset)
+	fmt.Printf("%s✓%s  Created %s\n", ansiGreen, ansiReset, target)
+	fmt.Printf("  Preview:  %scaddie activate --dry-run%s\n", ansiCyan, ansiReset)
+	fmt.Printf("  Activate: %scaddie activate%s\n", ansiCyan, ansiReset)
 }
 
-// cmdInit performs idempotent filesystem setup: config dirs, skill store,
+// cmdSetup performs idempotent filesystem setup: config dirs, skill store,
 // backups, migrations, ~/.claude/skills symlink, example env, then runs scan.
-func cmdInit(args []string) {
-	fmt.Printf("%sInitializing caddie skill profile manager...%s\n\n", ansiBold, ansiReset)
+func cmdSetup(args []string) {
+	fmt.Printf("%sSetting up caddie...%s\n\n", ansiBold, ansiReset)
 
 	home := config.Home()
 	configDir := config.Dir()
@@ -870,7 +858,7 @@ skills:
 	fmt.Printf("%sℹ%s  Next steps:\n", ansiBlue, ansiReset)
 	fmt.Printf("  %scaddie repo list%s             Review registered repos\n", ansiCyan, ansiReset)
 	fmt.Printf("  %scaddie inventory%s             See all discovered skills\n", ansiCyan, ansiReset)
-	fmt.Printf("  %scaddie create my-project%s     Create your first environment\n", ansiCyan, ansiReset)
+	fmt.Printf("  %scaddie init%s                  Create your first profile\n", ansiCyan, ansiReset)
 	fmt.Println()
 	fmt.Printf("%sℹ%s  Shell integration (add to ~/.zshrc):\n", ansiBlue, ansiReset)
 	fmt.Println()
@@ -1279,6 +1267,7 @@ func ensureProjectGitignore(projectDir string) {
 		".agents/skills/",
 		".agents/SOURCES.md",
 		".claude/.caddie-fingerprint",
+		".caddie.yaml",
 	}
 
 	var body []byte

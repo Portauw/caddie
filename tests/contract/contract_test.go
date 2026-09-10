@@ -729,131 +729,42 @@ func TestRepoUpdateContract(t *testing.T) {
 	})
 }
 
-// TestCreateContract: interactive `create`/`new` with piped stdin. Compare
-// the written YAML byte-for-byte and stdout modulo the AI_ENV_DIR path.
-func TestCreateContract(t *testing.T) {
-	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
-
-	t.Run("full_input", func(t *testing.T) {
-		a := setupEnvDir(t)
-		b := setupEnvDir(t)
-		stdin := "MyDisplay\nMy desc\n/tmp/myproj\nlocal:*\nsuperpowers:*\n\n"
-		got := runWith(t, goBin, runOpts{aiEnvDir: a, stdin: stdin}, "create", "proj")
-		want := runWith(t, bashBin, runOpts{aiEnvDir: b, stdin: stdin}, "create", "proj")
-		if got.exitCode != want.exitCode {
-			t.Errorf("exit code mismatch: go=%d bash=%d", got.exitCode, want.exitCode)
-		}
-		gotYAML, _ := os.ReadFile(filepath.Join(a, "environments", "proj.yaml"))
-		wantYAML, _ := os.ReadFile(filepath.Join(b, "environments", "proj.yaml"))
-		if string(gotYAML) != string(wantYAML) {
-			t.Errorf("yaml mismatch\n  go:   %q\n  bash: %q", string(gotYAML), string(wantYAML))
-		}
-		// Normalize tmpdirs in stdout — the Config: line prints the absolute path.
-		norm := func(s, dir string) string { return strings.ReplaceAll(s, dir, "/X") }
-		if norm(got.stdout, a) != norm(want.stdout, b) {
-			t.Errorf("stdout mismatch\n  go:   %q\n  bash: %q", norm(got.stdout, a), norm(want.stdout, b))
-		}
-	})
-
-	t.Run("defaults", func(t *testing.T) {
-		a := setupEnvDir(t)
-		b := setupEnvDir(t)
-		stdin := "\n\n\n\n"
-		runWith(t, goBin, runOpts{aiEnvDir: a, stdin: stdin}, "create", "def")
-		runWith(t, bashBin, runOpts{aiEnvDir: b, stdin: stdin}, "create", "def")
-		gotYAML, _ := os.ReadFile(filepath.Join(a, "environments", "def.yaml"))
-		wantYAML, _ := os.ReadFile(filepath.Join(b, "environments", "def.yaml"))
-		if string(gotYAML) != string(wantYAML) {
-			t.Errorf("yaml mismatch\n  go:   %q\n  bash: %q", string(gotYAML), string(wantYAML))
-		}
-	})
-
-	t.Run("already_exists", func(t *testing.T) {
-		a := setupEnvDir(t)
-		b := setupEnvDir(t)
-		mustWrite(t, filepath.Join(a, "environments", "dup.yaml"), "skills:\n  - \"*\"\n")
-		mustWrite(t, filepath.Join(b, "environments", "dup.yaml"), "skills:\n  - \"*\"\n")
-		diffResult(t,
-			runWith(t, goBin, runOpts{aiEnvDir: a}, "create", "dup"),
-			runWith(t, bashBin, runOpts{aiEnvDir: b}, "create", "dup"),
-		)
-	})
-
-	t.Run("no_arg", func(t *testing.T) {
-		a := setupEnvDir(t)
-		b := setupEnvDir(t)
-		diffResult(t,
-			runWith(t, goBin, runOpts{aiEnvDir: a}, "create"),
-			runWith(t, bashBin, runOpts{aiEnvDir: b}, "create"),
-		)
-	})
-
-	t.Run("new_alias", func(t *testing.T) {
-		a := setupEnvDir(t)
-		b := setupEnvDir(t)
-		stdin := "\n\n\n\n"
-		runWith(t, goBin, runOpts{aiEnvDir: a, stdin: stdin}, "new", "viaNew")
-		runWith(t, bashBin, runOpts{aiEnvDir: b, stdin: stdin}, "new", "viaNew")
-		if _, err := os.Stat(filepath.Join(a, "environments", "viaNew.yaml")); err != nil {
-			t.Errorf("go new alias didn't write file: %v", err)
-		}
-		if _, err := os.Stat(filepath.Join(b, "environments", "viaNew.yaml")); err != nil {
-			t.Errorf("bash new alias didn't write file: %v", err)
-		}
-	})
-}
-
-// TestInitContract: native `init` must match bash for the idempotent setup +
-// the auto-detected sources block. Scan output is included because init
-// delegates to legacy bash scan in both impls. HOME is overridden to keep
-// the user's real ~/.claude + ~/.agents untouched.
+// TestInitContract: `init` writes .caddie.yaml in cwd from piped answers,
+// and refuses when one already exists. Go-only assertions.
 func TestInitContract(t *testing.T) {
 	goBin := buildGoBinary(t)
 
-	t.Run("fresh", func(t *testing.T) {
-		// Go-only: bash init auto-detects plugin sources which we no longer
-		// do, so the diff against bash is expected. Assert the filesystem
-		// side-effects and the key stdout markers.
-		aiEnvDir := setupEnvDir(t)
-		home := t.TempDir()
-		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "init")
-		if r.exitCode != 0 {
-			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+	t.Run("writes_profile", func(t *testing.T) {
+		projectDir := t.TempDir()
+		opts := runOpts{
+			cwd:      projectDir,
+			aiEnvDir: t.TempDir(),
+			stdin:    "My Project\nA description\nsuperpowers:*\n\n",
 		}
-		for _, p := range []string{
-			filepath.Join(aiEnvDir, "sources.yaml"),
-			filepath.Join(aiEnvDir, "environments", "example.yaml"),
-			filepath.Join(aiEnvDir, "skills"),
-		} {
-			if _, err := os.Stat(p); err != nil {
-				t.Errorf("init missing %s: %v", p, err)
-			}
+		got := runWith(t, goBin, opts, "init")
+		if got.exitCode != 0 {
+			t.Fatalf("exit %d, stderr %q", got.exitCode, got.stderr)
 		}
-		if li, err := os.Lstat(filepath.Join(home, ".claude", "skills")); err != nil || li.Mode()&os.ModeSymlink == 0 {
-			t.Errorf("init didn't create ~/.claude/skills symlink: %v", err)
+		data, err := os.ReadFile(filepath.Join(projectDir, ".caddie.yaml"))
+		if err != nil {
+			t.Fatal(err)
 		}
-		for _, banned := range []string{"Detected source", "Auto-registered", "plugin source"} {
-			if strings.Contains(r.stdout, banned) {
-				t.Errorf("init still references removed plugin-source flow %q:\n%s", banned, r.stdout)
-			}
+		want := "name: \"My Project\"\ndescription: \"A description\"\n\nskills:\n  - \"superpowers:*\"\n"
+		if string(data) != want {
+			t.Errorf("profile contents\n got: %q\nwant: %q", data, want)
 		}
 	})
 
-	t.Run("idempotent_second_run", func(t *testing.T) {
-		aiEnvDir := setupEnvDir(t)
-		home := t.TempDir()
-		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
-		r1 := runWith(t, goBin, opts, "init")
-		if r1.exitCode != 0 {
-			t.Fatalf("first init exit=%d stderr=%q", r1.exitCode, r1.stderr)
+	t.Run("refuses_when_present", func(t *testing.T) {
+		projectDir := t.TempDir()
+		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "skills:\n  - \"*\"\n")
+		opts := runOpts{cwd: projectDir, aiEnvDir: t.TempDir(), stdin: "\n\n\n"}
+		got := runWith(t, goBin, opts, "init")
+		if got.exitCode != 1 {
+			t.Errorf("exit code = %d, want 1", got.exitCode)
 		}
-		r2 := runWith(t, goBin, opts, "init")
-		if r2.exitCode != 0 {
-			t.Fatalf("second init exit=%d stderr=%q", r2.exitCode, r2.stderr)
-		}
-		if !strings.Contains(r2.stdout, "Sources file already exists") {
-			t.Errorf("second init didn't report existing sources: %q", r2.stdout)
+		if !strings.Contains(got.stderr, "already exists") {
+			t.Errorf("stderr %q missing the refusal", got.stderr)
 		}
 	})
 }
