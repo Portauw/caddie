@@ -72,6 +72,21 @@ func die(msg string) {
 	os.Exit(1)
 }
 
+// resolveProfileOrDie returns the nearest .caddie.yaml profile for the current
+// working directory, or dies with the standard not-found message.
+func resolveProfileOrDie() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		die(err.Error())
+	}
+	profilePath := config.FindProfile(cwd)
+	if profilePath == "" {
+		die(fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
+			cwd, ansiCyan, ansiReset))
+	}
+	return profilePath
+}
+
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -99,15 +114,7 @@ func cmdEdit(args []string) {
 	if len(args) > 0 {
 		die("Usage: caddie edit  (opens the nearest .caddie.yaml)")
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		die(err.Error())
-	}
-	profilePath := config.FindProfile(cwd)
-	if profilePath == "" {
-		die(fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
-			cwd, ansiCyan, ansiReset))
-	}
+	profilePath := resolveProfileOrDie()
 
 	editor := cmp.Or(os.Getenv("EDITOR"), "vim")
 	// `sh -c` preserves $EDITOR's word-splitting (e.g. "code --wait").
@@ -637,15 +644,7 @@ func cmdReset(args []string) {
 }
 
 func cmdWhich(_ []string) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		die(err.Error())
-	}
-	profilePath := config.FindProfile(cwd)
-	if profilePath == "" {
-		die(fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
-			cwd, ansiCyan, ansiReset))
-	}
+	profilePath := resolveProfileOrDie()
 	fmt.Println(profilePath)
 }
 
@@ -1074,15 +1073,7 @@ func cmdActivate(args []string) {
 		}
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		die(err.Error())
-	}
-	profilePath := config.FindProfile(cwd)
-	if profilePath == "" {
-		die(fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
-			cwd, ansiCyan, ansiReset))
-	}
+	profilePath := resolveProfileOrDie()
 
 	profileDir := filepath.Dir(profilePath)
 	displayName := config.ReadScalar(profilePath, "name")
