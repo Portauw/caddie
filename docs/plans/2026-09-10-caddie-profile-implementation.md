@@ -277,7 +277,15 @@ git commit -m "feat(activate): resolve the folder-local profile, drop environmen
 
 **Step 1: Rewrite the command**
 
-`which` printed an environment name. There is no name to print any more, so it prints the profile path and what it resolves to:
+**Revised during execution:** the first version of this task printed the profile
+path plus a `N pattern(s), M skill(s)` summary line. That was wrong. `which` is
+the command captured in `dir=$(caddie which)`, and a second line breaks that
+silently; the summary also invented a vocabulary that differed from the
+per-prefix summary `activate` already uses. `which` prints one line, the profile
+path, and nothing else. Counts live in `activate --dry-run`. A side benefit is
+that `which` no longer touches the skill store.
+
+`which` printed an environment name. There is no name to print any more, so it prints the profile path:
 
 ```go
 func cmdWhich(_ []string) {
