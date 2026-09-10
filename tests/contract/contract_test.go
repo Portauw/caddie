@@ -1464,35 +1464,32 @@ func TestExportContract(t *testing.T) {
 		diffResult(t, g, w)
 	}
 
-	// Common fixture: two-skill store with env patterns matching both.
-	setupStore := func(t *testing.T) (a, b string) {
-		a = setupEnvDir(t)
-		b = setupEnvDir(t)
-		for _, d := range []string{a, b} {
-			makeExportStore(t, d, "foo-one", "foo-two")
-			mustWrite(t, filepath.Join(d, "environments", "demo.yaml"),
-				"skills:\n  - \"foo:*\"\n")
-		}
+	// Common fixture: two-skill store, plus a cwd profile matching both.
+	setupStore := func(t *testing.T) (aiEnvDir, cwd string) {
+		aiEnvDir = setupEnvDir(t)
+		makeExportStore(t, aiEnvDir, "foo-one", "foo-two")
+		cwd = realTempDir(t)
+		mustWrite(t, filepath.Join(cwd, ".caddie.yaml"), "skills:\n  - \"foo:*\"\n")
 		return
 	}
 
 	t.Run("dir_basic", func(t *testing.T) {
-		a, b := setupStore(t)
-		ta := filepath.Join(t.TempDir(), "out-a")
-		tb := filepath.Join(t.TempDir(), "out-b")
-		got := runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "demo", "--to", ta)
-		want := runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "demo", "--to", tb)
-		diffPathNormalized(t, got, want, []string{ta, a}, []string{tb, b})
-		// Both should have copied the two skills.
-		for _, tgt := range []string{ta, tb} {
-			for _, n := range []string{"foo-one", "foo-two"} {
-				if _, err := os.Stat(filepath.Join(tgt, n, "SKILL.md")); err != nil {
-					t.Errorf("%s/%s/SKILL.md missing: %v", tgt, n, err)
-				}
+		aiEnvDir, cwd := setupStore(t)
+		target := filepath.Join(t.TempDir(), "out")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export", "--to", target)
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		for _, n := range []string{"foo-one", "foo-two"} {
+			if _, err := os.Stat(filepath.Join(target, n, "SKILL.md")); err != nil {
+				t.Errorf("%s/%s/SKILL.md missing: %v", target, n, err)
 			}
 		}
 	})
 
+	// dir_all_flag is intentionally left as a bash byte-diff parity test:
+	// --all never reads a profile, so it still exercises the frozen bash and
+	// guards the export machinery independent of the profile migration.
 	t.Run("dir_all_flag", func(t *testing.T) {
 		a := setupEnvDir(t)
 		b := setupEnvDir(t)
@@ -1506,71 +1503,79 @@ func TestExportContract(t *testing.T) {
 	})
 
 	t.Run("dir_clean", func(t *testing.T) {
-		a, b := setupStore(t)
-		ta := filepath.Join(t.TempDir(), "out-a")
-		tb := filepath.Join(t.TempDir(), "out-b")
-		// Pre-populate targets with a stale directory that should be removed.
-		for _, tgt := range []string{ta, tb} {
-			if err := os.MkdirAll(filepath.Join(tgt, "stale"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			mustWrite(t, filepath.Join(tgt, "stale", "old.txt"), "old\n")
+		aiEnvDir, cwd := setupStore(t)
+		target := filepath.Join(t.TempDir(), "out")
+		// Pre-populate the target with a stale directory that should be removed.
+		if err := os.MkdirAll(filepath.Join(target, "stale"), 0o755); err != nil {
+			t.Fatal(err)
 		}
-		got := runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "demo", "--to", ta, "--clean")
-		want := runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "demo", "--to", tb, "--clean")
-		diffPathNormalized(t, got, want, []string{ta, a}, []string{tb, b})
-		for _, tgt := range []string{ta, tb} {
-			if _, err := os.Stat(filepath.Join(tgt, "stale")); !os.IsNotExist(err) {
-				t.Errorf("%s/stale should be removed: %v", tgt, err)
-			}
+		mustWrite(t, filepath.Join(target, "stale", "old.txt"), "old\n")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export", "--to", target, "--clean")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if _, err := os.Stat(filepath.Join(target, "stale")); !os.IsNotExist(err) {
+			t.Errorf("%s/stale should be removed: %v", target, err)
 		}
 	})
 
 	t.Run("dir_dry_run", func(t *testing.T) {
-		a, b := setupStore(t)
-		ta := filepath.Join(t.TempDir(), "out-a")
-		tb := filepath.Join(t.TempDir(), "out-b")
-		got := runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "demo", "--to", ta, "--dry-run")
-		want := runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "demo", "--to", tb, "--dry-run")
-		diffPathNormalized(t, got, want, []string{ta, a}, []string{tb, b})
+		aiEnvDir, cwd := setupStore(t)
+		target := filepath.Join(t.TempDir(), "out")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export", "--to", target, "--dry-run")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
 		// Dry run must not create the target.
-		for _, tgt := range []string{ta, tb} {
-			if _, err := os.Stat(tgt); !os.IsNotExist(err) {
-				t.Errorf("%s should not exist after dry-run: %v", tgt, err)
-			}
+		if _, err := os.Stat(target); !os.IsNotExist(err) {
+			t.Errorf("%s should not exist after dry-run: %v", target, err)
 		}
 	})
 
-	t.Run("no_env_no_all", func(t *testing.T) {
-		a := setupEnvDir(t)
-		b := setupEnvDir(t)
-		diffResult(t,
-			runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "--to", "/tmp/x"),
-			runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "--to", "/tmp/x"),
-		)
+	t.Run("no_profile_no_all", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		cwd := realTempDir(t) // no .caddie.yaml here
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export", "--to", "/tmp/x")
+		if r.exitCode != 1 {
+			t.Errorf("exit code = %d, want 1", r.exitCode)
+		}
+		if !strings.Contains(r.stderr, "No caddie profile found") {
+			t.Errorf("stderr %q missing the not-found message", r.stderr)
+		}
 	})
 
 	t.Run("missing_to_flag", func(t *testing.T) {
-		a, b := setupStore(t)
-		diffResult(t,
-			runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "demo"),
-			runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "demo"),
-		)
+		aiEnvDir, cwd := setupStore(t)
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export")
+		if r.exitCode != 1 {
+			t.Errorf("exit code = %d, want 1", r.exitCode)
+		}
+		if !strings.Contains(r.stderr, "Usage: caddie export") {
+			t.Errorf("stderr %q missing the usage message", r.stderr)
+		}
 	})
 
 	t.Run("no_match_warns", func(t *testing.T) {
-		a := setupEnvDir(t)
-		b := setupEnvDir(t)
-		// Populated store, but patterns select nothing.
-		for _, d := range []string{a, b} {
-			makeExportStore(t, d, "foo-one")
-			mustWrite(t, filepath.Join(d, "environments", "demo.yaml"),
-				"skills:\n  - \"nonexistent:*\"\n")
+		aiEnvDir := setupEnvDir(t)
+		makeExportStore(t, aiEnvDir, "foo-one")
+		cwd := realTempDir(t)
+		mustWrite(t, filepath.Join(cwd, ".caddie.yaml"), "skills:\n  - \"nonexistent:*\"\n")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export", "--to", "/tmp/nomatch")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
 		}
-		diffResult(t,
-			runWith(t, goBin, runOpts{aiEnvDir: a}, "export", "demo", "--to", "/tmp/nomatch"),
-			runWith(t, bashBin, runOpts{aiEnvDir: b}, "export", "demo", "--to", "/tmp/nomatch"),
-		)
+		if !strings.Contains(r.stdout, "No skills matched") {
+			t.Errorf("stdout %q missing the 'No skills matched' warning", r.stdout)
+		}
+	})
+
+	t.Run("rejects_positional_arg", func(t *testing.T) {
+		aiEnvDir, cwd := setupStore(t)
+		target := filepath.Join(t.TempDir(), "out")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export", "demo", "--to", target)
+		if r.exitCode == 0 {
+			t.Errorf("expected non-zero exit for positional argument")
+		}
 	})
 
 	// NOTE: S3 subtests are deferred. They would require a live aws CLI plus

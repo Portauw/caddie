@@ -1323,11 +1323,11 @@ func ensureProjectGitignore(projectDir string) error {
 	return os.WriteFile(gitignore, []byte(out.String()), 0o644)
 }
 
-// cmdExport resolves the env's skills (or all skills with --all), then
-// dispatches to internal/export for either a local directory or an s3:// URL.
+// cmdExport resolves the cwd profile's skills (or all skills with --all),
+// then dispatches to internal/export for either a local directory or an
+// s3:// URL.
 func cmdExport(args []string) {
 	var (
-		name   string
 		target string
 		dryRun bool
 		clean  bool
@@ -1353,25 +1353,19 @@ func cmdExport(args []string) {
 			if strings.HasPrefix(a, "-") {
 				die("Unknown flag: " + a)
 			}
-			name = a
+			die(fmt.Sprintf("Unknown argument: %s\ncaddie export no longer takes a profile name; it resolves the nearest .caddie.yaml from the current directory.", a))
 		}
 	}
 
 	if target == "" {
-		die("Usage: caddie export [<env>|--all] --to <dir-or-s3> [--clean] [--dry-run]")
-	}
-	if !all && name == "" {
-		die("Specify an environment name or use --all.\nUsage: caddie export [<env>|--all] --to <target> [--clean] [--dry-run]")
-	}
-	if !all && !config.EnvExists(name) {
-		die(fmt.Sprintf("Environment '%s' not found.", name))
+		die("Usage: caddie export [--all] --to <dir-or-s3> [--clean] [--dry-run]")
 	}
 
 	var patterns []string
 	if all {
 		patterns = []string{"*:*"}
 	} else {
-		patterns = config.ReadList(config.EnvFile(name), "skills")
+		patterns = config.ReadList(resolveProfileOrDie(), "skills")
 	}
 
 	matched, err := skills.Resolve(patterns)
