@@ -135,11 +135,17 @@ func ReadList(path, key string) []string {
 	return out
 }
 
-// FindProfile walks from dir up to "/" looking for .caddie.yaml, the caddie
-// profile. Returns the path to the nearest one, or "" if there is none.
+// FindProfile walks from dir up to "/" looking for the nearest .caddie.yaml
+// profile. Returns its path, or "" if there is none.
 func FindProfile(dir string) string {
+	return findProfileUntil(dir, "/")
+}
+
+// findProfileUntil is FindProfile with a configurable stop directory so tests
+// can confine the walk to a temp tree instead of the real filesystem root.
+func findProfileUntil(dir, stop string) string {
 	dir = ExpandTilde(dir)
-	for dir != "/" && dir != "" {
+	for dir != stop && dir != "" {
 		candidate := filepath.Join(dir, ".caddie.yaml")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate

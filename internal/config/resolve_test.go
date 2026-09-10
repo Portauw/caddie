@@ -55,7 +55,11 @@ func TestFindProfile(t *testing.T) {
 		if err := os.MkdirAll(deep, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if got := FindProfile(deep); got != "" {
+		// Uses the unexported findProfileUntil to bound the walk to root's
+		// parent, so a stray .caddie.yaml in a real ancestor of the OS temp
+		// dir (a CI workspace mount, someone's /tmp setup) can't make this
+		// test flake for reasons unrelated to FindProfile itself.
+		if got := findProfileUntil(deep, filepath.Dir(root)); got != "" {
 			t.Errorf("got %q want empty string", got)
 		}
 	})
