@@ -346,7 +346,7 @@ Expected: two subtests PASS.
 
 ```bash
 git add cmd/caddie/main.go tests/contract/contract_test.go
-git commit -m "feat(which): report the resolved profile path instead of an environment name"
+git commit -m "feat(which): print the resolved profile path"
 ```
 
 ---
@@ -389,7 +389,7 @@ Expected: PASS. The remaining parity tests (`version`, `repo *`, `inventory`) ar
 
 ```bash
 git add cmd/caddie/main.go tests/contract/contract_test.go
-git commit -m "feat: remove list, delete, clone and show along with the central registry"
+git commit -m "feat: remove the central registry commands"
 ```
 
 ---
@@ -558,7 +558,7 @@ Expected: two subtests PASS.
 
 ```bash
 git add cmd/caddie/main.go tests/contract/contract_test.go
-git commit -m "feat(init): create a folder-local profile; move machine setup to caddie setup"
+git commit -m "feat(init): create a profile in the current folder"
 ```
 
 ---
