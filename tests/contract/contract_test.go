@@ -81,7 +81,7 @@ type runResult struct {
 
 type runOpts struct {
 	cwd      string
-	aiEnvDir string
+	aiEnvDir string // exported as both CADDIE_DIR (Go) and AI_ENV_DIR (frozen bash)
 	home     string // overrides $HOME for the child process
 	stdin    string // piped to child process stdin
 	env      []string
@@ -971,6 +971,14 @@ func TestResetContract(t *testing.T) {
 			t.Errorf("managed symlink not cleaned: %v", err)
 		}
 	})
+
+	t.Run("rejects_unknown_argument", func(t *testing.T) {
+		aiEnvDir, home := setup(t)
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "reset", "junk")
+		if r.exitCode == 0 {
+			t.Errorf("expected non-zero exit for unknown argument, got stdout=%q", r.stdout)
+		}
+	})
 }
 
 // TestSetupContract: `setup` must create the config dir, the skill store, and
@@ -1049,6 +1057,15 @@ func TestSetupContract(t *testing.T) {
 		}
 		if _, err := os.Lstat(link); !os.IsNotExist(err) {
 			t.Errorf("managed ~/.claude/skills symlink not removed: err=%v", err)
+		}
+	})
+
+	t.Run("rejects_unknown_argument", func(t *testing.T) {
+		aiEnvDir := t.TempDir()
+		home := t.TempDir()
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "setup", "junk")
+		if r.exitCode == 0 {
+			t.Errorf("expected non-zero exit for unknown argument, got stdout=%q", r.stdout)
 		}
 	})
 }
@@ -1310,6 +1327,15 @@ func TestScanContract(t *testing.T) {
 		}
 		if !strings.Contains(r2.stdout, "Scan complete") {
 			t.Errorf("expected scan complete marker: %q", r2.stdout)
+		}
+	})
+
+	t.Run("rejects_unknown_argument", func(t *testing.T) {
+		aiEnvDir := setupEnvDir(t)
+		home := t.TempDir()
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "scan", "junk")
+		if r.exitCode == 0 {
+			t.Errorf("expected non-zero exit for unknown argument, got stdout=%q", r.stdout)
 		}
 	})
 }

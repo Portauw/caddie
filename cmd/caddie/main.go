@@ -544,8 +544,16 @@ func gitClone(url, dir string) error {
 // dangling until `caddie activate` is rerun in each one.
 func cmdReset(args []string) {
 	force := false
-	if len(args) > 0 && (args[0] == "-f" || args[0] == "--force") {
-		force = true
+	for _, a := range args {
+		switch a {
+		case "-f", "--force":
+			force = true
+		default:
+			if strings.HasPrefix(a, "-") {
+				die("Unknown flag: " + a)
+			}
+			die("Unknown argument: " + a)
+		}
 	}
 
 	fmt.Printf("%scaddie reset%s — restore to clean state\n\n", ansiBold, ansiReset)
@@ -707,6 +715,13 @@ func cmdInit(args []string) {
 // ~/.claude/skills symlink (the last leftover of the retired global skill
 // dirs) if one is still present.
 func cmdSetup(args []string) {
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			die("Unknown flag: " + a)
+		}
+		die("Unknown argument: " + a)
+	}
+
 	fmt.Printf("%sSetting up caddie...%s\n\n", ansiBold, ansiReset)
 
 	home := config.Home()
@@ -817,6 +832,11 @@ func cmdScan(args []string) {
 			opts.verbose = true
 		case "-f", "--force":
 			opts.force = true
+		default:
+			if strings.HasPrefix(a, "-") {
+				die("Unknown flag: " + a)
+			}
+			die("Unknown argument: " + a)
 		}
 	}
 	runScan(opts)
