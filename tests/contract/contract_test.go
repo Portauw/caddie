@@ -102,7 +102,9 @@ func runWith(t *testing.T, bin string, opts runOpts, args ...string) runResult {
 	}
 	env := os.Environ()
 	if opts.aiEnvDir != "" {
-		env = append(env, "AI_ENV_DIR="+opts.aiEnvDir)
+		// The Go binary reads CADDIE_DIR; the frozen bash only knows
+		// AI_ENV_DIR. Export both so parity tests still isolate correctly.
+		env = append(env, "CADDIE_DIR="+opts.aiEnvDir, "AI_ENV_DIR="+opts.aiEnvDir)
 	}
 	if opts.home != "" {
 		env = append(env, "HOME="+opts.home)

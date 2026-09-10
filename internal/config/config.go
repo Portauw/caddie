@@ -28,9 +28,9 @@ func ExpandTilde(p string) string {
 	return Home() + strings.TrimPrefix(p, "~")
 }
 
-// Dir returns the caddie config directory: $AI_ENV_DIR or ~/.config/caddie.
+// Dir returns the caddie config directory: $CADDIE_DIR or ~/.config/caddie.
 func Dir() string {
-	return cmp.Or(os.Getenv("AI_ENV_DIR"), filepath.Join(Home(), ".config", "caddie"))
+	return cmp.Or(os.Getenv("CADDIE_DIR"), filepath.Join(Home(), ".config", "caddie"))
 }
 
 // StripQuotes removes a single layer of matched surrounding ' or " quotes.
