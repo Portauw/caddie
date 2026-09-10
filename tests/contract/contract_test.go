@@ -153,75 +153,49 @@ func TestVersionContract(t *testing.T) {
 	}
 }
 
-// TestWhichContract: native `which` must match bash across the three resolution
-// strategies (project config, directory match, no-match).
+// TestWhichContract: `which` prints the resolved profile path. Go-only
+// assertions: the frozen bash resolves environments, which no longer exist.
 func TestWhichContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
-	setupFixture := func(t *testing.T) (aiEnvDir, projectDir string) {
-		t.Helper()
-		aiEnvDir = t.TempDir()
-		if err := os.MkdirAll(filepath.Join(aiEnvDir, "environments"), 0o755); err != nil {
+	t.Run("profile_in_cwd", func(t *testing.T) {
+		projectDir := t.TempDir()
+		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "skills:\n  - \"*\"\n")
+		got := runWith(t, goBin, runOpts{cwd: projectDir, aiEnvDir: t.TempDir()}, "which")
+		if got.exitCode != 0 {
+			t.Fatalf("exit %d, stderr %q", got.exitCode, got.stderr)
+		}
+		if !strings.Contains(got.stdout, ".caddie.yaml") {
+			t.Errorf("stdout %q does not name the profile file", got.stdout)
+		}
+	})
+
+	t.Run("walk_up_from_subdir", func(t *testing.T) {
+		projectDir := t.TempDir()
+		profilePath := filepath.Join(projectDir, ".caddie.yaml")
+		mustWrite(t, profilePath, "skills:\n  - \"*\"\n")
+		nested := filepath.Join(projectDir, "deep", "deeper")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		projectDir = t.TempDir()
-		return
-	}
-
-	t.Run("project_config", func(t *testing.T) {
-		aiEnvDir, projectDir := setupFixture(t)
-		mustWrite(t, filepath.Join(aiEnvDir, "environments", "my-proj.yaml"), "skills:\n  - \"*\"\n")
-		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "environment: \"my-proj\"\n")
-		mustWrite(t, filepath.Join(projectDir, ".ai-env.yaml"), "environment: \"my-proj\"\n")
-		opts := runOpts{cwd: projectDir, aiEnvDir: aiEnvDir}
-
-		got := runWith(t, goBin, opts, "which")
-		want := runWith(t, bashBin, opts, "which")
-		diffResult(t, got, want)
+		got := runWith(t, goBin, runOpts{cwd: nested, aiEnvDir: t.TempDir()}, "which")
+		if got.exitCode != 0 {
+			t.Fatalf("exit %d, stderr %q", got.exitCode, got.stderr)
+		}
+		if !strings.Contains(got.stdout, profilePath) {
+			t.Errorf("stdout %q does not name the ancestor's profile %q", got.stdout, profilePath)
+		}
 	})
 
-	t.Run("unknown_env_reference", func(t *testing.T) {
-		aiEnvDir, projectDir := setupFixture(t)
-		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "environment: \"ghost\"\n")
-		mustWrite(t, filepath.Join(projectDir, ".ai-env.yaml"), "environment: \"ghost\"\n")
-		opts := runOpts{cwd: projectDir, aiEnvDir: aiEnvDir}
-
-		got := runWith(t, goBin, opts, "which")
-		want := runWith(t, bashBin, opts, "which")
-		diffResult(t, got, want)
-	})
-
-	t.Run("directory_match", func(t *testing.T) {
-		aiEnvDir, projectDir := setupFixture(t)
-		mustWrite(t, filepath.Join(aiEnvDir, "environments", "matched.yaml"),
-			"directory: \""+projectDir+"\"\n")
-		opts := runOpts{cwd: projectDir, aiEnvDir: aiEnvDir}
-
-		got := runWith(t, goBin, opts, "which")
-		want := runWith(t, bashBin, opts, "which")
-		diffResult(t, got, want)
-	})
-
-	t.Run("no_match", func(t *testing.T) {
-		aiEnvDir, projectDir := setupFixture(t)
-		opts := runOpts{cwd: projectDir, aiEnvDir: aiEnvDir}
-
-		got := runWith(t, goBin, opts, "which")
-		want := runWith(t, bashBin, opts, "which")
-		diffResult(t, got, want)
-	})
-
-	t.Run("active_alias", func(t *testing.T) {
-		aiEnvDir, projectDir := setupFixture(t)
-		mustWrite(t, filepath.Join(aiEnvDir, "environments", "my-proj.yaml"), "skills:\n  - \"*\"\n")
-		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "environment: \"my-proj\"\n")
-		mustWrite(t, filepath.Join(projectDir, ".ai-env.yaml"), "environment: \"my-proj\"\n")
-		opts := runOpts{cwd: projectDir, aiEnvDir: aiEnvDir}
-
-		got := runWith(t, goBin, opts, "active")
-		want := runWith(t, bashBin, opts, "active")
-		diffResult(t, got, want)
+	t.Run("no_profile", func(t *testing.T) {
+		projectDir := t.TempDir()
+		got := runWith(t, goBin, runOpts{cwd: projectDir, aiEnvDir: t.TempDir()}, "which")
+		if got.exitCode != 1 {
+			t.Errorf("exit code = %d, want 1", got.exitCode)
+		}
+		if !strings.Contains(got.stdout, "No caddie profile found") {
+			t.Errorf("stdout %q missing the not-found message", got.stdout)
+		}
 	})
 }
 

@@ -728,18 +728,17 @@ func cmdReset(args []string) {
 func cmdWhich(_ []string) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		die(err.Error())
+	}
+	profilePath := config.FindProfile(cwd)
+	if profilePath == "" {
+		fmt.Printf("%s⚠%s  No caddie profile found for %s\n", ansiYellow, ansiReset, cwd)
 		os.Exit(1)
 	}
-	// Bash `cmd_which` captures resolve_env_from_cwd via $(), which swallows
-	// the "unknown environment" warning from strategy 1. Match that here by
-	// ignoring warnings. `activate` will surface them when it lands.
-	name, _, ok := config.ResolveFromCwd(cwd)
-	if !ok {
-		fmt.Printf("%s⚠%s  No profile found for %s\n", ansiYellow, ansiReset, cwd)
-		os.Exit(1)
-	}
-	fmt.Println(name)
+	patterns := config.ReadList(profilePath, "skills")
+	matched, _ := resolveMatchedWithSummary(patterns)
+	fmt.Println(profilePath)
+	fmt.Printf("  %s%d pattern(s), %d skill(s)%s\n", ansiDim, len(patterns), len(matched), ansiReset)
 }
 
 func cmdShow(args []string) {
