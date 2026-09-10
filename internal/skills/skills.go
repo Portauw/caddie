@@ -206,21 +206,6 @@ func Resolve(patterns []string) ([]string, error) {
 	return out, nil
 }
 
-// ResolveIDs returns sorted skill display IDs (prefix:dirname) for matched
-// skills.
-func ResolveIDs(patterns []string) ([]string, error) {
-	matched, err := matchItems(patterns)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(matched))
-	for _, it := range matched {
-		out = append(out, it.SkillID())
-	}
-	sort.Strings(out)
-	return out, nil
-}
-
 // PatternMatchesIn returns the number of items whose SkillID matches pattern.
 // Caller is expected to share one Scan() result across many patterns.
 func PatternMatchesIn(items []Item, pattern string) int {

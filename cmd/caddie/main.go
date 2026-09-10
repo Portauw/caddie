@@ -978,7 +978,7 @@ func cmdActivate(args []string) {
 		return
 	}
 
-	newFP := skills.ComputeFingerprint(profileDir, matched)
+	newFP := skills.ComputeFingerprint(matched)
 	store := skills.Store()
 	if data, err := os.ReadFile(fingerprintFile); err == nil {
 		old := strings.TrimRight(string(data), "\n")

@@ -9,13 +9,11 @@ import (
 	"strings"
 )
 
-// ComputeFingerprint returns the SHA-256 of the env name and sorted skill
-// dirnames, each terminated by '\n'. Used to short-circuit `caddie activate`
-// when nothing changed since the last run.
-func ComputeFingerprint(envName string, sortedSkills []string) string {
+// ComputeFingerprint returns the SHA-256 of the sorted skill list. The
+// fingerprint file lives inside the profile folder, so the profile needs no
+// separate identity in the hash.
+func ComputeFingerprint(sortedSkills []string) string {
 	var b strings.Builder
-	b.WriteString(envName)
-	b.WriteByte('\n')
 	for _, s := range sortedSkills {
 		b.WriteString(s)
 		b.WriteByte('\n')
