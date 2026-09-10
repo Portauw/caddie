@@ -1001,35 +1001,6 @@ func runScan(opts scanOpts) {
 		fmt.Fprintf(out, "  %sTo use the repo version, remove the local copy:%s\n", ansiDim, ansiReset)
 		fmt.Fprintf(out, "  %s  rm -rf %s/<skill-name> && caddie scan --force%s\n", ansiDim, store, ansiReset)
 	}
-
-	// Orphaned-pattern warnings: any env pattern matching zero store items.
-	envDir := config.EnvDir()
-	envEntries, err := os.ReadDir(envDir)
-	if err != nil {
-		return
-	}
-	scannedItems, _ := skills.Scan()
-	hasWarn := false
-	for _, ef := range envEntries {
-		if ef.IsDir() || !strings.HasSuffix(ef.Name(), ".yaml") {
-			continue
-		}
-		envName := strings.TrimSuffix(ef.Name(), ".yaml")
-		patterns := config.ReadList(filepath.Join(envDir, ef.Name()), "skills")
-		for _, p := range patterns {
-			if p == "" {
-				continue
-			}
-			if skills.PatternMatchesIn(scannedItems, p) == 0 {
-				if !hasWarn {
-					fmt.Fprintln(out)
-					hasWarn = true
-				}
-				fmt.Fprintf(out, "%s⚠%s  Environment %s%s%s: pattern %s\"%s\"%s matches 0 skills — source may have been removed\n",
-					ansiYellow, ansiReset, ansiBold, envName, ansiReset, ansiCyan, p, ansiReset)
-			}
-		}
-	}
 }
 
 // cmdActivate resolves the caddie profile by walking up from cwd to the
@@ -1065,6 +1036,15 @@ func cmdActivate(args []string) {
 	activateSyncRepos(force)
 
 	patterns := config.ReadList(profilePath, "skills")
+
+	if items, err := skills.Scan(); err == nil {
+		for _, p := range patterns {
+			if p != "" && skills.PatternMatchesIn(items, p) == 0 {
+				fmt.Printf("%s⚠%s  Pattern %s\"%s\"%s matches 0 skills, the source may have been removed\n",
+					ansiYellow, ansiReset, ansiCyan, p, ansiReset)
+			}
+		}
+	}
 
 	// Resolve matched skills + per-prefix counts.
 	matched, prefixSummary := resolveMatchedWithSummary(patterns)

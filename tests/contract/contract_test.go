@@ -1411,6 +1411,17 @@ func TestActivateContract(t *testing.T) {
 			t.Errorf("new skill 'bravo' not linked after second activate: %v", err)
 		}
 	})
+
+	t.Run("orphaned_pattern_warning", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"ghost-source:*"})
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
+		}
+		if !strings.Contains(r.stdout, `"ghost-source:*"`) || !strings.Contains(r.stdout, "matches 0 skills") {
+			t.Errorf("expected orphaned-pattern warning, got %q", r.stdout)
+		}
+	})
 }
 
 // makeExportStore populates an AI_ENV_DIR's skill store with the given
