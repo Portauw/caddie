@@ -45,39 +45,6 @@ func (l LogFn) write(format string, a ...any) {
 	}
 }
 
-// SweepAgentDir moves non-symlink dirs under $HOME/.agents/skills/<name>/ into
-// the store when no entry exists there yet.
-func SweepAgentDir(home string, log LogFn) int {
-	agentDir := filepath.Join(home, ".agents", "skills")
-	info, err := os.Stat(agentDir)
-	if err != nil || !info.IsDir() {
-		return 0
-	}
-	entries, err := os.ReadDir(agentDir)
-	if err != nil {
-		return 0
-	}
-	store := Store()
-	swept := 0
-	for _, e := range entries {
-		full := filepath.Join(agentDir, e.Name())
-		li, err := os.Lstat(full)
-		if err != nil || li.Mode()&os.ModeSymlink != 0 || !li.IsDir() {
-			continue
-		}
-		target := filepath.Join(store, e.Name())
-		if _, err := os.Lstat(target); err == nil {
-			continue
-		}
-		if err := os.Rename(full, target); err != nil {
-			continue
-		}
-		log.write("  \033[0;32m+\033[0m swept: %s -> store\n", e.Name())
-		swept++
-	}
-	return swept
-}
-
 // CleanBrokenStoreLinks removes symlinks in the store whose target doesn't
 // exist.
 func CleanBrokenStoreLinks(log LogFn) int {
@@ -172,7 +139,6 @@ func runGit(dir string, timeout time.Duration, args ...string) error {
 	defer cancel()
 	return exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Run()
 }
-
 
 func prefixSkillName(e repos.Entry, name string) string {
 	if !e.UsesPrefix() {

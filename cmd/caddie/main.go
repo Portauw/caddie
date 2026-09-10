@@ -702,107 +702,31 @@ func cmdInit(args []string) {
 	fmt.Printf("  Activate: %scaddie activate%s\n", ansiCyan, ansiReset)
 }
 
-// cmdSetup performs idempotent filesystem setup: config dirs, skill store,
-// backups, migrations, ~/.claude/skills symlink, example env, then runs scan.
+// cmdSetup performs idempotent filesystem setup: config dir, skill store,
+// sources file, then runs scan.
 func cmdSetup(args []string) {
 	fmt.Printf("%sSetting up caddie...%s\n\n", ansiBold, ansiReset)
 
 	home := config.Home()
 	configDir := config.Dir()
-	envDir := config.EnvDir()
 	skillStore := skills.Store()
-	claudeSkills := filepath.Join(home, ".claude", "skills")
-	agentSkills := filepath.Join(home, ".agents", "skills")
 	sourcesFile := repos.File()
 
 	_ = os.MkdirAll(configDir, 0o755)
-	_ = os.MkdirAll(envDir, 0o755)
 	_ = os.MkdirAll(skillStore, 0o755)
 	fmt.Printf("%s✓%s  Config directory: %s\n", ansiGreen, ansiReset, configDir)
-	fmt.Printf("%s✓%s  Environments: %s\n", ansiGreen, ansiReset, envDir)
 	fmt.Printf("%s✓%s  Skill store: %s\n", ansiGreen, ansiReset, skillStore)
 
-	date := time.Now().Format("2006-01-02")
-	for _, d := range []string{claudeSkills, agentSkills} {
-		info, err := os.Stat(d)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		entries, err := os.ReadDir(d)
-		if err != nil || len(entries) == 0 {
-			continue
-		}
-		backup := d + ".bak." + date
-		if _, err := os.Stat(backup); err == nil {
-			fmt.Printf("%sℹ%s  Backup already exists: %s\n", ansiBlue, ansiReset, backup)
-			continue
-		}
-		cmd := exec.Command("cp", "-a", d, backup)
-		if cmd.Run() == nil {
-			fmt.Printf("%s✓%s  Backed up %s to %s\n", ansiGreen, ansiReset, d, backup)
-		}
-	}
-
-	migrated := 0
-	for _, src := range []string{claudeSkills, agentSkills} {
-		info, err := os.Stat(src)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		entries, err := os.ReadDir(src)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			full := filepath.Join(src, e.Name())
-			li, err := os.Lstat(full)
-			if err != nil {
-				continue
-			}
-			if li.Mode()&os.ModeSymlink != 0 {
-				continue
-			}
-			base := e.Name()
-			if !li.IsDir() && strings.HasSuffix(base, ".md") {
-				skillName := strings.TrimSuffix(base, ".md")
-				skillDir := filepath.Join(skillStore, skillName)
-				if _, err := os.Stat(skillDir); err == nil {
-					continue
-				}
-				if err := os.MkdirAll(skillDir, 0o755); err != nil {
-					continue
-				}
-				data, err := os.ReadFile(full)
-				if err != nil {
-					continue
-				}
-				if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), data, 0o644); err != nil {
-					continue
-				}
-				_ = os.Remove(full)
-				fmt.Printf("%sℹ%s  Migrated file: %s -> %s/SKILL.md (from %s)\n", ansiBlue, ansiReset, base, skillName, src)
-				migrated++
-			} else if li.IsDir() {
-				target := filepath.Join(skillStore, base)
-				if _, err := os.Stat(target); err == nil {
-					continue
-				}
-				if err := os.Rename(full, target); err != nil {
-					continue
-				}
-				fmt.Printf("%sℹ%s  Migrated dir: %s (from %s)\n", ansiBlue, ansiReset, base, src)
-				migrated++
+	// Global skill dirs are no longer managed. Remove caddie's own symlink,
+	// but never touch a real directory the user owns.
+	claudeSkills := filepath.Join(home, ".claude", "skills")
+	if li, err := os.Lstat(claudeSkills); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		if target, _ := os.Readlink(claudeSkills); target == "../.agents/skills" {
+			if os.Remove(claudeSkills) == nil {
+				fmt.Printf("%sℹ%s  Removed the managed ~/.claude/skills symlink\n", ansiBlue, ansiReset)
 			}
 		}
 	}
-	if migrated > 0 {
-		fmt.Printf("%s✓%s  Migrated %d items to skill store\n", ansiGreen, ansiReset, migrated)
-	} else {
-		fmt.Printf("%sℹ%s  No bare files/dirs to migrate\n", ansiBlue, ansiReset)
-	}
-
-	ensureClaudeSkillsSymlink(claudeSkills, agentSkills)
-	fmt.Printf("%s✓%s  Set up ~/.claude/skills → ~/.agents/skills\n", ansiGreen, ansiReset)
 
 	if _, err := os.Stat(sourcesFile); os.IsNotExist(err) {
 		if err := os.WriteFile(sourcesFile, []byte("sources:\n"), 0o644); err != nil {
@@ -812,25 +736,6 @@ func cmdSetup(args []string) {
 			ansiBlue, ansiReset, ansiCyan, ansiReset)
 	} else {
 		fmt.Printf("%sℹ%s  Sources file already exists: %s\n", ansiBlue, ansiReset, sourcesFile)
-	}
-
-	if entries, err := os.ReadDir(envDir); err == nil && len(entries) == 0 {
-		example := filepath.Join(envDir, "example.yaml")
-		exampleBody := `name: "Example"
-description: "An example environment -- edit or delete me"
-directory: "~/projects/example"
-
-skills:
-  - "*"
-
-# agents:
-#   claude:
-#     model: "claude-sonnet-4-6"
-#     permission_mode: "plan"
-`
-		_ = os.WriteFile(example, []byte(exampleBody), 0o644)
-		fmt.Printf("%sℹ%s  Created example environment: %scaddie show example%s\n",
-			ansiBlue, ansiReset, ansiCyan, ansiReset)
 	}
 
 	fmt.Println()
@@ -940,15 +845,9 @@ func runScan(opts scanOpts) {
 
 	fmt.Fprintf(out, "%sℹ%s  Scanning skill sources...\n", ansiBlue, ansiReset)
 
-	home := config.Home()
 	var log skills.LogFn
 	if verbose {
 		log = func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
-	}
-
-	swept := skills.SweepAgentDir(home, log)
-	if swept > 0 {
-		fmt.Fprintf(out, "%sℹ%s  Swept %d new skill(s) from agent dirs into store\n", ansiBlue, ansiReset, swept)
 	}
 
 	brokenRemoved := skills.CleanBrokenStoreLinks(log)

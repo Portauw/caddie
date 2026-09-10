@@ -971,6 +971,66 @@ func TestResetContract(t *testing.T) {
 	})
 }
 
+// TestSetupContract: `setup` must create the config dir, the skill store, and
+// sources.yaml, must not touch the global ~/.agents/skills inbox (that was
+// retired), and must leave a user-owned ~/.claude/skills symlink alone.
+func TestSetupContract(t *testing.T) {
+	goBin := buildGoBinary(t)
+
+	t.Run("creates_store_no_global_agents_dir", func(t *testing.T) {
+		aiEnvDir := t.TempDir()
+		home := t.TempDir()
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "setup")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
+		}
+		if info, err := os.Stat(aiEnvDir); err != nil || !info.IsDir() {
+			t.Errorf("config dir not created: %v", err)
+		}
+		if info, err := os.Stat(filepath.Join(aiEnvDir, "skills")); err != nil || !info.IsDir() {
+			t.Errorf("skill store not created: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(aiEnvDir, "sources.yaml")); err != nil {
+			t.Errorf("sources.yaml not created: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(home, ".agents", "skills")); !os.IsNotExist(err) {
+			t.Errorf("~/.agents/skills should not be created by setup, got err=%v", err)
+		}
+	})
+
+	t.Run("leaves_foreign_claude_skills_symlink_alone", func(t *testing.T) {
+		aiEnvDir := t.TempDir()
+		home := t.TempDir()
+		elsewhere := filepath.Join(home, "somewhere-else")
+		if err := os.MkdirAll(elsewhere, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		claudeSkills := filepath.Join(home, ".claude")
+		if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(claudeSkills, "skills")
+		if err := os.Symlink(elsewhere, link); err != nil {
+			t.Fatal(err)
+		}
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "setup")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
+		}
+		li, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("foreign symlink was removed: %v", err)
+		}
+		if li.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s is no longer a symlink", link)
+		}
+		target, err := os.Readlink(link)
+		if err != nil || target != elsewhere {
+			t.Errorf("symlink target changed: got %q, want %q (err=%v)", target, elsewhere, err)
+		}
+	})
+}
+
 // cloneBareInto runs `git clone <bare> <dest>` under a controlled environment.
 // Used by scan tests to stage a checked-out repo without network access.
 func cloneBareInto(t *testing.T, bare, dest string) {
@@ -1172,23 +1232,25 @@ func TestScanContract(t *testing.T) {
 		}
 	})
 
-	t.Run("sweep_from_agent_dir", func(t *testing.T) {
+	t.Run("does_not_sweep_agent_dir", func(t *testing.T) {
+		// The global ~/.agents/skills inbox is no longer swept into the
+		// store — sweeping was removed along with the global skill dirs.
 		aiEnvDir := setupEnvDir(t)
 		home := t.TempDir()
 		agentSkill := filepath.Join(home, ".agents", "skills", "dropped")
 		if err := os.MkdirAll(agentSkill, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		mustWrite(t, filepath.Join(agentSkill, "SKILL.md"), "swept me")
+		mustWrite(t, filepath.Join(agentSkill, "SKILL.md"), "not swept")
 		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "scan")
 		if r.exitCode != 0 {
 			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
 		}
-		if _, err := os.Stat(filepath.Join(aiEnvDir, "skills", "dropped", "SKILL.md")); err != nil {
-			t.Errorf("swept skill missing in store: %v", err)
+		if _, err := os.Stat(filepath.Join(aiEnvDir, "skills", "dropped", "SKILL.md")); !os.IsNotExist(err) {
+			t.Errorf("skill unexpectedly appeared in store: %v", err)
 		}
-		if _, err := os.Stat(agentSkill); !os.IsNotExist(err) {
-			t.Errorf("source dir still present after sweep: %v", err)
+		if _, err := os.Stat(agentSkill); err != nil {
+			t.Errorf("source dir should be left in place, got: %v", err)
 		}
 	})
 
