@@ -538,8 +538,10 @@ func gitClone(url, dir string) error {
 }
 
 // cmdReset cleans managed symlinks in ~/.agents/skills, removes the
-// ~/.claude/skills symlink, cleans project-local skill symlinks for every
-// registered environment, rm -rf's the skill store, and removes state files.
+// ~/.claude/skills symlink, rm -rf's the skill store, and removes state
+// files. It does NOT touch project folders: with no registry, caddie
+// cannot find them, so any symlinks already created there are left
+// dangling until `caddie activate` is rerun in each one.
 func cmdReset(args []string) {
 	force := false
 	if len(args) > 0 && (args[0] == "-f" || args[0] == "--force") {
