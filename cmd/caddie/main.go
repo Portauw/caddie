@@ -272,7 +272,7 @@ func cmdInventory(args []string) {
 		filter = args[0]
 	}
 	if !skills.StoreExists() {
-		die(fmt.Sprintf("Canonical store not found. Run %scaddie init%s first.", ansiCyan, ansiReset))
+		die(fmt.Sprintf("Canonical store not found. Run %scaddie setup%s first.", ansiCyan, ansiReset))
 	}
 
 	fmt.Printf("%sSkill Inventory%s (%s%s%s)\n\n", ansiBold, ansiReset, ansiDim, skills.Store(), ansiReset)
@@ -712,7 +712,9 @@ func cmdInit(args []string) {
 	if err := os.WriteFile(target, []byte(body.String()), 0o644); err != nil {
 		die(err.Error())
 	}
-	ensureProjectGitignore(cwd)
+	if err := ensureProjectGitignore(cwd); err != nil {
+		fmt.Printf("%s⚠%s  Could not update .gitignore: %v\n", ansiYellow, ansiReset, err)
+	}
 
 	fmt.Println()
 	fmt.Printf("%s✓%s  Created %s\n", ansiGreen, ansiReset, target)
@@ -1133,7 +1135,9 @@ func cmdActivate(args []string) {
 	totalAdded, totalRemoved := res.Added, res.Removed
 
 	ensureClaudeSkillsSymlink(filepath.Join(profileDir, ".claude", "skills"), targetAgents)
-	ensureProjectGitignore(profileDir)
+	if err := ensureProjectGitignore(profileDir); err != nil {
+		fmt.Printf("%s⚠%s  Could not update .gitignore: %v\n", ansiYellow, ansiReset, err)
+	}
 
 	_ = os.MkdirAll(filepath.Dir(fingerprintFile), 0o755)
 	if err := os.WriteFile(fingerprintFile, []byte(newFP+"\n"), 0o644); err != nil {
@@ -1255,13 +1259,31 @@ func touch(p string) {
 	_ = os.Chtimes(p, now, now)
 }
 
-// ensureProjectGitignore appends managed entries to <project>/.gitignore
-// (idempotently) when the project has a .git directory.
-func ensureProjectGitignore(projectDir string) {
-	if info, err := os.Stat(filepath.Join(projectDir, ".git")); err != nil || !info.IsDir() {
-		return
+// findRepoRoot walks from dir up to "/" looking for a .git entry, and returns
+// the directory containing it, or "" when dir is not inside a git repository.
+func findRepoRoot(dir string) string {
+	for dir != "/" && dir != "" {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
-	gitignore := filepath.Join(projectDir, ".gitignore")
+	return ""
+}
+
+// ensureProjectGitignore appends managed entries to the repo root's
+// .gitignore (idempotently), walking up from projectDir to find that root.
+// It is a no-op (nil error) when projectDir is not inside a git repository.
+func ensureProjectGitignore(projectDir string) error {
+	root := findRepoRoot(projectDir)
+	if root == "" {
+		return nil
+	}
+	gitignore := filepath.Join(root, ".gitignore")
 	entries := []string{
 		".claude/skills/",
 		".agents/skills/",
@@ -1287,7 +1309,7 @@ func ensureProjectGitignore(projectDir string) {
 		}
 	}
 	if !needsUpdate {
-		return
+		return nil
 	}
 
 	var out strings.Builder
@@ -1304,7 +1326,7 @@ func ensureProjectGitignore(projectDir string) {
 			existing[e] = true
 		}
 	}
-	_ = os.WriteFile(gitignore, []byte(out.String()), 0o644)
+	return os.WriteFile(gitignore, []byte(out.String()), 0o644)
 }
 
 // cmdExport resolves the env's skills (or all skills with --all), then

@@ -527,9 +527,18 @@ func TestInventoryContract(t *testing.T) {
 	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
 	t.Run("no_store", func(t *testing.T) {
+		// Go-only assertion: the frozen bash points at its own "init" (now
+		// caddie's machine-setup command); the Go binary must point at
+		// "caddie setup" instead, since "init" now creates a profile.
 		aiEnvDir := setupEnvDir(t)
 		opts := runOpts{aiEnvDir: aiEnvDir}
-		diffResult(t, runWith(t, goBin, opts, "inventory"), runWith(t, bashBin, opts, "inventory"))
+		got := runWith(t, goBin, opts, "inventory")
+		if got.exitCode != 1 {
+			t.Errorf("exit code = %d, want 1", got.exitCode)
+		}
+		if !strings.Contains(got.stderr, "caddie setup") {
+			t.Errorf("stderr %q missing the caddie setup hint", got.stderr)
+		}
 	})
 
 	t.Run("empty_store", func(t *testing.T) {
@@ -765,6 +774,46 @@ func TestInitContract(t *testing.T) {
 		}
 		if !strings.Contains(got.stderr, "already exists") {
 			t.Errorf("stderr %q missing the refusal", got.stderr)
+		}
+	})
+
+	t.Run("defaults_from_empty_input", func(t *testing.T) {
+		projectDir := realTempDir(t)
+		opts := runOpts{cwd: projectDir, aiEnvDir: t.TempDir(), stdin: "\n\n\n"}
+		got := runWith(t, goBin, opts, "init")
+		if got.exitCode != 0 {
+			t.Fatalf("exit %d, stderr %q", got.exitCode, got.stderr)
+		}
+		data, err := os.ReadFile(filepath.Join(projectDir, ".caddie.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("name: %q\ndescription: \"\"\n\nskills:\n  - \"*\"\n", filepath.Base(projectDir))
+		if string(data) != want {
+			t.Errorf("profile contents\n got: %q\nwant: %q", data, want)
+		}
+	})
+
+	t.Run("gitignore_written_at_repo_root_from_subdir", func(t *testing.T) {
+		repo := realTempDir(t)
+		if out, err := exec.Command("git", "init", repo).CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v\n%s", err, out)
+		}
+		sub := filepath.Join(repo, "sub")
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		opts := runOpts{cwd: sub, aiEnvDir: t.TempDir(), stdin: "\n\n\n"}
+		got := runWith(t, goBin, opts, "init")
+		if got.exitCode != 0 {
+			t.Fatalf("exit %d, stderr %q", got.exitCode, got.stderr)
+		}
+		data, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
+		if err != nil {
+			t.Fatalf("repo root .gitignore not written: %v", err)
+		}
+		if !strings.Contains(string(data), ".caddie.yaml") {
+			t.Errorf(".gitignore at repo root %q missing .caddie.yaml", data)
 		}
 	})
 }
