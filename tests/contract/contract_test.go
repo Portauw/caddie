@@ -672,15 +672,26 @@ func TestHelpContract(t *testing.T) {
 			if r.exitCode != 0 {
 				t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
 			}
-			for _, must := range []string{"USAGE", "SETUP", "GIT REPOS", "ENVIRONMENTS", "caddie repo add"} {
+			for _, must := range []string{
+				"USAGE", "SETUP", "PROFILE", "GIT REPOS", "DISCOVERY", "EXPORT", "FILES",
+				"caddie repo add", "init", "setup", "activate", "which", "edit", "reset",
+				"scan", "inventory", "export",
+			} {
 				if !strings.Contains(r.stdout, must) {
 					t.Errorf("help missing %q:\n%s", must, r.stdout)
 				}
 			}
-			for _, banned := range []string{"source list", "source add", "source remove", "plugin source"} {
+			for _, banned := range []string{
+				"source list", "source add", "source remove", "plugin source",
+				"ENVIRONMENTS", "Create a new", "Clone an", "Delete an",
+				"List all environments",
+			} {
 				if strings.Contains(r.stdout, banned) {
 					t.Errorf("help still mentions removed %q:\n%s", banned, r.stdout)
 				}
+			}
+			if strings.Contains(strings.ToLower(r.stdout), "environment") {
+				t.Errorf("help still mentions \"environment\" in some casing:\n%s", r.stdout)
 			}
 		})
 	}

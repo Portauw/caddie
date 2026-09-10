@@ -336,7 +336,16 @@ func cmdHelp(_ []string) {
 			"  caddie <command> [arguments] [flags]\n" +
 			"\n" +
 			B + "SETUP" + R + "\n" +
-			"  " + C + "init" + R + "                        Initialize: migrate skills, first scan\n" +
+			"  " + C + "init" + R + "                        Create .caddie.yaml in the current folder\n" +
+			"  " + C + "setup" + R + "                       One-time machine setup (config dir, skill\n" +
+			"                              store, sources file, scan)\n" +
+			"\n" +
+			B + "PROFILE" + R + "\n" +
+			"  " + C + "activate" + R + " (use)   [-f]        Resolve the nearest profile, reconcile its skills\n" +
+			"                              (-f: force-pull repos)\n" +
+			"  " + C + "which" + R + "    (active)            Print the resolved profile path\n" +
+			"  " + C + "edit" + R + "                         Open the nearest profile in $EDITOR\n" +
+			"  " + C + "reset" + R + "   [-f]                 Restore a clean state\n" +
 			"\n" +
 			B + "GIT REPOS" + R + "\n" +
 			"  " + C + "repo" + R + " list                    Show registered git repos + status\n" +
@@ -347,24 +356,13 @@ func cmdHelp(_ []string) {
 			"  " + C + "repo" + R + " update [name]           Pull latest changes (all or specific)\n" +
 			"\n" +
 			B + "DISCOVERY" + R + "\n" +
-			"  " + C + "scan" + R + "    [-v]                 Scan repos, sync to skill store\n" +
+			"  " + C + "scan" + R + "    [-v] [-f]            Scan repos, sync to skill store (-f: bypass cache)\n" +
 			"  " + C + "inventory" + R + "                    List all skills with prefix grouping\n" +
 			"\n" +
-			B + "ENVIRONMENTS" + R + "\n" +
-			"  " + C + "create" + R + "  <name>               Create a new environment interactively\n" +
-			"  " + C + "list" + R + "    (ls)                 List all environments\n" +
-			"  " + C + "show" + R + "    <name>               Show config + resolved skills\n" +
-			"  " + C + "edit" + R + "    <name>               Open environment config in $EDITOR\n" +
-			"  " + C + "activate" + R + " [name] [-f]         Resolve skills for cwd (-f: force-pull repos)\n" +
-			"  " + C + "clone" + R + "   <src> <dest>         Clone an environment config\n" +
-			"  " + C + "delete" + R + "  <name>               Delete an environment\n" +
-			"  " + C + "which" + R + "                        Show currently active environment\n" +
-			"  " + C + "reset" + R + "   [-f]                 Remove symlinks, store & re-enable plugins\n" +
-			"\n" +
 			B + "EXPORT" + R + "\n" +
-			"  " + C + "export" + R + "  <env> --to <dir>       Copy resolved skills to local directory\n" +
-			"  " + C + "export" + R + "  <env> --to s3://b/p/   Upload resolved skills to S3\n" +
-			"  " + C + "export" + R + "  --all --to <target>    Export all skills (no env filter)\n" +
+			"  " + C + "export" + R + "  --to <dir>            Copy resolved skills to local directory\n" +
+			"  " + C + "export" + R + "  --to s3://b/p/        Upload resolved skills to S3\n" +
+			"  " + C + "export" + R + "  --all --to <target>   Export all skills (no profile filter)\n" +
 			"  Flags: --clean (remove stale), --dry-run (preview)\n" +
 			"  Env:   AWS_PROFILE, AWS_ENDPOINT_URL (for S3 targets)\n" +
 			"\n" +
@@ -381,14 +379,13 @@ func cmdHelp(_ []string) {
 			"    \"*\"                everything\n" +
 			"\n" +
 			B + "EXAMPLES" + R + "\n" +
-			"  caddie init                              # First-time setup\n" +
-			"  caddie create my-project                 # Create environment\n" +
-			"  caddie activate                          # Auto-detect profile from cwd\n" +
-			"  caddie activate my-project               # Explicit profile activation\n" +
-			"  caddie activate --dry-run                # Preview what would change\n" +
-			"  caddie activate --force                  # Pull all repos now (bypass hourly cache)\n" +
+			"  caddie init                              # Create a profile in this folder\n" +
+			"  caddie setup                              # One-time machine setup\n" +
+			"  caddie activate                           # Resolve nearest profile, sync skills\n" +
+			"  caddie activate --dry-run                 # Preview what would change\n" +
+			"  caddie activate --force                   # Pull all repos now (bypass hourly cache)\n" +
 			"  caddie repo add lenny https://github.com/RefoundAI/lenny-skills  # Add git repo\n" +
-			"  caddie inventory                         # See all available skills\n" +
+			"  caddie inventory                          # See all available skills\n" +
 			"\n" +
 			B + "SHELL INTEGRATION" + R + "\n" +
 			"  Add to ~/.zshrc (or ~/.bashrc):\n" +
@@ -400,17 +397,19 @@ func cmdHelp(_ []string) {
 			B + "PROJECT CONFIG" + R + "\n" +
 			"  Create .caddie.yaml in your project root:\n" +
 			"\n" +
-			"    environment: \"my-project\"\n" +
+			"    name: \"Backend API\"\n" +
+			"    description: \"Python service\"\n" +
 			"\n" +
-			B + "DIRECTORIES" + R + "\n" +
-			"  " + D + "~/.config/caddie/skills/" + R + "            Skill store (source of truth)\n" +
-			"  " + D + "~/.config/caddie/repos/" + R + "             Cloned git repos\n" +
-			"  " + D + "~/.config/caddie/config.yaml" + R + "        Global settings (default_environment)\n" +
-			"  " + D + "<project>/.agents/skills/" + R + "            Project skills (managed symlinks)\n" +
-			"  " + D + "<project>/.claude/skills" + R + "             Symlink to .agents/skills\n" +
-			"  " + D + "<project>/.caddie.yaml" + R + "              Project profile binding\n" +
-			"  " + D + "~/.config/caddie/environments/" + R + "       Environment YAML files\n" +
-			"  " + D + "~/.config/caddie/sources.yaml" + R + "        Repo registry\n",
+			"    skills:\n" +
+			"      - \"superpowers:*\"\n" +
+			"      - \"itp-eng-backend:*\"\n" +
+			"\n" +
+			B + "FILES" + R + "\n" +
+			"  " + D + "<folder>/.caddie.yaml" + R + "                 Profile (source of truth)\n" +
+			"  " + D + "<folder>/.agents/skills/" + R + "              Managed skill symlinks\n" +
+			"  " + D + "<folder>/.claude/skills" + R + "               Symlink to .agents/skills\n" +
+			"  " + D + "~/.config/caddie/sources.yaml" + R + "         Registered skill repos\n" +
+			"  " + D + "~/.config/caddie/skills/" + R + "              Namespaced skill store\n",
 	)
 }
 
