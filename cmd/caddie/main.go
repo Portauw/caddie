@@ -577,6 +577,9 @@ func cmdReset(args []string) {
 	fmt.Printf("  Repo registry (~/.config/caddie/sources.yaml)\n")
 	fmt.Printf("  Folder-local profiles (.caddie.yaml files in your projects)\n")
 	fmt.Println()
+	fmt.Printf("%sNote:%s skill symlinks already created in project folders will\n", ansiBold, ansiReset)
+	fmt.Printf("  break until you run %scaddie activate%s in each one again.\n", ansiCyan, ansiReset)
+	fmt.Println()
 
 	// Prompt unconditionally (don't gate on isTerminal here — echo, not read -rp).
 	if !force {
