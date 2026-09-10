@@ -1213,7 +1213,6 @@ func runScan(opts scanOpts) {
 // fingerprints, and minimally reconciles the target .agents/skills directory.
 // Writes a fingerprint + .gitignore entries for project-local targets.
 func cmdActivate(args []string) {
-	name := ""
 	dryRun := false
 	force := false
 	for _, a := range args {
@@ -1223,110 +1222,29 @@ func cmdActivate(args []string) {
 		case "--force", "-f":
 			force = true
 		default:
-			if strings.HasPrefix(a, "-") {
-				die("Unknown flag: " + a)
-			}
-			name = a
+			die("Unknown argument: " + a)
 		}
 	}
 
 	cwd, _ := os.Getwd()
-
-	// Always probe the project config so it remains a project_dir fallback
-	// even when name is explicit.
-	projectConfig := config.FindProfile(cwd)
-
-	if name == "" {
-		if projectConfig != "" {
-			if ref := config.ReadScalar(projectConfig, "environment"); ref != "" {
-				if config.EnvExists(ref) {
-					name = ref
-				} else {
-					fmt.Printf("%s⚠%s  .caddie.yaml references unknown environment: %s\n",
-						ansiYellow, ansiReset, ref)
-				}
-			}
-		}
-		if name == "" {
-			if n, _, ok := config.ResolveFromCwd(cwd); ok {
-				name = n
-			}
-		}
-		if name == "" {
-			envs := config.ListEnvs()
-			if len(envs) == 0 {
-				die(fmt.Sprintf("No profiles found. Run %scaddie create <name>%s first.", ansiCyan, ansiReset))
-			}
-			base := filepath.Base(cwd)
-			fmt.Printf("%sNo profile for %s%s\n\n", ansiBold, base, ansiReset)
-			fmt.Printf("Pick an environment to use here:\n\n")
-			for i, en := range envs {
-				desc := config.ReadScalar(config.EnvFile(en), "description")
-				fmt.Printf("  %s%d%s) %s%-20s%s %s%s%s\n",
-					ansiCyan, i+1, ansiReset, ansiBold, en, ansiReset, ansiDim, desc, ansiReset)
-			}
-			fmt.Println()
-			if !isTerminal(os.Stdin) {
-				die("Invalid choice.")
-			}
-			fmt.Printf("  Choice [1-%d]: ", len(envs))
-			br := bufio.NewReader(os.Stdin)
-			line, _ := br.ReadString('\n')
-			line = strings.TrimRight(line, "\n")
-			idx := 0
-			_, err := fmt.Sscanf(line, "%d", &idx)
-			if err != nil || idx < 1 || idx > len(envs) {
-				die("Invalid choice.")
-			}
-			name = envs[idx-1]
-			candidate := filepath.Join(cwd, ".caddie.yaml")
-			if err := os.WriteFile(candidate, []byte(fmt.Sprintf("environment: \"%s\"\n", name)), 0o644); err != nil {
-				// Fall back to global activation if we can't persist the choice;
-				// otherwise the next run would prompt again *and* this run would
-				// silently use project-local layout based on a non-existent file.
-				fmt.Printf("%s⚠%s  Could not save .caddie.yaml: %v (using global activation)\n\n", ansiYellow, ansiReset, err)
-			} else {
-				projectConfig = candidate
-				fmt.Printf("%s✓%s  Created .caddie.yaml → %s\n\n", ansiGreen, ansiReset, name)
-			}
-		}
+	profile := config.FindProfile(cwd)
+	if profile == "" {
+		die(fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
+			cwd, ansiCyan, ansiReset))
 	}
 
-	if !config.EnvExists(name) {
-		die(fmt.Sprintf("Environment '%s' not found. Run 'caddie list' to see available environments.", name))
-	}
+	profileDir := filepath.Dir(profile)
+	displayName := config.ReadScalar(profile, "name")
+	label := cmp.Or(displayName, filepath.Base(profileDir))
 
-	file := config.EnvFile(name)
-	displayName := config.ReadScalar(file, "name")
-	directory := config.ReadScalar(file, "directory")
-	directory = config.ExpandTilde(directory)
+	targetAgents := filepath.Join(profileDir, ".agents", "skills")
+	fingerprintFile := filepath.Join(profileDir, ".claude", ".caddie-fingerprint")
 
-	projectDir := ""
-	if directory != "" {
-		projectDir = directory
-	} else if projectConfig != "" {
-		projectDir = filepath.Dir(projectConfig)
-	}
-
-	home := config.Home()
-
-	var targetAgents, fingerprintDir string
-	if projectDir != "" {
-		targetAgents = filepath.Join(projectDir, ".agents", "skills")
-		fingerprintDir = filepath.Join(projectDir, ".claude")
-	} else {
-		targetAgents = filepath.Join(home, ".agents", "skills")
-		fingerprintDir = config.Dir()
-	}
-	fingerprintFile := filepath.Join(fingerprintDir, ".caddie-fingerprint")
-
-	label := cmp.Or(displayName, name)
-	projLabel := cmp.Or(projectDir, "global")
-	fmt.Printf("%s%s%s %s→ %s%s\n", ansiBold, label, ansiReset, ansiDim, projLabel, ansiReset)
+	fmt.Printf("%s%s%s %s→ %s%s\n", ansiBold, label, ansiReset, ansiDim, profileDir, ansiReset)
 
 	activateSyncRepos(force)
 
-	patterns := config.ReadList(file, "skills")
+	patterns := config.ReadList(profile, "skills")
 
 	// Resolve matched skills + per-prefix counts.
 	matched, prefixSummary := resolveMatchedWithSummary(patterns)
@@ -1335,9 +1253,9 @@ func cmdActivate(args []string) {
 	if dryRun {
 		fmt.Println()
 		fmt.Printf("%sDry run — would activate:%s\n\n", ansiYellow, ansiReset)
-		fmt.Printf("  Environment: %s%s%s\n", ansiBold, label, ansiReset)
-		fmt.Printf("  Project dir: %s\n", projLabel)
-		fmt.Printf("  Skills:      %d (%s)\n", skillCount, prefixSummary)
+		fmt.Printf("  Profile: %s%s%s\n", ansiBold, label, ansiReset)
+		fmt.Printf("  Folder:  %s\n", profileDir)
+		fmt.Printf("  Skills:  %d (%s)\n", skillCount, prefixSummary)
 		fmt.Println()
 		fmt.Printf("  %sWould manage:%s\n", ansiDim, ansiReset)
 		fmt.Printf("    %s%s/ (.claude/skills → symlink)%s\n", ansiDim, targetAgents, ansiReset)
@@ -1349,7 +1267,7 @@ func cmdActivate(args []string) {
 		return
 	}
 
-	newFP := skills.ComputeFingerprint(name, matched)
+	newFP := skills.ComputeFingerprint(profileDir, matched)
 	store := skills.Store()
 	if data, err := os.ReadFile(fingerprintFile); err == nil {
 		old := strings.TrimRight(string(data), "\n")
@@ -1368,16 +1286,8 @@ func cmdActivate(args []string) {
 	}
 	totalAdded, totalRemoved := res.Added, res.Removed
 
-	if projectDir != "" {
-		ensureClaudeSkillsSymlink(filepath.Join(projectDir, ".claude", "skills"), targetAgents)
-		// Clear global dirs when using project-local to prevent stale symlinks.
-		globalAgents := filepath.Join(home, ".agents", "skills")
-		_, _ = skills.ReconcileSkillDir(globalAgents, nil, store)
-		ensureClaudeSkillsSymlink(filepath.Join(home, ".claude", "skills"), globalAgents)
-		ensureProjectGitignore(projectDir)
-	} else {
-		ensureClaudeSkillsSymlink(filepath.Join(home, ".claude", "skills"), targetAgents)
-	}
+	ensureClaudeSkillsSymlink(filepath.Join(profileDir, ".claude", "skills"), targetAgents)
+	ensureProjectGitignore(profileDir)
 
 	_ = os.MkdirAll(filepath.Dir(fingerprintFile), 0o755)
 	if err := os.WriteFile(fingerprintFile, []byte(newFP+"\n"), 0o644); err != nil {

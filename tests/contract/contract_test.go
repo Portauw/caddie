@@ -1485,24 +1485,21 @@ func TestScanContract(t *testing.T) {
 // setupActivateFixture creates a ready-to-activate env: caddie dir with a
 // cloned repo + sources.yaml + env YAML binding `directory:` to projectDir.
 // Returns (goBin, aiEnvDir, home, projectDir).
-func setupActivateFixture(t *testing.T, envName, directory string, skillPatterns []string) (aiEnvDir, home, projectDir string) {
+func setupActivateFixture(t *testing.T, profileName string, skillPatterns []string) (aiEnvDir, home, projectDir string) {
 	t.Helper()
 	aiEnvDir = setupEnvDir(t)
 	home = t.TempDir()
-	projectDir = directory
-	if projectDir == "" {
-		projectDir = t.TempDir()
-	}
+	projectDir = t.TempDir()
 	bare := makeBareRepo(t)
 	cloneBareInto(t, bare, filepath.Join(aiEnvDir, "repos", "mine"))
 	mustWrite(t, filepath.Join(aiEnvDir, "sources.yaml"),
 		"repos:\n  - name: \"mine\"\n    url: \""+bare+"\"\n    skills_path: \"skills\"\n")
 
-	body := "name: \"" + envName + "\"\ndirectory: \"" + projectDir + "\"\nskills:\n"
+	body := "name: \"" + profileName + "\"\nskills:\n"
 	for _, p := range skillPatterns {
 		body += "  - \"" + p + "\"\n"
 	}
-	mustWrite(t, filepath.Join(aiEnvDir, "environments", envName+".yaml"), body)
+	mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), body)
 	return aiEnvDir, home, projectDir
 }
 
@@ -1512,9 +1509,9 @@ func setupActivateFixture(t *testing.T, envName, directory string, skillPatterns
 func TestActivateContract(t *testing.T) {
 	goBin := buildGoBinary(t)
 
-	t.Run("explicit_env_first_run", func(t *testing.T) {
-		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
-		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "activate", "proj")
+	t.Run("first_run", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate")
 		if r.exitCode != 0 {
 			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
 		}
@@ -1531,11 +1528,11 @@ func TestActivateContract(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit_env_idempotent_second_run", func(t *testing.T) {
-		aiEnvDir, home, _ := setupActivateFixture(t, "proj", "", []string{"*"})
-		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
-		_ = runWith(t, goBin, opts, "activate", "proj")
-		r := runWith(t, goBin, opts, "activate", "proj")
+	t.Run("idempotent_second_run", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}
+		_ = runWith(t, goBin, opts, "activate")
+		r := runWith(t, goBin, opts, "activate")
 		if r.exitCode != 0 {
 			t.Fatalf("second exit=%d stderr=%q", r.exitCode, r.stderr)
 		}
@@ -1544,27 +1541,35 @@ func TestActivateContract(t *testing.T) {
 		}
 	})
 
-	t.Run("cwd_auto_resolve", func(t *testing.T) {
-		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
-		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "environment: \"proj\"\n")
-		mustWrite(t, filepath.Join(projectDir, ".ai-env.yaml"), "environment: \"proj\"\n")
-		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate")
+	t.Run("walk_up_from_subdir", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		nested := filepath.Join(projectDir, "deep", "deeper")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: nested}, "activate")
 		if r.exitCode != 0 {
 			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
 		}
 		if _, err := os.Lstat(filepath.Join(projectDir, ".agents", "skills", "alpha")); err != nil {
-			t.Errorf("expected skill symlink after auto-resolve: %v", err)
+			t.Errorf("expected skill symlink in project dir after walk-up resolve: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(nested, ".agents")); !os.IsNotExist(err) {
+			t.Errorf(".agents should NOT be created in the nested cwd: err=%v", err)
 		}
 	})
 
 	t.Run("dry_run", func(t *testing.T) {
-		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
-		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "activate", "proj", "--dry-run")
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate", "--dry-run")
 		if r.exitCode != 0 {
 			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
 		}
 		if !strings.Contains(r.stdout, "Dry run") {
 			t.Errorf("expected 'Dry run' in stdout, got %q", r.stdout)
+		}
+		if !strings.Contains(r.stdout, "Profile:") || !strings.Contains(r.stdout, "Folder:") {
+			t.Errorf("expected 'Profile:' and 'Folder:' labels, got %q", r.stdout)
 		}
 		// No mutations allowed.
 		if _, err := os.Stat(filepath.Join(projectDir, ".agents", "skills")); !os.IsNotExist(err) {
@@ -1575,38 +1580,39 @@ func TestActivateContract(t *testing.T) {
 		}
 	})
 
-	t.Run("no_env_found", func(t *testing.T) {
+	t.Run("no_profile_found", func(t *testing.T) {
 		aiEnvDir := setupEnvDir(t)
 		home := t.TempDir()
 		cwd := t.TempDir()
-		// Non-terminal stdin + no envs at all → die with "No profiles found"
-		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: cwd, stdin: "\n"}, "activate")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: cwd}, "activate")
 		if r.exitCode == 0 {
 			t.Errorf("expected non-zero exit, got stdout=%q", r.stdout)
 		}
+		if !strings.Contains(r.stdout, "No caddie profile found") && !strings.Contains(r.stderr, "No caddie profile found") {
+			t.Errorf("expected 'No caddie profile found', got stdout=%q stderr=%q", r.stdout, r.stderr)
+		}
 	})
 
-	t.Run("unknown_env_name", func(t *testing.T) {
-		aiEnvDir := setupEnvDir(t)
-		home := t.TempDir()
-		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "activate", "ghost")
+	t.Run("positional_arg_rejected", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate", "proj")
 		if r.exitCode == 0 {
-			t.Errorf("expected non-zero exit for unknown env")
+			t.Errorf("expected non-zero exit for positional argument")
 		}
-		if !strings.Contains(r.stderr, "ghost") && !strings.Contains(r.stdout, "ghost") {
-			t.Errorf("expected error mentioning 'ghost', got stderr=%q stdout=%q", r.stderr, r.stdout)
+		if !strings.Contains(r.stderr, "Unknown argument") && !strings.Contains(r.stdout, "Unknown argument") {
+			t.Errorf("expected 'Unknown argument', got stderr=%q stdout=%q", r.stderr, r.stdout)
 		}
 	})
 
 	t.Run("gitignore_appended_idempotent", func(t *testing.T) {
-		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
 		// Init a real .git dir in project.
 		if err := os.MkdirAll(filepath.Join(projectDir, ".git"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
-		_ = runWith(t, goBin, opts, "activate", "proj")
-		_ = runWith(t, goBin, opts, "activate", "proj")
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}
+		_ = runWith(t, goBin, opts, "activate")
+		_ = runWith(t, goBin, opts, "activate")
 		body, err := os.ReadFile(filepath.Join(projectDir, ".gitignore"))
 		if err != nil {
 			t.Fatalf("gitignore missing: %v", err)
@@ -1620,8 +1626,8 @@ func TestActivateContract(t *testing.T) {
 	})
 
 	t.Run("no_sources_manifest", func(t *testing.T) {
-		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
-		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "activate", "proj")
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate")
 		if r.exitCode != 0 {
 			t.Fatalf("exit=%d", r.exitCode)
 		}
@@ -1631,9 +1637,9 @@ func TestActivateContract(t *testing.T) {
 	})
 
 	t.Run("fingerprint_invalidated_by_skill_change", func(t *testing.T) {
-		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", "", []string{"*"})
-		opts := runOpts{aiEnvDir: aiEnvDir, home: home}
-		r1 := runWith(t, goBin, opts, "activate", "proj")
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}
+		r1 := runWith(t, goBin, opts, "activate")
 		if r1.exitCode != 0 {
 			t.Fatalf("first activate exit=%d stderr=%q", r1.exitCode, r1.stderr)
 		}
@@ -1646,7 +1652,7 @@ func TestActivateContract(t *testing.T) {
 		// Bust scan cache so new skill is considered.
 		_ = os.Remove(filepath.Join(aiEnvDir, ".last-scan"))
 
-		r2 := runWith(t, goBin, opts, "activate", "proj")
+		r2 := runWith(t, goBin, opts, "activate")
 		if r2.exitCode != 0 {
 			t.Fatalf("second activate exit=%d stderr=%q", r2.exitCode, r2.stderr)
 		}
