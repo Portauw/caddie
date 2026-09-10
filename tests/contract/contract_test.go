@@ -159,19 +159,20 @@ func TestWhichContract(t *testing.T) {
 	goBin := buildGoBinary(t)
 
 	t.Run("profile_in_cwd", func(t *testing.T) {
-		projectDir := t.TempDir()
-		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "skills:\n  - \"*\"\n")
+		projectDir := realTempDir(t)
+		profilePath := filepath.Join(projectDir, ".caddie.yaml")
+		mustWrite(t, profilePath, "skills:\n  - \"*\"\n")
 		got := runWith(t, goBin, runOpts{cwd: projectDir, aiEnvDir: t.TempDir()}, "which")
 		if got.exitCode != 0 {
 			t.Fatalf("exit %d, stderr %q", got.exitCode, got.stderr)
 		}
-		if !strings.Contains(got.stdout, ".caddie.yaml") {
-			t.Errorf("stdout %q does not name the profile file", got.stdout)
+		if strings.TrimSpace(got.stdout) != profilePath {
+			t.Errorf("stdout = %q, want exactly %q", got.stdout, profilePath)
 		}
 	})
 
 	t.Run("walk_up_from_subdir", func(t *testing.T) {
-		projectDir := t.TempDir()
+		projectDir := realTempDir(t)
 		profilePath := filepath.Join(projectDir, ".caddie.yaml")
 		mustWrite(t, profilePath, "skills:\n  - \"*\"\n")
 		nested := filepath.Join(projectDir, "deep", "deeper")
@@ -182,8 +183,8 @@ func TestWhichContract(t *testing.T) {
 		if got.exitCode != 0 {
 			t.Fatalf("exit %d, stderr %q", got.exitCode, got.stderr)
 		}
-		if !strings.Contains(got.stdout, profilePath) {
-			t.Errorf("stdout %q does not name the ancestor's profile %q", got.stdout, profilePath)
+		if strings.TrimSpace(got.stdout) != profilePath {
+			t.Errorf("stdout = %q, want exactly the ancestor's profile %q", got.stdout, profilePath)
 		}
 	})
 
@@ -195,6 +196,9 @@ func TestWhichContract(t *testing.T) {
 		}
 		if !strings.Contains(got.stdout, "No caddie profile found") {
 			t.Errorf("stdout %q missing the not-found message", got.stdout)
+		}
+		if !strings.Contains(got.stdout, "caddie init") {
+			t.Errorf("stdout %q missing the caddie init hint", got.stdout)
 		}
 	})
 }
@@ -208,6 +212,20 @@ func setupEnvDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// realTempDir returns t.TempDir() with symlinks resolved. On darwin, t.TempDir()
+// lives under /var, which is itself a symlink to /private/var; a child process's
+// os.Getwd() reports the resolved /private/var path, so exact-match assertions
+// against a subprocess's stdout must compare against the resolved form.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return real
 }
 
 func mustWrite(t *testing.T, path, content string) {

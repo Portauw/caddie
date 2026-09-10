@@ -732,13 +732,11 @@ func cmdWhich(_ []string) {
 	}
 	profilePath := config.FindProfile(cwd)
 	if profilePath == "" {
-		fmt.Printf("%s⚠%s  No caddie profile found for %s\n", ansiYellow, ansiReset, cwd)
+		fmt.Printf("%s⚠%s  No caddie profile found for %s\n   Run %scaddie init%s to create one.\n",
+			ansiYellow, ansiReset, cwd, ansiCyan, ansiReset)
 		os.Exit(1)
 	}
-	patterns := config.ReadList(profilePath, "skills")
-	matched, _ := resolveMatchedWithSummary(patterns)
 	fmt.Println(profilePath)
-	fmt.Printf("  %s%d pattern(s), %d skill(s)%s\n", ansiDim, len(patterns), len(matched), ansiReset)
 }
 
 func cmdShow(args []string) {
@@ -1226,7 +1224,10 @@ func cmdActivate(args []string) {
 		}
 	}
 
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		die(err.Error())
+	}
 	profilePath := config.FindProfile(cwd)
 	if profilePath == "" {
 		die(fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
