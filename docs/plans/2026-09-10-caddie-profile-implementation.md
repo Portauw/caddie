@@ -1123,6 +1123,11 @@ profile, something above `/tmp` still holds a `.caddie.yaml`.
   branch is not merged until all 16 tasks land, so no user meets the
   intermediate state. Revisit only if this branch ever needs to ship partially.
 - **`~/.caddie.yaml` is deleted, not converted.** See Task 16 step 4.
+- **`inventory` is no longer a pure parity test.** Task 5 changed
+  `cmdInventory`'s missing-store hint from `caddie init` to `caddie setup`,
+  which the frozen bash can never match. Its `no_store` subtest was converted
+  to a Go-only assertion; the other four keep byte-diff parity. The parity
+  survivors are therefore `version`, `repo *`, and four fifths of `inventory`.
 - **No removal stubs for the deleted commands.** `caddie list`, `show`, `delete`
   and `clone` fall through to the generic unknown-command error. The `cmdSource`
   stub is an existing precedent for the opposite choice, and a reviewer argued
