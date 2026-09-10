@@ -572,11 +572,10 @@ func cmdReset(args []string) {
 	}
 	fmt.Printf("  %d item(s) in skill store (~/.config/caddie/skills/)\n", storeCount)
 	fmt.Printf("  State files (.last-scan, .last-pull)\n")
-	fmt.Printf("  Project-local skill symlinks (for all environments with directory: set)\n")
 	fmt.Println()
 	fmt.Printf("%sWill keep:%s\n", ansiBold, ansiReset)
-	fmt.Printf("  Environment configs (~/.config/caddie/environments/)\n")
 	fmt.Printf("  Repo registry (~/.config/caddie/sources.yaml)\n")
+	fmt.Printf("  Folder-local profiles (.caddie.yaml files in your projects)\n")
 	fmt.Println()
 
 	// Prompt unconditionally (don't gate on isTerminal here — echo, not read -rp).
@@ -603,38 +602,6 @@ func cmdReset(args []string) {
 		}
 	}
 
-	// Clean project-local skill dirs for every environment with `directory:`.
-	projectCleaned := 0
-	envDir := config.EnvDir()
-	if entries, err := os.ReadDir(envDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
-				continue
-			}
-			envYAML := filepath.Join(envDir, e.Name())
-			ed := config.ReadScalar(envYAML, "directory")
-			if ed == "" {
-				continue
-			}
-			ed = config.ExpandTilde(ed)
-			pdir := filepath.Join(ed, ".agents", "skills")
-			skills.EachSymlink(pdir, func(_, full string) {
-				if os.Remove(full) == nil {
-					projectCleaned++
-				}
-			})
-			// Remove .claude/skills symlink + fingerprint.
-			claudeLink := filepath.Join(ed, ".claude", "skills")
-			if li, err := os.Lstat(claudeLink); err == nil && li.Mode()&os.ModeSymlink != 0 {
-				_ = os.Remove(claudeLink)
-			}
-			_ = os.Remove(filepath.Join(ed, ".claude", ".caddie-fingerprint"))
-		}
-	}
-	if projectCleaned > 0 {
-		fmt.Printf("%sℹ%s  Cleaned %d project-local symlink(s)\n", ansiBlue, ansiReset, projectCleaned)
-	}
-
 	if info, err := os.Stat(skillStore); err == nil && info.IsDir() {
 		_ = os.RemoveAll(skillStore)
 		fmt.Printf("%sℹ%s  Removed skill store\n", ansiBlue, ansiReset)
@@ -645,7 +612,7 @@ func cmdReset(args []string) {
 	fmt.Printf("%sℹ%s  Removed state files\n", ansiBlue, ansiReset)
 
 	fmt.Println()
-	fmt.Printf("%s✓%s  Reset complete. To rebuild, run: %scaddie scan && caddie activate <env>%s\n",
+	fmt.Printf("%s✓%s  Reset complete. To rebuild, run: %scaddie scan && caddie activate%s\n",
 		ansiGreen, ansiReset, ansiCyan, ansiReset)
 }
 
