@@ -269,38 +269,69 @@ func TestSourceRejected(t *testing.T) {
 	}
 }
 
-// TestEditContract: edit invokes $EDITOR on the env file and prints "Updated: <name>".
-// Uses EDITOR=true (no-op) so the test doesn't hang.
+// TestEditContract: edit opens the nearest .caddie.yaml in $EDITOR and prints
+// "Updated: <path>". Uses EDITOR=true (no-op) so the test doesn't hang. The
+// frozen bash resolves named environments and can never match this behavior,
+// so these assertions are Go-only.
 func TestEditContract(t *testing.T) {
 	goBin := buildGoBinary(t)
-	bashBin := filepath.Join(repoRoot(t), "ai-env-frozen")
 
-	t.Run("success", func(t *testing.T) {
-		for _, bin := range []string{goBin, bashBin} {
-			aiEnvDir := setupEnvDir(t)
-			envFile := filepath.Join(aiEnvDir, "environments", "myenv.yaml")
-			mustWrite(t, envFile, "skills:\n  - \"*\"\n")
-			opts := runOpts{aiEnvDir: aiEnvDir, env: []string{"EDITOR=true"}}
-			r := runWith(t, bin, opts, "edit", "myenv")
-			if r.exitCode != 0 {
-				t.Fatalf("%s: exit=%d stderr=%q", bin, r.exitCode, r.stderr)
-			}
-			if _, err := os.Stat(envFile); err != nil {
-				t.Errorf("%s: env file gone after edit: %v", bin, err)
-			}
+	t.Run("opens_nearest_profile", func(t *testing.T) {
+		projectDir := realTempDir(t)
+		profilePath := filepath.Join(projectDir, ".caddie.yaml")
+		mustWrite(t, profilePath, "skills:\n  - \"*\"\n")
+		opts := runOpts{cwd: projectDir, aiEnvDir: t.TempDir(), env: []string{"EDITOR=true"}}
+		r := runWith(t, goBin, opts, "edit")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if _, err := os.Stat(profilePath); err != nil {
+			t.Errorf("profile gone after edit: %v", err)
+		}
+		if !strings.Contains(r.stdout, profilePath) {
+			t.Errorf("stdout %q missing profile path %q", r.stdout, profilePath)
 		}
 	})
 
-	t.Run("not_found", func(t *testing.T) {
-		aiEnvDir := setupEnvDir(t)
-		opts := runOpts{aiEnvDir: aiEnvDir, env: []string{"EDITOR=true"}}
-		diffResult(t, runWith(t, goBin, opts, "edit", "ghost"), runWith(t, bashBin, opts, "edit", "ghost"))
+	t.Run("walk_up_from_subdir", func(t *testing.T) {
+		projectDir := realTempDir(t)
+		profilePath := filepath.Join(projectDir, ".caddie.yaml")
+		mustWrite(t, profilePath, "skills:\n  - \"*\"\n")
+		nested := filepath.Join(projectDir, "deep", "deeper")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		opts := runOpts{cwd: nested, aiEnvDir: t.TempDir(), env: []string{"EDITOR=true"}}
+		r := runWith(t, goBin, opts, "edit")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if !strings.Contains(r.stdout, profilePath) {
+			t.Errorf("stdout %q missing the ancestor's profile path %q", r.stdout, profilePath)
+		}
 	})
 
-	t.Run("no_arg", func(t *testing.T) {
-		aiEnvDir := setupEnvDir(t)
-		opts := runOpts{aiEnvDir: aiEnvDir, env: []string{"EDITOR=true"}}
-		diffResult(t, runWith(t, goBin, opts, "edit"), runWith(t, bashBin, opts, "edit"))
+	t.Run("rejects_argument", func(t *testing.T) {
+		opts := runOpts{aiEnvDir: t.TempDir(), env: []string{"EDITOR=true"}}
+		r := runWith(t, goBin, opts, "edit", "myenv")
+		if r.exitCode != 1 {
+			t.Errorf("exit code = %d, want 1", r.exitCode)
+		}
+		if !strings.Contains(r.stderr, "Usage") {
+			t.Errorf("stderr %q missing Usage message", r.stderr)
+		}
+	})
+
+	t.Run("no_profile", func(t *testing.T) {
+		projectDir := t.TempDir()
+		opts := runOpts{cwd: projectDir, aiEnvDir: t.TempDir(), env: []string{"EDITOR=true"}}
+		r := runWith(t, goBin, opts, "edit")
+		if r.exitCode != 1 {
+			t.Errorf("exit code = %d, want 1", r.exitCode)
+		}
+		if !strings.Contains(r.stderr, "No caddie profile found") {
+			t.Errorf("stderr %q missing the not-found message", r.stderr)
+		}
 	})
 }
 

@@ -96,23 +96,27 @@ func cmdSource(_ []string) {
 }
 
 func cmdEdit(args []string) {
-	if len(args) == 0 || args[0] == "" {
-		die("Usage: caddie edit <name>")
+	if len(args) > 0 {
+		die("Usage: caddie edit  (opens the nearest .caddie.yaml)")
 	}
-	name := args[0]
-	if !config.EnvExists(name) {
-		die(fmt.Sprintf("Environment '%s' not found.", name))
+	cwd, err := os.Getwd()
+	if err != nil {
+		die(err.Error())
 	}
-	file := config.EnvFile(name)
+	profilePath := config.FindProfile(cwd)
+	if profilePath == "" {
+		die(fmt.Sprintf("No caddie profile found for %s\n   Run %scaddie init%s to create one.",
+			cwd, ansiCyan, ansiReset))
+	}
 
 	editor := cmp.Or(os.Getenv("EDITOR"), "vim")
 	// `sh -c` preserves $EDITOR's word-splitting (e.g. "code --wait").
-	cmd := exec.Command("sh", "-c", editor+` "$0"`, file)
+	cmd := exec.Command("sh", "-c", editor+` "$0"`, profilePath)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	_ = cmd.Run()
-	fmt.Printf("%s✓%s  Updated: %s\n", ansiGreen, ansiReset, name)
+	fmt.Printf("%s✓%s  Updated: %s\n", ansiGreen, ansiReset, profilePath)
 }
 
 func cmdRepo(args []string) {
