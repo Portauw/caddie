@@ -985,6 +985,16 @@ git commit -m "refactor(config): rename AI_ENV_DIR to CADDIE_DIR"
 - Modify: `cmd/caddie/main.go:406` (`cmdHelp`)
 - Modify: `tests/contract/contract_test.go:799` (`TestHelpContract`, already Go-only)
 
+**Added during execution: settle argument-rejection policy.**
+A mid-point integration review found the command surface inconsistent.
+`activate`, `export`, `edit` and `init` reject unknown arguments and flags;
+`setup`, `reset` and `scan` silently ignore them (`cmdSetup` never reads `args`
+at all, `cmdReset` only inspects `args[0]`, `cmdScan`'s flag switch has no
+default branch). That inconsistency predates the refactor but is now visible,
+since the four hardened commands sit right next to the loose ones. Pick one
+policy and apply it across the surface here, in one sweep, rather than
+piecemeal in earlier tasks.
+
 **Step 1: Rewrite the text**
 
 The command list must match the new surface exactly: `init`, `setup`, `edit`, `which`, `activate`, `scan`, `export`, `repo`, `inventory`, `reset`, `help`, `--version`. Remove `create`, `list`, `delete`, `clone`, `show`.
