@@ -159,6 +159,22 @@ The heart of the change. `cmdActivate` currently holds the picker, the `EnvExist
 
 **Files:**
 - Modify: `cmd/caddie/main.go:1216` (`cmdActivate`)
+- Modify: `tests/contract/contract_test.go:1512` (`TestActivateContract`) and `setupActivateFixture`
+
+**Correction added during execution:** the original plan omitted the contract
+tests here. `TestActivateContract` has nine subtests and its
+`setupActivateFixture` writes an environment YAML with a `directory:` field,
+so this task leaves the suite red unless the fixture and subtests are rewritten
+in the same commit. `setupActivateFixture` must instead write `.caddie.yaml`
+into the project dir. Subtest mapping: `explicit_env_first_run` becomes a
+cwd-based `first_run`; `explicit_env_idempotent_second_run` drops the
+positional argument; `cwd_auto_resolve` becomes `walk_up_from_subdir` and
+asserts resolution from a nested folder; `unknown_env_name` is replaced by
+`positional_arg_rejected`; `no_env_found` becomes `no_profile_found` asserting
+exit 1 and the not-found message; `dry_run`, `gitignore_appended_idempotent`,
+`no_sources_manifest` and `fingerprint_invalidated_by_skill_change` keep their
+coverage but resolve from cwd. The legacy `.ai-env.yaml` dual-writes in these
+fixtures exist only for the bash oracle and can go.
 
 **Step 1: Replace the resolution block**
 
