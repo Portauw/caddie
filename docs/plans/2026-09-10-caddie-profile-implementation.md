@@ -850,11 +850,16 @@ git commit -m "feat: stop managing global skill directories"
 
 ---
 
-### Task 12: drop the fingerprint's name parameter
+### Task 12: drop the fingerprint's name parameter, prune dead skills code
 
 **Files:**
 - Modify: `internal/skills/reconcile.go:15` (`ComputeFingerprint`)
 - Modify: `cmd/caddie/main.go` (the one call site in `cmdActivate`)
+- Modify: `internal/skills/skills.go` (delete `ResolveIDs`)
+
+**Added during execution:** Task 4 deleted `cmdShow`, which was the only caller
+of `skills.ResolveIDs`. Confirm it still has zero callers, then delete it. Note
+that `skills.StoreExists` is NOT dead: `cmdInventory` still calls it.
 
 **Step 1: Change the signature**
 
