@@ -1124,17 +1124,18 @@ cd ~/Dev/skills && caddie activate --dry-run
 
 Expected: each prints its own profile name and a plausible skill count. The two folders that shared `skills` now hold independent copies, which is the accepted trade-off.
 
-**Step 4: Run setup once to clear the managed symlink**
+**Step 4: Remove the legacy symlink (DONE)**
 
 ```bash
-caddie setup
+rm ~/.claude/skills
 ```
 
-Expected: `Removed the managed ~/.claude/skills symlink`. Task 11 puts that
-one-time cleanup in `setup`, and nothing else triggers it, so an existing
-machine keeps the stale symlink until `setup` is run. It points at an empty
-directory, so this is tidiness rather than repair, but it is the step that
-completes the migration on this machine.
+Already performed on this machine. `~/.claude/skills` was a symlink to
+`../.agents/skills`, pointing at an empty directory. `~/.agents/skills` and
+`~/.agents/skills.backup` were deliberately left alone.
+
+Originally this step ran `caddie setup`, which used to perform the removal
+itself. That code was removed: see the decision below.
 
 **Step 5: Remove the registry and the home profile**
 
@@ -1185,7 +1186,17 @@ profile, something above `/tmp` still holds a `.caddie.yaml`.
   which the frozen bash can never match. Its `no_store` subtest was converted
   to a Go-only assertion; the other four keep byte-diff parity. The parity
   survivors are therefore `version`, `repo *`, and four fifths of `inventory`.
-- **The one-time `~/.claude/skills` cleanup stays in `setup`.** A reviewer
+- **REVERSED: the one-time `~/.claude/skills` cleanup was removed from
+  `setup` entirely.** The guard was tight and behaviourally proven, but the
+  delete can never fire for a first-time user, whose `~/.claude/skills` is
+  absent, a real directory, or a symlink pointing elsewhere. So it was dead
+  code in the command new users run first, and the only line in `setup` that
+  removed anything, for a purely cosmetic benefit: the symlink points at an
+  empty directory and nothing breaks if it stays. `cmdReset` already removes
+  it behind a confirmation prompt, which is the right home for a destructive
+  action. The symlink on this machine was removed by hand instead. Superseded
+  reasoning follows.
+- **Superseded: the one-time `~/.claude/skills` cleanup stays in `setup`.** A reviewer
   argued for moving it into `runScan`, since nothing prompts an existing user
   to re-run `setup` and `runScan` executes on every `activate`. Declined: the
   stale symlink points at an empty directory, so leaving it is cosmetic, and
