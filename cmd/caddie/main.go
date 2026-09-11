@@ -713,9 +713,7 @@ func cmdInit(args []string) {
 }
 
 // cmdSetup performs idempotent filesystem setup: config dir, skill store,
-// sources file, then runs scan. It also removes caddie's own managed
-// ~/.claude/skills symlink (the last leftover of the retired global skill
-// dirs) if one is still present.
+// sources file, then runs scan.
 func cmdSetup(args []string) {
 	for _, a := range args {
 		if strings.HasPrefix(a, "-") {
@@ -726,7 +724,6 @@ func cmdSetup(args []string) {
 
 	fmt.Printf("%sSetting up caddie...%s\n\n", ansiBold, ansiReset)
 
-	home := config.Home()
 	configDir := config.Dir()
 	skillStore := skills.Store()
 	sourcesFile := repos.File()
@@ -735,17 +732,6 @@ func cmdSetup(args []string) {
 	_ = os.MkdirAll(skillStore, 0o755)
 	fmt.Printf("%s✓%s  Config directory: %s\n", ansiGreen, ansiReset, configDir)
 	fmt.Printf("%s✓%s  Skill store: %s\n", ansiGreen, ansiReset, skillStore)
-
-	// Global skill dirs are no longer managed. Remove caddie's own symlink,
-	// but never touch a real directory the user owns.
-	claudeSkills := filepath.Join(home, ".claude", "skills")
-	if li, err := os.Lstat(claudeSkills); err == nil && li.Mode()&os.ModeSymlink != 0 {
-		if target, _ := os.Readlink(claudeSkills); target == "../.agents/skills" {
-			if os.Remove(claudeSkills) == nil {
-				fmt.Printf("%sℹ%s  Removed the managed ~/.claude/skills symlink\n", ansiBlue, ansiReset)
-			}
-		}
-	}
 
 	if _, err := os.Stat(sourcesFile); os.IsNotExist(err) {
 		if err := os.WriteFile(sourcesFile, []byte("sources:\n"), 0o644); err != nil {

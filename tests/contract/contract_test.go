@@ -990,7 +990,8 @@ func TestResetContract(t *testing.T) {
 
 // TestSetupContract: `setup` must create the config dir, the skill store, and
 // sources.yaml, must not touch the global ~/.agents/skills inbox (that was
-// retired), and must leave a user-owned ~/.claude/skills symlink alone.
+// retired), and must leave any ~/.claude/skills symlink alone, including the
+// one it used to manage itself.
 func TestSetupContract(t *testing.T) {
 	goBin := buildGoBinary(t)
 
@@ -1015,19 +1016,17 @@ func TestSetupContract(t *testing.T) {
 		}
 	})
 
-	t.Run("leaves_foreign_claude_skills_symlink_alone", func(t *testing.T) {
+	t.Run("leaves_claude_skills_symlink_alone", func(t *testing.T) {
 		aiEnvDir := t.TempDir()
 		home := t.TempDir()
-		elsewhere := filepath.Join(home, "somewhere-else")
-		if err := os.MkdirAll(elsewhere, 0o755); err != nil {
-			t.Fatal(err)
-		}
 		claudeSkills := filepath.Join(home, ".claude")
 		if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		link := filepath.Join(claudeSkills, "skills")
-		if err := os.Symlink(elsewhere, link); err != nil {
+		// This is the exact form setup used to delete: a symlink pointing at
+		// the retired ../.agents/skills inbox. It must now survive untouched.
+		if err := os.Symlink("../.agents/skills", link); err != nil {
 			t.Fatal(err)
 		}
 		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "setup")
@@ -1036,34 +1035,14 @@ func TestSetupContract(t *testing.T) {
 		}
 		li, err := os.Lstat(link)
 		if err != nil {
-			t.Fatalf("foreign symlink was removed: %v", err)
+			t.Fatalf("symlink was removed: %v", err)
 		}
 		if li.Mode()&os.ModeSymlink == 0 {
 			t.Fatalf("%s is no longer a symlink", link)
 		}
 		target, err := os.Readlink(link)
-		if err != nil || target != elsewhere {
-			t.Errorf("symlink target changed: got %q, want %q (err=%v)", target, elsewhere, err)
-		}
-	})
-
-	t.Run("removes_own_managed_claude_skills_symlink", func(t *testing.T) {
-		aiEnvDir := t.TempDir()
-		home := t.TempDir()
-		claudeSkills := filepath.Join(home, ".claude")
-		if err := os.MkdirAll(claudeSkills, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		link := filepath.Join(claudeSkills, "skills")
-		if err := os.Symlink("../.agents/skills", link); err != nil {
-			t.Fatal(err)
-		}
-		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home}, "setup")
-		if r.exitCode != 0 {
-			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
-		}
-		if _, err := os.Lstat(link); !os.IsNotExist(err) {
-			t.Errorf("managed ~/.claude/skills symlink not removed: err=%v", err)
+		if err != nil || target != "../.agents/skills" {
+			t.Errorf("symlink target changed: got %q, want %q (err=%v)", target, "../.agents/skills", err)
 		}
 	})
 
