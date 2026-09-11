@@ -1163,7 +1163,6 @@ func ensureProjectGitignore(projectDir string) error {
 	entries := []string{
 		".claude/skills/",
 		".agents/skills/",
-		".agents/SOURCES.md",
 		".claude/.caddie-fingerprint",
 		".caddie.yaml",
 	}
