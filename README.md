@@ -37,8 +37,7 @@ There is no central profile registry and no directory-matching lookup. If two fo
 
 1. Creates `~/.config/caddie/` and the skill store directory
 2. Creates `~/.config/caddie/sources.yaml` if it does not already exist
-3. Removes caddie's own managed `~/.claude/skills` symlink if one is left over from an older global setup
-4. Runs `caddie scan`
+3. Runs `caddie scan`
 
 Run it once per machine. After that, register git repos with `caddie repo add <name> <url>` and run `caddie scan --force`.
 
@@ -77,7 +76,9 @@ caddie activate --dry-run   # preview what would happen
 caddie activate --force     # force-pull all repos now (bypass the hourly cache)
 ```
 
-`activate` auto-pulls registered repos at most once per hour; pass `--force` to pull immediately. Stale store symlinks (e.g. left over from a config-dir rename) are detected on every activate and silently re-pointed at the current store.
+`activate` auto-pulls registered repos at most once per hour; pass `--force` to pull immediately.
+
+Every activate also checks the folder's `.agents/skills/` for drift. Symlinks pointing at the wrong place (e.g. left over from a config-dir rename) are re-pointed at the current store, and symlinks the profile no longer matches are removed, reported as `-N removed`. Real directories are never touched, so a hand-placed skill dropped into `.agents/skills/` survives.
 
 ### 5. Reset
 ```bash
