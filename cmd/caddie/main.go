@@ -1107,23 +1107,43 @@ func activateSyncRepos(force bool) {
 	runScan(scanOpts{force: force, skipFetch: pulled, out: io.Discard})
 }
 
-// symlinksHealthy verifies every expected symlink under targetDir points at
-// the matching entry inside store. Used to invalidate a stale fingerprint
-// after the config dir is renamed (or the store path otherwise changes) —
-// without this, ReconcileSkillDir is short-circuited and stale links live
-// forever. Readlink is sub-microsecond so checking all of them is fine.
+// symlinksHealthy checks two things: (1) every expected skill is a symlink
+// under targetDir pointing at the matching entry inside store — used to
+// invalidate a stale fingerprint after the config dir is renamed (or the
+// store path otherwise changes), since without this ReconcileSkillDir is
+// short-circuited and stale links live forever; and (2) targetDir holds no
+// more store-pointing symlinks than expected — this catches stale extras
+// left behind by a shrinking profile (e.g. a pattern that used to match more
+// skills) that would otherwise never get cleaned, since a shrinking profile
+// with an otherwise-correct set of links and an unchanged fingerprint input
+// would pass check (1) forever.
+//
+// Real files and directories (hand-placed skills, macOS .DS_Store/Icon
+// artifacts) are ignored entirely — never counted, never a reason to fail.
+// Symlinks that point somewhere other than store are also ignored by the
+// count: they are not caddie-managed, so their presence (or absence) says
+// nothing about whether this directory needs reconciling.
 func symlinksHealthy(targetDir, store string, expected []string) bool {
+	wantCount := 0
 	for _, name := range expected {
 		if name == "" {
 			continue
 		}
+		wantCount++
 		want := filepath.Join(store, name)
 		got, err := os.Readlink(filepath.Join(targetDir, name))
 		if err != nil || got != want {
 			return false
 		}
 	}
-	return true
+
+	storeLinks := 0
+	skills.EachSymlinkTarget(targetDir, func(name, full, target string) {
+		if filepath.Dir(target) == store {
+			storeLinks++
+		}
+	})
+	return storeLinks <= wantCount
 }
 
 // touch updates p's mtime to now, creating the file if it doesn't exist.

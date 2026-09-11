@@ -1554,6 +1554,80 @@ func TestActivateContract(t *testing.T) {
 			t.Errorf("expected dry-run to still warn after fast path settled, got %q", r3.stdout)
 		}
 	})
+
+	t.Run("stale_symlink_forces_reconcile", func(t *testing.T) {
+		// Pin the profile to exactly "alpha" so the matched set (and thus the
+		// fingerprint) never changes across this test, even after a new store
+		// entry appears. This isolates the bug: a stale extra symlink sitting
+		// alongside an otherwise-correct, fingerprint-unchanged set of links.
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"mine:alpha"})
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}
+
+		r1 := runWith(t, goBin, opts, "activate")
+		if r1.exitCode != 0 {
+			t.Fatalf("first activate exit=%d stderr=%q", r1.exitCode, r1.stderr)
+		}
+
+		// A real store entry that the profile's pattern does NOT match.
+		extra := filepath.Join(aiEnvDir, "skills", "bravo")
+		if err := os.MkdirAll(extra, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(extra, "SKILL.md"), "x")
+
+		// Inject a stale symlink into .agents/skills pointing at that store
+		// entry, simulating a leftover link from a shrinking profile.
+		skillsDir := filepath.Join(projectDir, ".agents", "skills")
+		if err := os.Symlink(extra, filepath.Join(skillsDir, "bravo")); err != nil {
+			t.Fatal(err)
+		}
+
+		r2 := runWith(t, goBin, opts, "activate")
+		if r2.exitCode != 0 {
+			t.Fatalf("second activate exit=%d stderr=%q", r2.exitCode, r2.stderr)
+		}
+		if strings.Contains(r2.stdout, "unchanged") {
+			t.Errorf("expected a reconcile (not 'unchanged') with a stale extra symlink present, got %q", r2.stdout)
+		}
+		if _, err := os.Lstat(filepath.Join(skillsDir, "bravo")); !os.IsNotExist(err) {
+			t.Errorf("stale symlink 'bravo' should have been removed by reconcile: err=%v", err)
+		}
+		// The wanted skill must still be correctly linked.
+		if li, err := os.Lstat(filepath.Join(skillsDir, "alpha")); err != nil || li.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("expected 'alpha' symlink to survive reconcile: err=%v", err)
+		}
+	})
+
+	t.Run("hand_placed_directory_survives_fast_path", func(t *testing.T) {
+		// A real (non-symlink) directory hand-placed under .agents/skills must
+		// never count as a "stale extra" and must never be removed — this pins
+		// the behavior that protects hand-placed skills.
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}
+
+		r1 := runWith(t, goBin, opts, "activate")
+		if r1.exitCode != 0 {
+			t.Fatalf("first activate exit=%d stderr=%q", r1.exitCode, r1.stderr)
+		}
+
+		skillsDir := filepath.Join(projectDir, ".agents", "skills")
+		handPlaced := filepath.Join(skillsDir, "my-custom-skill")
+		if err := os.MkdirAll(handPlaced, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(handPlaced, "SKILL.md"), "# custom\n")
+
+		r2 := runWith(t, goBin, opts, "activate")
+		if r2.exitCode != 0 {
+			t.Fatalf("second activate exit=%d stderr=%q", r2.exitCode, r2.stderr)
+		}
+		if !strings.Contains(r2.stdout, "unchanged") {
+			t.Errorf("expected 'unchanged' with a hand-placed real directory present, got %q", r2.stdout)
+		}
+		if info, err := os.Stat(handPlaced); err != nil || !info.IsDir() {
+			t.Errorf("hand-placed skill directory should survive: err=%v", err)
+		}
+	})
 }
 
 // makeExportStore populates an AI_ENV_DIR's skill store with the given
