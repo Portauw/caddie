@@ -1,0 +1,14 @@
+# Example .caddie.yaml: this file lives directly in a project folder and
+# IS the profile (no separate "environment" definition to point at).
+#
+# Create one with `caddie init`, edit it with `caddie edit`.
+
+name: "Backend API"
+description: "Skills for the backend-api service"
+
+# Skill patterns matched against the canonical store (~/.config/caddie/skills/).
+# Include-only, glob wildcards, order doesn't matter, empty list activates nothing.
+skills:
+  - "superpowers:*"     # all superpowers skills
+  - "gws:gmail-*"       # gws-gmail-send, gws-gmail-search, etc.
+  - "local:*"           # hand-written, repo-less skills

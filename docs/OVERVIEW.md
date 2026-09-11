@@ -1,7 +1,7 @@
-# caddie — Visual Guide
+# caddie: Visual Guide
 
-> **TL;DR** — caddie is a **skill profile manager** for Claude Code (and other coding agents).
-> It gives every project its own curated toolbox of skills, pulled from git repos, wired up with symlinks.
+> **TL;DR:** caddie is a **skill profile manager** for Claude Code (and other coding agents).
+> It gives every project folder its own curated toolbox of skills, pulled from git repos, wired up with symlinks.
 
 ---
 
@@ -9,8 +9,8 @@
 
 Claude Code reads skills from `.claude/skills/`. Without caddie you either have:
 
-- **One global pile** in `~/.claude/skills/` — every project sees every skill, noisy and wrong-tool-for-the-job, or
-- **Manual copies** per project — drift, stale forks, no shared source.
+- **One global pile** in `~/.claude/skills/`, every project sees every skill, noisy and wrong-tool-for-the-job, or
+- **Manual copies** per project, drift, stale forks, no shared source.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -28,8 +28,8 @@ Claude Code reads skills from `.claude/skills/`. Without caddie you either have:
 |---|---|
 | All skills loaded everywhere | Claude picks the wrong skill for the job |
 | Skills scattered across many git repos | Manual clone + copy, sync drift |
-| No per-project config | Model, permissions, CLAUDE.md all global |
-| Can't share a setup | "Works on my machine" |
+| No per-folder curation | Every project sees every skill |
+| Profiles live only on one machine | Cloning the repo, or onboarding a teammate, doesn't bring the skill set with it |
 | Symlinks break in Docker / Lambda | Can't ship skills to prod runtimes |
 
 ---
@@ -48,7 +48,7 @@ Claude Code reads skills from `.claude/skills/`. Without caddie you either have:
                       (prefix:name)           (pattern match)
 ```
 
-**One sentence:** *Scan many skill repos → index them under one namespace → activate a curated subset per project directory as symlinks.*
+**One sentence:** *Scan many skill repos → index them under one namespace → activate a curated subset per project folder as symlinks.*
 
 ---
 
@@ -71,31 +71,25 @@ flowchart LR
         IX["~/.config/caddie/skills/<br/>── symlinks, prefix:name ──<br/>superpowers-brainstorming → repo<br/>sterling-write-as-pieter → repo<br/>gws-gmail-send → repo"]
     end
 
-    subgraph E["🎯 Environments (profiles)"]
-        E1["backend-api.yaml<br/>skills: superpowers:*, gws:*"]
-        E2["frontend.yaml<br/>skills: superpowers:ui-*, sterling:*"]
-    end
-
-    subgraph P["📁 Project directory"]
-        P1[".caddie.yaml → backend-api"]
+    subgraph P["📁 Project folder"]
+        P1[".caddie.yaml<br/>name, description, skills"]
         PA[".agents/skills/<br/>(filtered symlinks into index)"]
         PC[".claude/skills → .agents/skills"]
     end
 
     S1 & S2 & S3 & S4 -->|git clone / pull| RC --> IX
-    IX -->|pattern match| E1 & E2
-    E1 --> P1
+    IX -->|pattern match| P1
     P1 -->|caddie activate| PA
     PA --> PC
 ```
 
 ---
 
-## 🔑 Four Core Concepts
+## 🔑 Two Core Concepts
 
-### 1. **Skill repos** — where skills come from
+### 1. **Skill repos & the index**: where skills come from
 
-Declared in `~/.config/caddie/sources.yaml`:
+Repos are declared in `~/.config/caddie/sources.yaml`:
 
 ```yaml
 repos:
@@ -109,9 +103,7 @@ repos:
     prefix: sterling
 ```
 
-Repos are cloned to `~/.config/caddie/repos/<name>/` and auto-pulled on activate.
-
-### 2. **caddie index** — one namespaced view of all skills
+They are cloned to `~/.config/caddie/repos/<name>/`, auto-pulled on activate (at most once an hour), and flattened into one namespaced symlink layer:
 
 ```
 ~/.config/caddie/skills/
@@ -120,30 +112,31 @@ Repos are cloned to `~/.config/caddie/repos/<name>/` and auto-pulled on activate
   └── gws-gmail-send              → ~/.config/caddie/repos/gws/skills/gmail-send
 ```
 
-Everything is a **symlink**, prefixed by source. This is the layer profiles filter against.
+Everything is a **symlink**, prefixed by source. This index is machine-wide and shared by every project; it is not a "source of truth", the truth lives in the source repos.
 
-### 3. **Environments** — named skill profiles
+### 2. **The profile**: a `.caddie.yaml` in the folder you work in
+
+There is no separate "environment" file and no registry to point at. `.caddie.yaml` IS the profile:
 
 ```yaml
-# ~/.config/caddie/environments/backend-api.yaml
+# ~/Dev/my-backend/.caddie.yaml
 name: "Backend API"
+description: "Backend services"
 skills:
   - "superpowers:*"        # all superpowers
   - "gws:gmail-*"          # just gmail skills
   - "sterling:*"           # all sterling skills
 ```
 
-### 4. **Bindings** — glue a directory to a profile
-
 ```
 ~/Dev/my-backend/
-  ├── .caddie.yaml         ← environment: "backend-api"
+  ├── .caddie.yaml         ← the profile itself
   ├── .agents/skills/      ← created by caddie activate
   ├── .claude/skills  ───▶ .agents/skills
   └── src/
 ```
 
-Run `caddie activate` from anywhere inside that tree and the right profile lights up.
+`caddie activate` walks up from the current directory to the nearest `.caddie.yaml`, so running it anywhere inside that tree resolves the same profile. There is no reuse mechanism across folders: if two projects want the same skill set, each needs its own `.caddie.yaml` (today that means copying one).
 
 ---
 
@@ -156,14 +149,15 @@ Run `caddie activate` from anywhere inside that tree and the right profile light
                                │
                                ▼
           ┌────────────────────────────────────────┐
-          │ 1. Read .caddie.yaml                   │
-          │    → environment: "backend-api"        │
+          │ 1. Find the nearest .caddie.yaml       │
+          │    (walk up from cwd to /)             │
           └────────────────────────────────────────┘
                                │
                                ▼
           ┌────────────────────────────────────────┐
           │ 2. git pull every registered repo      │
           │    → ~/.config/caddie/repos/*          │
+          │    (skipped if pulled within the hour) │
           └────────────────────────────────────────┘
                                │
                                ▼
@@ -175,7 +169,7 @@ Run `caddie activate` from anywhere inside that tree and the right profile light
                                │
                                ▼
           ┌────────────────────────────────────────┐
-          │ 4. Resolve profile patterns            │
+          │ 4. Resolve the profile's skills:       │
           │    "superpowers:*" → 22 skills         │
           │    "gws:gmail-*"   →  3 skills         │
           │    "sterling:*"    →  5 skills         │
@@ -195,7 +189,7 @@ Run `caddie activate` from anywhere inside that tree and the right profile light
                     ✅ Ready. Launch Claude.
 ```
 
-Each project has its **own** `.agents/skills/` — a different filtered view of the same index.
+Each project has its **own** `.agents/skills/`, a different filtered view of the same index. If nothing changed since the last activate (same profile, same resolved skills, symlinks still healthy), step 2-5 short-circuit via a fingerprint check.
 
 ---
 
@@ -206,9 +200,10 @@ Each project has its **own** `.agents/skills/` — a different filtered view of 
 | 🔊 Skill noise across projects | Each project only symlinks its profile's skills |
 | 🗂️ Skills scattered across many repos | Unified via `sources.yaml`, namespaced `prefix:name` |
 | 🔁 Copy-paste skill sync | Repos auto-pull on activate |
-| 👥 Team can't share setups | Profiles are YAML, check them into a repo |
 | 🐳 Symlinks don't ship to Docker/Lambda | `caddie export` resolves links, copies real files (local or S3) |
-| 🤷 "Which skills am I running?" | `caddie which` shows the active profile and resolved skills |
+| 🤷 "Which profile is active here?" | `caddie which` prints the resolved `.caddie.yaml` path |
+
+`.caddie.yaml` is gitignored by default, so it does not travel with the repo. Sharing a setup across machines or teammates currently means sharing the file out of band (or documenting the pattern list somewhere) and running `caddie init`/`caddie edit` on each checkout; see [ADR 003](./adr/003-profile-replaces-environment.md) for why that trade-off was accepted.
 
 ---
 
@@ -227,7 +222,7 @@ $ claude                                     $ claude
   → sees only backend-relevant skills          → sees only frontend-relevant skills
 ```
 
-Same laptop. Same Claude. Two **completely different toolkits**, activated by `cd`.
+Same laptop. Same Claude. Two **completely different toolkits**, activated by `cd`, because each folder carries its own `.caddie.yaml`.
 
 ---
 
@@ -249,8 +244,9 @@ Symlinks don't survive Docker builds or Lambda packaging. `caddie export` resolv
 ```
 
 ```bash
-caddie export backend-api --to ./dist/skills/
-caddie export backend-api --to s3://my-bucket/skills/
+cd ~/Dev/backend-api
+caddie export --to ./dist/skills/
+caddie export --to s3://my-bucket/skills/
 ```
 
 ---
@@ -271,16 +267,16 @@ caddie export backend-api --to s3://my-bucket/skills/
        ▲                          ▲                           ▲
        │                          │                           │
    sources.yaml              prefix:name                 .caddie.yaml
-                          namespacing rules          (binds dir → profile)
+                          namespacing rules            (IS the profile)
 ```
 
-The index is not a "source of truth" — it's a **unified namespaced view**. The truth lives in the source repos.
+The index is not a "source of truth", it's a **unified namespaced view**. The truth lives in the source repos.
 
 ---
 
 ## 📚 Where to go next
 
 - **Quick start:** [README.md](../README.md#quick-install)
-- **Profile examples:** [`examples/`](../examples/)
+- **Profile example:** [`examples/profile.yaml`](../examples/profile.yaml)
 - **Architecture decisions:** [`docs/adr/`](./adr/)
 - **Commands cheat sheet:** [README → All Commands](../README.md#all-commands)

@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/images/caddie.png" alt="caddie mascot — a small character carrying a golf bag full of clubs" width="200">
+  <img src="docs/images/caddie.png" alt="caddie mascot, a small character carrying a golf bag full of clubs" width="200">
 </p>
 
 <h1 align="center">caddie</h1>
 <p align="center"><em>Skill Profile Manager for Claude Code & other coding agents</em></p>
 
-caddie manages skills from registered git repos and creates project-specific skill profiles for Claude Code and other agents. It maintains a canonical skill store and configures agent-specific skill directories via symlinks.
+caddie manages skills from registered git repos and gives every project folder its own skill profile for Claude Code and other agents. It maintains a canonical skill store and wires up agent-specific skill directories via symlinks.
 
 ## Quick Install
 
@@ -15,24 +15,32 @@ Requires Go 1.22+ (`brew install go`).
 ./scripts/build.sh
 cp dist/caddie /usr/local/bin/caddie
 
-# Initialize (creates config directories, skill store, ~/.claude/skills symlink)
-caddie init
+# One-time setup: config dir, skill store, sources.yaml
+caddie setup
 ```
 
-The repo also keeps `ai-env-frozen` — the original bash implementation, retained as the parity oracle for the contract test suite. It is not installed by default.
+The repo also keeps `ai-env-frozen`, the original bash implementation, retained as the parity oracle for the contract test suite. It is not installed by default.
+
+## Concepts
+
+There are two moving parts.
+
+**The skill store.** `caddie setup` and `caddie scan` clone registered git repos into `~/.config/caddie/repos/` and build a flat, namespaced symlink layer at `~/.config/caddie/skills/` (`prefix:name`, see [Skill Namespacing](#skill-namespacing)). This is shared across every project on the machine.
+
+**The profile.** A `.caddie.yaml` file in a project folder. It is not a pointer to something else, it IS the profile: a name, a description, and a list of skill patterns to pull from the store. `caddie activate` walks up from your current directory looking for the nearest `.caddie.yaml`, resolves its patterns against the store, and symlinks the matches into that folder's `.agents/skills/` (with `.claude/skills` symlinked to it in turn).
+
+There is no central profile registry and no directory-matching lookup. If two folders want the same set of skills, each gets its own `.caddie.yaml`; there is currently no way to share or reuse one across folders other than copying it.
 
 ## First-time Setup
 
-`caddie init` does the heavy lifting:
+`caddie setup` does the machine-wide setup:
 
-1. Creates `~/.config/caddie/` with default configuration
-2. Creates `~/.config/caddie/environments/` for your project profiles
-3. Creates an empty `~/.config/caddie/sources.yaml` repo registry
-4. Backs up your existing `~/.claude/skills/` to `~/.claude/skills.bak.YYYY-MM-DD`
-5. Migrates any hand-written skills to `~/.agents/skills/` (canonical store)
-6. Replaces `~/.claude/skills/` with symlinks managed by caddie
+1. Creates `~/.config/caddie/` and the skill store directory
+2. Creates `~/.config/caddie/sources.yaml` if it does not already exist
+3. Removes caddie's own managed `~/.claude/skills` symlink if one is left over from an older global setup
+4. Runs `caddie scan`
 
-After init, register git repos with `caddie repo add <name> <url>` and run `caddie scan`.
+Run it once per machine. After that, register git repos with `caddie repo add <name> <url>` and run `caddie scan --force`.
 
 ## Usage Flow
 
@@ -54,23 +62,19 @@ caddie scan -v             # verbose (show each symlink decision)
 caddie inventory           # list all available skills with source prefixes
 ```
 
-### 3. Create & manage environments
+### 3. Create & edit a profile
 ```bash
-caddie create my-project               # create new environment interactively
-caddie list                            # list all environments
-caddie show my-project                 # view environment config + resolved skills
-caddie edit my-project                 # edit config in $EDITOR
-caddie clone my-project staging        # duplicate config
-caddie delete my-project               # remove environment
+cd ~/Dev/my-project
+caddie init                # interactively create .caddie.yaml in the current folder
+caddie edit                # open the nearest .caddie.yaml in $EDITOR
+caddie which               # print the path to the profile that is active here
 ```
 
-### 4. Activate environment & skills
+### 4. Activate skills for the current folder
 ```bash
-caddie activate my-project             # resolve, rebuild symlinks, print summary
-caddie activate                        # auto-detect from cwd (.caddie.yaml or directory: match)
-caddie activate my-project --dry-run   # preview what would happen
-caddie activate --force                # force-pull all repos now (bypass hourly cache)
-caddie which                           # show currently active environment
+caddie activate             # resolve the nearest .caddie.yaml, rebuild symlinks, print summary
+caddie activate --dry-run   # preview what would happen
+caddie activate --force     # force-pull all repos now (bypass the hourly cache)
 ```
 
 `activate` auto-pulls registered repos at most once per hour; pass `--force` to pull immediately. Stale store symlinks (e.g. left over from a config-dir rename) are detected on every activate and silently re-pointed at the current store.
@@ -85,8 +89,8 @@ caddie reset --force                   # skip the confirmation prompt
 
 Skills are identified by `prefix:name`. The prefix comes from one of two places:
 
-1. **Repo `prefix:` setting in `sources.yaml`** — explicit, recommended. Skills land in the store as `<prefix>-<name>` and resolve as `<prefix>:<name>`. Set `prefix: "true"` to use the repo's own name as the prefix.
-2. **Repo with no `prefix:`** — skills land in the store under their bare directory name. The prefix is derived from the directory name's first hyphen-separated segment (e.g. `gws-gmail-send` → `gws:gmail-send`); a name with no hyphen falls under `local:*`.
+1. **Repo `prefix:` setting in `sources.yaml`**: explicit, recommended. Skills land in the store as `<prefix>-<name>` and resolve as `<prefix>:<name>`. Set `prefix: "true"` to use the repo's own name as the prefix.
+2. **Repo with no `prefix:`**: skills land in the store under their bare directory name. The prefix is derived from the directory name's first hyphen-separated segment (e.g. `gws-gmail-send` → `gws:gmail-send`); a name with no hyphen falls under `local:*`.
 
 | Directory in store | Prefix | Full ID |
 |---|---|---|
@@ -106,11 +110,11 @@ A repo whose `SKILL.md` lives at its **top level** (rather than under `skills/<n
 caddie repo add show-your-work https://github.com/diana-percy/show-your-work.git .
 ```
 
-The skill resolves as `<repo>:<repo>` (e.g. `show-your-work:show-your-work`). Collection repos — many skills under `skills/` — are unaffected; only a `SKILL.md` at the scanned root triggers this behavior.
+The skill resolves as `<repo>:<repo>` (e.g. `show-your-work:show-your-work`). Collection repos, many skills under `skills/`, are unaffected; only a `SKILL.md` at the scanned root triggers this behavior.
 
-## Environment Config Format
+## The `.caddie.yaml` Profile
 
-Environments live as YAML files in `~/.config/caddie/environments/<name>.yaml`:
+`caddie init` writes `.caddie.yaml` directly in the folder you're standing in:
 
 ```yaml
 name: "My Project"
@@ -120,45 +124,26 @@ description: "Backend services"
 skills:
   - "superpowers:*"           # all superpowers skills
   - "gws:gmail*"              # gws-gmail, gws-gmail-send, etc.
-  - "gws:calendar*"           # gws-calendar and variants
   - "local:*"                 # hand-written skills
-  - "recipe:*-email-*"        # email-related recipes
-
-# Agent-specific settings (currently Claude, extensible for Codex, etc.)
-agents:
-  claude:
-    model: "claude-sonnet-4-6"
-    permission_mode: "plan"
-    system_prompt_file: "./CLAUDE.md"
 ```
 
 **Skill patterns:**
 - Use glob wildcards: `*` matches any characters
-- Include-only model — no exclude mechanism
+- Include-only model, no exclude mechanism
 - Empty `skills:` section means no skills activated
 - Patterns union (order doesn't matter)
 
-## Binding a Directory to a Profile
+There is no other schema. `name` and `description` are just labels; only `skills` is resolved against the store. See [`examples/profile.yaml`](examples/profile.yaml).
 
-Drop a `.caddie.yaml` file in any project directory to bind it to a profile:
+**Resolution.** `caddie activate`, `caddie edit`, `caddie which` and `caddie export` all resolve the *nearest* `.caddie.yaml` by walking up from the current directory to `/`. If none is found, they fail and tell you to run `caddie init`. There is no fallback profile and no interactive picker.
 
-```yaml
-environment: "my-project"
-```
-
-When you run `caddie activate` from that directory (or any subdirectory), it auto-detects the profile and sets up skills locally in `.agents/skills/` and `.claude/skills/`.
-
-If no `.caddie.yaml` exists, `activate` prompts you to pick a profile and creates the file automatically.
-
-Profiles are reusable — the same profile can be bound to multiple directories via separate `.caddie.yaml` files.
+**Not portable.** `.caddie.yaml` is gitignored by default (caddie adds it to your repo's `.gitignore` the first time it touches the folder). Cloning the repo on another machine, or for a teammate, does not bring the profile with it; each checkout needs its own `caddie init`.
 
 ## Key Directories
 
 ```
 ~/.config/caddie/
   sources.yaml                 # registered git repos + their prefixes
-  environments/                # your project profiles
-    my-project.yaml
   repos/                       # caddie-managed git checkouts
     superpowers/
     sterling-skills/
@@ -168,49 +153,45 @@ Profiles are reusable — the same profile can be bound to multiple directories 
   .last-scan                   # 60s scan cache
   .last-pull                   # hourly auto-pull cache
 
+<project>/.caddie.yaml         # the profile itself (name, description, skills)
 <project>/.agents/skills/      # filtered symlinks for this project
   superpowers-brainstorming -> ~/.config/caddie/skills/superpowers-brainstorming
   ...
-
 <project>/.claude/skills       # symlink → ../.agents/skills
 <project>/.claude/.caddie-fingerprint   # short-circuits unchanged activates
-
-~/.agents/skills/              # global symlinks (used when no project dir is set)
-~/.claude/skills/              # global symlink → ~/.agents/skills
-
-~/.claude/skills.bak.YYYY-MM-DD/   # backup created by init
 ```
 
-The `~/.config/caddie/skills/` layer is the **canonical store** — every project's `.agents/skills/` symlink points there, not directly into the repo checkouts. This makes per-project filtering cheap and lets multiple projects share one cached source repo.
+The `~/.config/caddie/skills/` layer is the **canonical store**, every project's `.agents/skills/` symlink points there, not directly into the repo checkouts. This makes per-project filtering cheap and lets multiple projects share one cached source repo.
 
 ## Exporting Skills
 
 Export resolves symlink chains and copies the real SKILL.md files to a target directory or S3 bucket. This is useful for Docker containers, cloud runtimes (Lambda, ECS), and CI/CD pipelines where symlinks don't work.
 
 ```bash
-# Export an environment's skills to a local directory
-caddie export my-project --to ./exported-skills/
+# Export the current folder's profile to a local directory
+caddie export --to ./exported-skills/
 
 # Export directly to S3
-caddie export my-project --to s3://my-bucket/skills/
+caddie export --to s3://my-bucket/skills/
 
-# Export all skills (no environment filter)
+# Export every skill in the store (no profile filter)
 caddie export --all --to /tmp/all-skills/
 
 # Preview without copying
-caddie export my-project --to ./skills/ --dry-run
+caddie export --to ./skills/ --dry-run
 
 # Remove stale skills from target that are no longer in the export set
-caddie export my-project --to ./skills/ --clean
+caddie export --to ./skills/ --clean
 ```
 
 **Flags:**
-- `--dry-run` / `-n` — preview what would be copied without writing anything
-- `--clean` — remove skill directories in the target that aren't in the export set
+- `--all`: export every skill in the store instead of resolving the cwd profile
+- `--dry-run` / `-n`: preview what would be copied without writing anything
+- `--clean`: remove skill directories in the target that aren't in the export set
 
 **S3 environment variables:**
-- `AWS_PROFILE` — passed through to `aws s3 cp`
-- `AWS_ENDPOINT_URL` — for LocalStack or custom S3-compatible endpoints
+- `AWS_PROFILE`: passed through to `aws s3 cp`
+- `AWS_ENDPOINT_URL`: for LocalStack or custom S3-compatible endpoints
 
 The output directory structure mirrors the skill store:
 ```
@@ -230,16 +211,16 @@ alias aea="caddie activate"
 
 Quick usage:
 ```bash
-ae create my-project
-ae list
-aea my-project
+ae init
+ae which
+aea
 ```
 
 ## All Commands
 
 ```bash
-# Initialization
-caddie init                        # first-time setup
+# Setup
+caddie setup                       # one-time machine setup: config dir, store, sources
 caddie reset [--force|-f]          # remove managed symlinks + state files
 
 # Repo registry
@@ -252,25 +233,20 @@ caddie repo update [name]          # git pull (all, or one)
 caddie scan [--force|-f] [-v]      # rebuild canonical store
 caddie inventory [filter]          # list all skills, grouped by prefix
 
-# Environment management
-caddie create <name>               # create new environment interactively
-caddie list                        # list environments
-caddie show <name>                 # show config + resolved skills
-caddie edit <name>                 # open env file in $EDITOR
-caddie clone <src> <dest>          # duplicate config
-caddie delete <name>               # remove environment
+# Profile
+caddie init                        # create .caddie.yaml in the current folder
+caddie edit                        # open the nearest .caddie.yaml in $EDITOR
+caddie which                       # print the path to the active profile
 
 # Activation
-caddie activate [name] [-n|-f]     # scan + rebuild project symlinks
-                                   #   no name → auto-detect from cwd
+caddie activate [-n|-f]            # scan + rebuild project symlinks for the nearest profile
                                    #   -n / --dry-run → preview only
                                    #   -f / --force → force-pull all repos
-caddie which                       # show active environment for cwd
 
 # Export (resolves symlinks → copies real files)
-caddie export <name> --to <dir>    # local directory
-caddie export <name> --to s3://b/  # S3 prefix
-caddie export --all --to <target>  # export every skill (no env filter)
+caddie export --to <dir>           # local directory, cwd profile
+caddie export --to s3://b/         # S3 prefix, cwd profile
+caddie export --all --to <target>  # export every skill (no profile filter)
                                    # extras: --clean, --dry-run / -n
 ```
 
