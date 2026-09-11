@@ -1,21 +1,16 @@
 .idea/
 .DS_Store
 
-# caddie managed skill directories
-.claude/skills
-.agents/skills
-.claude/.caddie-fingerprint
-.claude/worktrees/
-
-# caddie managed skill directories
-.agents/SOURCES.md
-
 # Go build
 /dist/
 
-# caddie environment binding (local, per-machine)
-.caddie.yaml
-
-# caddie managed skill directories
+# caddie managed, local and per-machine.
+# These four strings must match the entries in ensureProjectGitignore
+# (cmd/caddie/main.go) exactly, or caddie appends a duplicate block.
 .claude/skills/
 .agents/skills/
+.claude/.caddie-fingerprint
+.caddie.yaml
+
+# git worktrees created by tooling
+.claude/worktrees/
