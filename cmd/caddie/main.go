@@ -368,8 +368,11 @@ func cmdHelp(_ []string) {
 			"\n" +
 			B + "FLAGS" + R + "\n" +
 			"  -n, --dry-run             Show what would happen without executing\n" +
-			"  -v, --verbose             Show detailed output\n" +
 			"  -h, --help                Show this help message\n" +
+			"  --version                 Print the caddie version\n" +
+			"  -v, --verbose             Subcommand flag for detailed output, e.g. " + C + "scan -v" + R + "\n" +
+			"                            (bare " + C + "caddie -v" + R + ", with no subcommand, prints the\n" +
+			"                            version instead; it is short for --version there)\n" +
 			"\n" +
 			B + "SKILL PATTERNS" + R + "\n" +
 			"  Patterns use prefix:name format with glob wildcards:\n" +

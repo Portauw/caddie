@@ -208,15 +208,11 @@ func TestWhichContract(t *testing.T) {
 	})
 }
 
-// setupEnvDir creates a fresh AI_ENV_DIR containing an empty environments/
-// subdir and returns its path. Use for tests that need a valid caddie layout.
+// setupEnvDir creates a fresh AI_ENV_DIR and returns its path. Use for tests
+// that need a valid caddie layout.
 func setupEnvDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "environments"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return dir
+	return t.TempDir()
 }
 
 // realTempDir returns t.TempDir() with symlinks resolved. On darwin, t.TempDir()
