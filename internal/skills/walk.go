@@ -292,6 +292,8 @@ func danglingEscapes(full, rootReal string) bool {
 	if err != nil {
 		return true
 	}
+	// Budget for following dangling links; a chain anywhere near this is not
+	// a real repo layout.
 	hops := 40
 	resolved, ok := resolveStepwise(parent, target, &hops)
 	if !ok {
