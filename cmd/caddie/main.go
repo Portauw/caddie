@@ -1240,11 +1240,23 @@ func ensureProjectGitignore(projectDir string) error {
 		return nil
 	}
 	gitignore := filepath.Join(root, ".gitignore")
+	// Anchor each entry to this profile's own directory. A bare
+	// ".claude/skills/" is an unanchored gitignore pattern: written at the
+	// repo root it matches that name at *every* depth, so activating in
+	// apps/web also ignored apps/api/.caddie.yaml and every other profile in
+	// the monorepo — including ones a teammate committed on purpose. At its
+	// worst, when $HOME is a dotfiles repo, activating in any folder below it
+	// stopped the user's real ~/.claude/skills from being tracked.
+	prefix := "/"
+	if rel, err := filepath.Rel(root, projectDir); err == nil && rel != "." &&
+		!strings.HasPrefix(rel, "..") {
+		prefix = "/" + filepath.ToSlash(rel) + "/"
+	}
 	entries := []string{
-		".claude/skills/",
-		".agents/skills/",
-		".claude/.caddie-fingerprint",
-		".caddie.yaml",
+		prefix + ".claude/skills/",
+		prefix + ".agents/skills/",
+		prefix + ".claude/.caddie-fingerprint",
+		prefix + ".caddie.yaml",
 	}
 
 	var body []byte
