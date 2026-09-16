@@ -622,3 +622,70 @@ func TestDanglingSymlinkInsideRepoStillAllowed(t *testing.T) {
 		t.Errorf("got %v want [good] — in-repo dangling links must not reject the skill", names(got))
 	}
 }
+
+// TestGitDirDoesNotBlockRepoRootSkill covers the "one repo = one skill" layout
+// (skills_path: "."), where the scanned directory is the repo checkout itself
+// and therefore contains .git.
+//
+// git's own init.templateDir puts symlinked hooks into every clone — a global
+// pre-commit hook is a very ordinary setup — and those resolve outside the
+// repo by construction. The containment scan deliberately stopped skipping
+// dotfiles (a hidden ".env -> ~/.ssh/id_rsa" was being adopted), which made it
+// walk .git too and reject the whole repo.
+func TestGitDirDoesNotBlockRepoRootSkill(t *testing.T) {
+	base := t.TempDir()
+	outside := filepath.Join(base, "global-hooks", "pre-commit")
+	if err := os.MkdirAll(filepath.Dir(outside), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := filepath.Join(base, "repo")
+	hooks := filepath.Join(repo, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "SKILL.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(hooks, "pre-commit")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := WalkRepoSkills(repo, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "repo" {
+		t.Errorf("got %v want [repo] — a templated git hook must not reject the repo's own skill", names(got))
+	}
+}
+
+// TestHiddenEscapeStillRejectedAlongsideGitDir pins that ignoring .git did not
+// re-open the hole that removing the dotfile skip closed.
+func TestHiddenEscapeStillRejectedAlongsideGitDir(t *testing.T) {
+	base := t.TempDir()
+	secret := filepath.Join(base, "id_rsa")
+	if err := os.WriteFile(secret, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(base, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "SKILL.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(repo, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := WalkRepoSkills(repo, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %v want no skills — a hidden escaping symlink outside .git must still reject", names(got))
+	}
+}
