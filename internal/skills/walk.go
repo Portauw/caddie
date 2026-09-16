@@ -232,6 +232,19 @@ func hasEscapingSymlink(dir, repoDirReal string, visited map[string]bool) bool {
 		return true
 	}
 	for _, e := range entries {
+		// .git is the one thing here that is not repo content. Its contents
+		// are produced locally by git, not delivered by the clone, so nothing
+		// a repo ships can put a symlink in it — and git's own
+		// init.templateDir routinely does, dropping symlinked hooks into
+		// every clone that point at a global hooks directory outside the
+		// repo. Scanning it rejected any "one repo = one skill" registration
+		// (skills_path: ".") on a machine with templated hooks, silently.
+		//
+		// Every other dotfile is still scanned: skipping those is what let a
+		// hidden ".env -> ~/.ssh/id_rsa" be adopted.
+		if e.Name() == ".git" {
+			continue
+		}
 		full := filepath.Join(dir, e.Name())
 		if e.Type()&os.ModeSymlink != 0 {
 			fi, statErr := os.Stat(full)
