@@ -1384,6 +1384,59 @@ func TestActivateContract(t *testing.T) {
 		}
 	})
 
+	t.Run("gitignore_is_byte_stable_across_reconciles", func(t *testing.T) {
+		// ensureProjectGitignore writes to a file the user version-controls,
+		// and it runs on every reconciling activate. Four successive
+		// revisions of it each fixed the previous one's regression and
+		// introduced a new one — deleting user lines, reordering them,
+		// hoisting a negation above the rule it negates, and accumulating a
+		// blank line per run — and none were caught by a test.
+		//
+		// Note the fingerprint removal: a plain second activate takes the
+		// fast path and never calls this function at all, so an idempotency
+		// check without it passes vacuously.
+		for _, tc := range []struct{ name, initial string }{
+			{"empty", ""},
+			{"content_above_only", "node_modules/\n"},
+			{"content_below_header", "# caddie managed skill directories\n/.caddie.yaml\nmy-notes/\n"},
+			{"content_both_sides", "*.log\n\n# caddie managed skill directories\n/.caddie.yaml\n!important.log\n"},
+			{"header_only", "# caddie managed skill directories\n"},
+			{"crlf", "node_modules/\r\n\r\n# caddie managed skill directories\r\n/.caddie.yaml\r\nmy-notes/\r\n"},
+			{"no_trailing_newline", "node_modules/"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+				// findRepoRoot only looks for a .git entry, so this is enough
+				// to put the profile in a subdirectory of a repo root — the
+				// case where the anchored prefix is non-trivial.
+				root := filepath.Dir(projectDir)
+				if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				gitignore := filepath.Join(root, ".gitignore")
+				mustWrite(t, gitignore, tc.initial)
+
+				opts := runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}
+				var prev string
+				for run := 1; run <= 3; run++ {
+					if r := runWith(t, goBin, opts, "activate"); r.exitCode != 0 {
+						t.Fatalf("run %d: exit=%d stderr=%q", run, r.exitCode, r.stderr)
+					}
+					got, err := os.ReadFile(gitignore)
+					if err != nil {
+						t.Fatalf("run %d: %v", run, err)
+					}
+					if run > 1 && string(got) != prev {
+						t.Fatalf("run %d changed the file:\n--- previous ---\n%q\n--- now ---\n%q", run, prev, string(got))
+					}
+					prev = string(got)
+					// Force the next activate down the reconciling path.
+					_ = os.Remove(filepath.Join(projectDir, ".claude", ".caddie-fingerprint"))
+				}
+			})
+		}
+	})
+
 	t.Run("migration_moves_everything_when_nothing_collides", func(t *testing.T) {
 		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
 		claudeSkills := filepath.Join(projectDir, ".claude", "skills")
