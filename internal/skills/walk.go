@@ -9,6 +9,13 @@ import (
 	"strings"
 )
 
+// escapeScans counts how many times a skill directory is actually scanned for
+// escaping symlinks, i.e. cache misses. Tests assert on it so the "scan once
+// per real directory, not once per alias" property is checked directly rather
+// than through a wall-clock budget. Not used outside tests; walks are
+// sequential, so a plain counter is enough.
+var escapeScans int
+
 // ErrSkillsPathOutsideRepo is returned when the configured skills_path
 // resolves outside the repo's own checkout, so nothing under it is walked.
 var ErrSkillsPathOutsideRepo = errors.New("skills_path resolves outside the repo checkout")
@@ -101,6 +108,7 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 	escapesOutside := func(dir, real string) bool {
 		bad, seen := escapes[real]
 		if !seen {
+			escapeScans++
 			bad = hasEscapingSymlink(dir, repoDirReal, map[string]bool{})
 			escapes[real] = bad
 		}

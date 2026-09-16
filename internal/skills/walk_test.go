@@ -436,39 +436,38 @@ func TestWalkRepoSkills(t *testing.T) {
 	})
 
 	t.Run("alias_fan_out_scans_each_skill_dir_once", func(t *testing.T) {
-		// The SKILL.md match runs before the descent dedupe so aliases each
-		// yield a skill; without caching the containment scan, N aliases of
-		// one M-file skill cost N full scans of it.
+		// The SKILL.md match runs before the descent dedupe so that aliases
+		// each yield a skill. Without caching the containment scan that meant
+		// N aliases of one skill directory cost N full recursive scans of it,
+		// which a repo can turn into a multi-second stall on every shell
+		// (activate runs from the claude() wrapper). Asserted as a scan count
+		// rather than a duration: the property is "once per real directory",
+		// and a timing budget would only be a proxy for it — and a flaky one
+		// on a loaded machine.
 		base := t.TempDir()
 		repo := filepath.Join(base, "repo")
 		shared := filepath.Join(repo, "shared")
 		mkSkill(t, shared)
-		for i := 0; i < 1500; i++ {
-			mustWrite(t, filepath.Join(shared, "f"+strconv.Itoa(i)+".md"), "x")
-		}
 		skillsDir := filepath.Join(repo, "skills")
 		if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		for i := 0; i < 1500; i++ {
+		const aliases = 50
+		for i := 0; i < aliases; i++ {
 			if err := os.Symlink(shared, filepath.Join(skillsDir, "a"+strconv.Itoa(i))); err != nil {
 				t.Fatal(err)
 			}
 		}
-		done := make(chan int, 1)
-		go func() {
-			got, _ := WalkRepoSkills(repo, "skills")
-			done <- len(got)
-		}()
-		select {
-		case n := <-done:
-			if n != 1500 {
-				t.Errorf("got %d skills, want 1500 (one per alias)", n)
-			}
-		// Budget covers the walk only, not fixture creation. Re-scanning per
-		// alias measured ~2.9s here against ~0.2s when the scan is cached.
-		case <-time.After(2 * time.Second):
-			t.Fatal("walk did not finish within 2s — containment scan re-run per alias")
+		escapeScans = 0
+		got, err := WalkRepoSkills(repo, "skills")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != aliases {
+			t.Errorf("got %d skills, want %d (one per alias)", len(got), aliases)
+		}
+		if escapeScans != 1 {
+			t.Errorf("containment scan ran %d times, want 1 — all aliases share one real directory", escapeScans)
 		}
 	})
 

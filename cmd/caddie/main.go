@@ -1338,14 +1338,6 @@ func escapeGitignorePath(p string) string {
 	return b.String()
 }
 
-// pluralIes renders the "entry"/"entries" suffix for n.
-func pluralIes(n int) string {
-	if n == 1 {
-		return "y"
-	}
-	return "ies"
-}
-
 // cmdExport resolves the cwd profile's skills (or all skills with --all),
 // then dispatches to internal/export for either a local directory or an
 // s3:// URL.
@@ -1427,8 +1419,8 @@ func cmdExport(args []string) {
 		if force {
 			return true
 		}
-		fmt.Printf("%s⚠%s  %s--clean%s will recursively delete %d entr%s under %s%s%s that caddie did not export:\n",
-			ansiYellow, ansiReset, ansiBold, ansiReset, len(names), pluralIes(len(names)), ansiBold, target, ansiReset)
+		fmt.Printf("%s⚠%s  %s--clean%s will recursively delete these directories under %s%s%s, which caddie did not export:\n",
+			ansiYellow, ansiReset, ansiBold, ansiReset, ansiBold, target, ansiReset)
 		for _, n := range names {
 			fmt.Printf("    %s%s/%s\n", ansiRed, n, ansiReset)
 		}
