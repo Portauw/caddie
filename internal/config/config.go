@@ -4,8 +4,10 @@ package config
 import (
 	"bufio"
 	"cmp"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -52,9 +54,22 @@ func YAMLQuote(s string) string {
 			b.WriteString(`\"`)
 		case '\n':
 			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
 		case '\t':
 			b.WriteString(`\t`)
 		default:
+			// Any other C0 control (and DEL) goes out as \xNN. cmdInit's
+			// readLine trims only "\n", so CRLF-piped stdin — a scripted
+			// setup, or Windows/WSL — left a bare CR on the value; written
+			// raw inside the quoted scalar it survived the round trip and
+			// mangled every line that printed the name. The rest are escaped
+			// for the same reason: this function exists so that nothing a
+			// value contains can change how the file parses or renders.
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, `\x%02x`, r)
+				continue
+			}
 			b.WriteRune(r)
 		}
 	}
@@ -97,8 +112,21 @@ func unescapeDoubleQuoted(s string) string {
 				b.WriteByte('"')
 			case 'n':
 				b.WriteByte('\n')
+			case 'r':
+				b.WriteByte('\r')
 			case 't':
 				b.WriteByte('\t')
+			case 'x':
+				// \xNN — the escape YAMLQuote emits for other controls.
+				if i+2 < len(s) {
+					if n, err := strconv.ParseUint(s[i+1:i+3], 16, 8); err == nil {
+						b.WriteByte(byte(n))
+						i += 2
+						continue
+					}
+				}
+				b.WriteByte('\\')
+				b.WriteByte(s[i])
 			default:
 				b.WriteByte('\\')
 				b.WriteByte(s[i])
