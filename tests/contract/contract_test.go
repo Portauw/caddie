@@ -1437,6 +1437,89 @@ func TestActivateContract(t *testing.T) {
 		}
 	})
 
+	t.Run("gitignore_preserves_user_intent", func(t *testing.T) {
+		// Byte-stability across runs cannot catch these: each of the three
+		// regressions below corrupts the file on the FIRST run and is then
+		// perfectly stable, so the stability test passes while the user's
+		// intent is already destroyed. These assert on content and relative
+		// order instead — the property that actually matters.
+		lines := func(t *testing.T, path string) []string {
+			t.Helper()
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out []string
+			for _, l := range strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n") {
+				if l != "" {
+					out = append(out, l)
+				}
+			}
+			return out
+		}
+		indexOf := func(t *testing.T, ls []string, want string) int {
+			t.Helper()
+			for i, l := range ls {
+				if l == want {
+					return i
+				}
+			}
+			t.Fatalf("%q missing from .gitignore: %v", want, ls)
+			return -1
+		}
+
+		run := func(t *testing.T, initial string) []string {
+			t.Helper()
+			aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+			root := filepath.Dir(projectDir)
+			if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			gitignore := filepath.Join(root, ".gitignore")
+			mustWrite(t, gitignore, initial)
+			if r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate"); r.exitCode != 0 {
+				t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+			}
+			return lines(t, gitignore)
+		}
+
+		t.Run("negation_of_caddie_rule_stays_below_it", func(t *testing.T) {
+			// A team that wants a shared profile committed can only express
+			// that by negating caddie's own rule, and a negation only works
+			// below the rule it negates. Hoisting it silently re-ignored the
+			// file the team wanted tracked.
+			ls := run(t, "# caddie managed skill directories\n/.caddie.yaml\n!/proj/.caddie.yaml\n")
+			neg := indexOf(t, ls, "!/proj/.caddie.yaml")
+			for i, l := range ls {
+				if strings.HasSuffix(l, ".caddie.yaml") && strings.HasPrefix(l, "/") && i > neg {
+					t.Errorf("caddie rule %q is below the negation at %d, so the negation cannot work: %v", l, neg, ls)
+				}
+			}
+		})
+
+		t.Run("deliberate_unanchored_rule_survives", func(t *testing.T) {
+			// The same four strings are reasonable rules for a team to write
+			// on purpose. Deleting one — every activate, so re-adding never
+			// sticks — is not caddie's call.
+			ls := run(t, "# our team ignores every caddie profile on purpose\n.caddie.yaml\nnode_modules/\n")
+			indexOf(t, ls, "# our team ignores every caddie profile on purpose")
+			indexOf(t, ls, ".caddie.yaml")
+			indexOf(t, ls, "node_modules/")
+		})
+
+		t.Run("user_rule_order_is_preserved", func(t *testing.T) {
+			// Sorting foreign lines into caddie's block put "!important.log"
+			// above "*.log" — "!" sorts before "*" — and silently stopped a
+			// deliberately-exempted file from being tracked. The pair has to
+			// sit after the header: that is the region that used to be
+			// absorbed and sorted.
+			ls := run(t, "# caddie managed skill directories\n/.caddie.yaml\n*.log\n!important.log\n")
+			if a, b := indexOf(t, ls, "*.log"), indexOf(t, ls, "!important.log"); a > b {
+				t.Errorf("!important.log (%d) must stay below *.log (%d): %v", b, a, ls)
+			}
+		})
+	})
+
 	t.Run("migration_moves_everything_when_nothing_collides", func(t *testing.T) {
 		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
 		claudeSkills := filepath.Join(projectDir, ".claude", "skills")
