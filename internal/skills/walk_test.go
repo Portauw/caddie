@@ -508,3 +508,83 @@ func TestWalkRepoSkills(t *testing.T) {
 		}
 	})
 }
+
+// TestDanglingSymlinkChainCannotEscape covers the two-hop shapes: the target
+// of a dangling link lands inside the repo only lexically, while a component
+// of that path is itself a symlink out of it. The intermediate sits outside
+// the skill directory (so the per-skill containment scan never sees it) and
+// inside the repo (so the discovery walk never descends to it).
+func TestDanglingSymlinkChainCannotEscape(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		build func(t *testing.T, base, repo string)
+	}{
+		{"via_in_repo_directory_symlink", func(t *testing.T, base, repo string) {
+			outside := filepath.Join(base, "outside")
+			if err := os.MkdirAll(outside, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(repo, "out")); err != nil {
+				t.Fatal(err)
+			}
+			mkSkill(t, filepath.Join(repo, "skills", "s"))
+			if err := os.Symlink("../../out/x", filepath.Join(repo, "skills", "s", "key.md")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"via_in_repo_file_symlink", func(t *testing.T, base, repo string) {
+			if err := os.MkdirAll(filepath.Join(repo, "shared"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("../../id_rsa", filepath.Join(repo, "shared", "k")); err != nil {
+				t.Fatal(err)
+			}
+			mkSkill(t, filepath.Join(repo, "skills", "sneaky"))
+			if err := os.Symlink("../../shared/k", filepath.Join(repo, "skills", "sneaky", "key.md")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			repo := filepath.Join(base, "repo")
+			if err := os.MkdirAll(repo, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.build(t, base, repo)
+			got, err := WalkRepoSkills(repo, "skills")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 0 {
+				t.Errorf("got %v want no skills — dangling chain reaches outside the repo", names(got))
+			}
+		})
+	}
+}
+
+// TestDanglingSymlinkInsideRepoStillAllowed is the false-positive guard: an
+// unfetched LFS pointer or a generated file is an in-repo relative path and
+// must not cost the repo its skill.
+func TestDanglingSymlinkInsideRepoStillAllowed(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skill := filepath.Join(repo, "skills", "good")
+	mkSkill(t, skill)
+	// Directly dangling, and dangling through an in-repo real directory.
+	if err := os.Symlink("generated.md", filepath.Join(skill, "out.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../shared/built.md", filepath.Join(skill, "ref.md")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := WalkRepoSkills(repo, "skills")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "good" {
+		t.Errorf("got %v want [good] — in-repo dangling links must not reject the skill", names(got))
+	}
+}
