@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -286,6 +287,129 @@ func TestWalkRepoSkills(t *testing.T) {
 		want := []string{"one", "two"}
 		if !reflect.DeepEqual(names(got), want) {
 			t.Errorf("got %v want %v", names(got), want)
+		}
+	})
+
+	t.Run("terminates_on_acyclic_symlink_dag", func(t *testing.T) {
+		// A cycle-free diamond chain: each node holds two symlinks to the
+		// next node down. Nothing is ever its own ancestor, so chain-scoped
+		// cycle detection never fires — but the same node is reachable along
+		// 2^depth distinct paths, so the walk must dedupe by real path (not
+		// just by ancestry) to stay bounded.
+		base := t.TempDir()
+		repo := filepath.Join(base, "repo")
+		const depth = 13
+		nodes := make([]string, depth+1)
+		for i := range nodes {
+			nodes[i] = filepath.Join(repo, "nodes", "d"+strconv.Itoa(i))
+			if err := os.MkdirAll(nodes[i], 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i := 0; i < depth; i++ {
+			for _, l := range []string{"a", "b"} {
+				if err := os.Symlink(nodes[i+1], filepath.Join(nodes[i], l)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		mkSkill(t, filepath.Join(nodes[depth], "leaf"))
+		if err := os.MkdirAll(filepath.Join(repo, "skills"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(nodes[0], filepath.Join(repo, "skills", "entry")); err != nil {
+			t.Fatal(err)
+		}
+
+		done := make(chan struct{})
+		var got []RepoSkill
+		go func() {
+			got, _ = WalkRepoSkills(repo, "skills")
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("walk did not terminate within 5s — exponential fan-out over an acyclic symlink DAG")
+		}
+		// Terminating isn't enough: every distinct root-to-leaf path is its
+		// own skill name, so deduping descent has to bound the *result* too.
+		// The leaf is one real directory and must be reported once, not once
+		// per path (2^depth of them) — each would be linked into every
+		// project on a "*"-style profile.
+		if len(got) != 1 {
+			t.Errorf("got %d skills, want 1 — one real leaf reported once per path", len(got))
+		}
+	})
+
+	t.Run("rejects_hidden_sibling_symlink_escaping_repo", func(t *testing.T) {
+		// The containment check must not inherit the discovery walk's
+		// "skip hidden entries" rule: the whole skill directory is linked
+		// into the store and copied by export, dotfiles included, so a
+		// hidden escaping symlink leaks exactly like a visible one.
+		base := t.TempDir()
+		secret := filepath.Join(base, "id_rsa")
+		if err := os.WriteFile(secret, []byte("PRIVATE KEY"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		repo := filepath.Join(base, "repo")
+		skill := filepath.Join(repo, "skills", "evil")
+		mkSkill(t, skill)
+		if err := os.Symlink(secret, filepath.Join(skill, ".env")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := WalkRepoSkills(repo, "skills")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Errorf("got %v want no skills — hidden symlink escapes repo", names(got))
+		}
+	})
+
+	t.Run("rejects_symlink_escaping_repo_inside_hidden_dir", func(t *testing.T) {
+		base := t.TempDir()
+		secret := filepath.Join(base, "id_rsa")
+		if err := os.WriteFile(secret, []byte("PRIVATE KEY"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		repo := filepath.Join(base, "repo")
+		skill := filepath.Join(repo, "skills", "evil")
+		mkSkill(t, skill)
+		hidden := filepath.Join(skill, ".cache")
+		if err := os.MkdirAll(hidden, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(secret, filepath.Join(hidden, "k.md")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := WalkRepoSkills(repo, "skills")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Errorf("got %v want no skills — symlink in hidden dir escapes repo", names(got))
+		}
+	})
+
+	t.Run("keeps_skill_with_dangling_symlink", func(t *testing.T) {
+		// A symlink whose target doesn't exist can't leak anything. Real
+		// repos have them (an unfetched LFS pointer, a sparse-checkout gap,
+		// a generated file) and rejecting the whole skill over one is a
+		// false positive, not a defence.
+		repo := t.TempDir()
+		skill := filepath.Join(repo, "skills", "good")
+		mkSkill(t, skill)
+		if err := os.Symlink("generated.md", filepath.Join(skill, "out.md")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := WalkRepoSkills(repo, "skills")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"good"}
+		if !reflect.DeepEqual(names(got), want) {
+			t.Errorf("got %v want %v — dangling in-repo symlink must not reject the skill", names(got), want)
 		}
 	})
 

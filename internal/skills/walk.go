@@ -59,20 +59,25 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 		return nil, nil
 	}
 
+	// visited holds the resolved real path of every directory the walk has
+	// already descended into. It is global to the walk, not scoped to the
+	// current chain: a chain-scoped set only catches a directory that
+	// reappears as its own ancestor, and a shared target reached along many
+	// distinct root-to-dir paths is never its own ancestor — so a cycle-free
+	// DAG (each directory holding two symlinks to the next) still explodes
+	// 2^depth. Deduping globally makes the walk linear in the number of real
+	// directories, whatever the symlink topology.
+	//
+	// Crucially this gates *descent* only. A directory that is itself a skill
+	// is matched before the check, so two symlinks aimed at the same skill
+	// still yield one skill each — which is the legitimate aliasing case. The
+	// exponential blowup comes from re-descending shared intermediate
+	// directories, and nothing is lost by doing that once.
+	visited := map[string]bool{}
+
 	var out []RepoSkill
-	// ancestors tracks the resolved real path of every directory on the
-	// current root-to-dir recursion chain (scoped per branch, not global).
-	// Without this, two directories whose symlinks point at each other (or
-	// at a shared third directory reached multiple ways) make the walk
-	// recurse exponentially with depth — depth is bounded by the OS path
-	// length limit, but the call count along the way is not, so this is a
-	// real hang, not just an inefficiency. Scoping to the current chain
-	// (rather than a single set shared across the whole walk) only rejects
-	// genuine cycles — a directory reappearing as its own ancestor — and
-	// still lets two unrelated branches legitimately symlink to the same
-	// shared target, each producing its own skill.
-	var walk func(dir string, parts []string, ancestors map[string]bool)
-	walk = func(dir string, parts []string, ancestors map[string]bool) {
+	var walk func(dir, real string, parts []string)
+	walk = func(dir, real string, parts []string) {
 		// os.Stat (not Lstat) so a symlinked SKILL.md still counts — but the
 		// resolved target must stay inside repoDir. Otherwise a real skill
 		// directory (itself safely inside repoDir) could hold a SKILL.md
@@ -80,9 +85,6 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 		// would then preserve and copy/upload verbatim.
 		skillMD := filepath.Join(dir, "SKILL.md")
 		if fi, err := os.Stat(skillMD); err == nil && fi.Mode().IsRegular() {
-			if real, err := filepath.EvalSymlinks(skillMD); err != nil || !isWithin(repoDirReal, real) {
-				return
-			}
 			// SKILL.md itself is fine, but the whole directory — every file
 			// in it — gets adopted: AbsPath is symlinked wholesale into the
 			// store and from there into every project on a "*"-style
@@ -90,21 +92,24 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 			// (e.g. "reference.md" -> "../../../id_rsa") would otherwise be
 			// read directly by whatever loads the skill's files, no export
 			// step required.
-			if hasEscapingSymlink(dir, repoDirReal, map[string]bool{}) {
-				return
+			if r, err := filepath.EvalSymlinks(skillMD); err == nil && isWithin(repoDirReal, r) &&
+				!hasEscapingSymlink(dir, repoDirReal, map[string]bool{}) {
+				name := strings.Join(parts, "-")
+				if name == "" {
+					// SKILL.md at the walk root: the repo itself is a single
+					// skill, named after the repo directory.
+					name = filepath.Base(repoDir)
+				}
+				out = append(out, RepoSkill{Name: name, AbsPath: dir})
 			}
-			name := strings.Join(parts, "-")
-			if name == "" {
-				// SKILL.md at the walk root: the repo itself is a single
-				// skill, named after the repo directory.
-				name = filepath.Base(repoDir)
-			}
-			out = append(out, RepoSkill{
-				Name:    name,
-				AbsPath: dir,
-			})
+			// Descent stops here either way: the children of a directory that
+			// just tried to escape are no more trustworthy than it is.
 			return
 		}
+		if visited[real] {
+			return
+		}
+		visited[real] = true
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			return
@@ -116,50 +121,44 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 			}
 			full := filepath.Join(dir, name)
 			t := e.Type()
-			if t.IsDir() {
-				real, err := filepath.EvalSymlinks(full)
-				if err != nil || ancestors[real] {
-					continue
+			switch {
+			case t.IsDir():
+				// A real directory reached from an already-validated parent is
+				// inside repoDir by construction, so a resolve failure (an
+				// unreadable path component, a concurrent rename during a
+				// `git pull`) is no reason to drop the subtree — fall back to
+				// the lexical path as its identity.
+				childReal, err := filepath.EvalSymlinks(full)
+				if err != nil {
+					childReal = full
 				}
-				walk(full, append(parts, name), withAncestor(ancestors, real))
-				continue
-			}
-			// Follow symlinks-to-dirs but not regular files — and only when
-			// the real target stays inside repoDir. A malicious repo could
-			// otherwise ship a symlink pointing outside its own checkout
-			// (into a sibling registered repo, or a sensitive path like
-			// ~/.ssh) to get an unrelated directory adopted as one of its
-			// "skills". Since caddie symlinks matched skills straight into
-			// every project using that profile, and `caddie export` will
-			// copy/upload whatever a symlink resolves to, that directory
-			// would otherwise escape repoDir entirely.
-			if t&os.ModeSymlink != 0 {
+				walk(full, childReal, append(parts, name))
+			case t&os.ModeSymlink != 0:
+				// Follow symlinks-to-dirs but not regular files — and only
+				// when the real target stays inside repoDir. A malicious repo
+				// could otherwise ship a symlink pointing outside its own
+				// checkout (into a sibling registered repo, or a sensitive
+				// path like ~/.ssh) to get an unrelated directory adopted as
+				// one of its "skills". Since caddie symlinks matched skills
+				// straight into every project using that profile, and
+				// `caddie export` will copy/upload whatever a symlink
+				// resolves to, that directory would otherwise escape repoDir
+				// entirely.
 				fi, err := os.Stat(full)
 				if err != nil || !fi.IsDir() {
 					continue
 				}
-				real, err := filepath.EvalSymlinks(full)
-				if err != nil || !isWithin(repoDirReal, real) || ancestors[real] {
+				childReal, err := filepath.EvalSymlinks(full)
+				if err != nil || !isWithin(repoDirReal, childReal) {
 					continue
 				}
-				walk(full, append(parts, name), withAncestor(ancestors, real))
+				walk(full, childReal, append(parts, name))
 			}
 		}
 	}
-	walk(root, nil, map[string]bool{rootReal: true})
+	walk(root, rootReal, nil)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
-}
-
-// withAncestor returns a copy of ancestors with real added — copy-on-branch
-// so sibling recursion branches don't see each other's ancestors.
-func withAncestor(ancestors map[string]bool, real string) map[string]bool {
-	next := make(map[string]bool, len(ancestors)+1)
-	for k := range ancestors {
-		next[k] = true
-	}
-	next[real] = true
-	return next
 }
 
 // hasEscapingSymlink reports whether dir, or anything under it recursively,
@@ -167,6 +166,11 @@ func withAncestor(ancestors map[string]bool, real string) map[string]bool {
 // outside repoDirReal. visited dedupes symlinked directories by resolved
 // real path so a cycle within the skill directory can't hang this check the
 // same way it could the outer walk.
+//
+// Unlike the discovery walk above, this does NOT skip hidden entries. The
+// whole directory is adopted — linked into the store, and copied by export,
+// dotfiles included — so a hidden escaping symlink leaks exactly as well as a
+// visible one.
 func hasEscapingSymlink(dir, repoDirReal string, visited map[string]bool) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -174,17 +178,25 @@ func hasEscapingSymlink(dir, repoDirReal string, visited map[string]bool) bool {
 		return true
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
 		full := filepath.Join(dir, e.Name())
 		if e.Type()&os.ModeSymlink != 0 {
+			fi, statErr := os.Stat(full)
+			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					// Dangling: the target doesn't exist, so there is nothing
+					// to leak. Legitimate repos carry these (an unfetched LFS
+					// pointer, a sparse-checkout gap, a generated file), and
+					// rejecting the whole skill over one is a false positive
+					// rather than a defence.
+					continue
+				}
+				return true
+			}
 			real, err := filepath.EvalSymlinks(full)
 			if err != nil || !isWithin(repoDirReal, real) {
 				return true
 			}
-			fi, statErr := os.Stat(full)
-			if statErr == nil && fi.IsDir() {
+			if fi.IsDir() {
 				if visited[real] {
 					continue
 				}
