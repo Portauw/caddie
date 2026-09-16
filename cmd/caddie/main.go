@@ -815,25 +815,33 @@ func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) error {
 		if err != nil {
 			return fmt.Errorf("cannot read %s: %w", claudeDir, err)
 		}
-		var kept []string
+		// Check every name first and move nothing if any is taken. A partial
+		// migration is worse than none: the free-named entries would move to
+		// .agents/skills while .claude/skills stays a real directory (the
+		// symlink is never created), and Claude Code reads exactly that
+		// directory — so the skills that moved silently vanish from the tool
+		// that was using them.
+		var blocked []string
 		for _, e := range entries {
-			src := filepath.Join(claudeDir, e.Name())
-			dst := filepath.Join(agentsDir, e.Name())
 			// Lstat, so an existing symlink at dst counts as taken too.
-			if _, err := os.Lstat(dst); err == nil {
-				kept = append(kept, e.Name())
-				continue
+			if _, err := os.Lstat(filepath.Join(agentsDir, e.Name())); err == nil {
+				blocked = append(blocked, e.Name())
 			}
+		}
+		if len(blocked) > 0 {
+			return fmt.Errorf("left %s as-is: %s already exist under %s — move or remove one side, then re-run",
+				claudeDir, strings.Join(blocked, ", "), agentsDir)
+		}
+		for _, e := range entries {
 			// Rename moves files, directories and symlinks alike, and both
 			// paths are inside the project, so this stays on one filesystem.
-			if err := os.Rename(src, dst); err != nil {
-				kept = append(kept, e.Name())
+			if err := os.Rename(filepath.Join(claudeDir, e.Name()), filepath.Join(agentsDir, e.Name())); err != nil {
+				return fmt.Errorf("left %s as-is: cannot move %s: %w", claudeDir, e.Name(), err)
 			}
 		}
 		// Only succeeds when the migration emptied it.
 		if err := os.Remove(claudeDir); err != nil {
-			return fmt.Errorf("left %s in place: %s already exist(s) under %s",
-				claudeDir, strings.Join(kept, ", "), agentsDir)
+			return fmt.Errorf("left %s in place: %w", claudeDir, err)
 		}
 	}
 	_ = os.MkdirAll(filepath.Dir(claudeDir), 0o755)
@@ -1031,6 +1039,14 @@ func cmdActivate(args []string) {
 		// the current store. This catches stale links left over from a config
 		// dir rename — without this, ReconcileSkillDir would never run.
 		if old == newFP && symlinksHealthy(targetAgents, store, matched) {
+			// Re-check the .claude/skills link even on the fast path. A
+			// migration blocked by a name collision leaves that directory
+			// real and the symlink uncreated, which the fingerprint doesn't
+			// capture — without this the warning printed once and the
+			// project then stayed quietly broken across every later run.
+			if err := ensureClaudeSkillsSymlink(filepath.Join(profileDir, ".claude", "skills"), targetAgents); err != nil {
+				fmt.Printf("%s⚠%s  %v\n", ansiYellow, ansiReset, err)
+			}
 			fmt.Printf("%s✓%s %d skills (unchanged)\n", ansiGreen, ansiReset, skillCount)
 			return
 		}
