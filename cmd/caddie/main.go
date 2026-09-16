@@ -692,12 +692,12 @@ func cmdInit(args []string) {
 	}
 
 	var body strings.Builder
-	fmt.Fprintf(&body, "name: \"%s\"\n", displayName)
-	fmt.Fprintf(&body, "description: \"%s\"\n", description)
+	fmt.Fprintf(&body, "name: %s\n", config.YAMLQuote(displayName))
+	fmt.Fprintf(&body, "description: %s\n", config.YAMLQuote(description))
 	body.WriteString("\n")
 	body.WriteString("skills:\n")
 	for _, p := range patterns {
-		fmt.Fprintf(&body, "  - \"%s\"\n", p)
+		fmt.Fprintf(&body, "  - %s\n", config.YAMLQuote(p))
 	}
 
 	if err := os.WriteFile(target, []byte(body.String()), 0o644); err != nil {
