@@ -1277,27 +1277,34 @@ func ensureProjectGitignore(projectDir string) error {
 		body = b
 	}
 
-	// Rebuild caddie's own block rather than appending a second one. Anchored
-	// lines from other profiles in the same repo are kept; unanchored ones
-	// left by older versions are dropped, because they are what made this
-	// wrong — they stay in the file otherwise and keep winning, so the fix
-	// would never reach anyone who had already run caddie.
+	// Rebuild caddie's own block rather than appending a second one: the
+	// "already present" check compares exact line text, so anchoring would
+	// otherwise leave the old unanchored lines in place — still winning, and
+	// under a duplicate header — and never reach anyone who had already run
+	// caddie.
+	//
+	// Only the four exact lines older versions wrote are removed. Anything
+	// else inside the block is kept, including anchored entries for other
+	// profiles in the same repo and any rule the user added there by hand.
 	const header = "# caddie managed skill directories"
-	var kept []string
-	var before []string
+	legacy := map[string]bool{
+		".claude/skills/":             true,
+		".agents/skills/":             true,
+		".claude/.caddie-fingerprint": true,
+		".caddie.yaml":                true,
+	}
+	var kept, before []string
 	inBlock := false
 	for _, line := range strings.Split(string(body), "\n") {
 		switch {
 		case line == header:
 			inBlock = true
-		case inBlock && strings.HasPrefix(line, "/"):
-			kept = append(kept, line)
-		case inBlock && strings.TrimSpace(line) == "":
-			inBlock = false
-		case inBlock:
-			// An unanchored managed line: drop it.
-		default:
+		case !inBlock:
 			before = append(before, line)
+		case strings.TrimSpace(line) == "":
+			inBlock = false
+		case !legacy[line]:
+			kept = append(kept, line)
 		}
 	}
 	for _, e := range entries {
@@ -1308,12 +1315,10 @@ func ensureProjectGitignore(projectDir string) error {
 	slices.Sort(kept)
 
 	var out strings.Builder
-	trimmed := strings.TrimRight(strings.Join(before, "\n"), "\n")
-	if trimmed != "" {
-		out.WriteString(trimmed)
-		out.WriteString("\n")
+	if trimmed := strings.TrimRight(strings.Join(before, "\n"), "\n"); trimmed != "" {
+		out.WriteString(trimmed + "\n\n")
 	}
-	out.WriteString("\n" + header + "\n")
+	out.WriteString(header + "\n")
 	for _, e := range kept {
 		out.WriteString(e + "\n")
 	}
