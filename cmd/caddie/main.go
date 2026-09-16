@@ -1370,7 +1370,12 @@ func ensureProjectGitignore(projectDir string) error {
 	for _, e := range kept {
 		out.WriteString(e + nl)
 	}
-	if trimmed := strings.TrimRight(strings.Join(after, nl), "\r\n"); trimmed != "" {
+	// Trim both ends: the blank separator written by the previous run comes
+	// back as the first element of `after`, and TrimRight alone left it in —
+	// so each reconcile prepended another one, growing the file by a line
+	// every time and defeating the no-op guard below it, which meant caddie
+	// rewrote a tracked .gitignore on every single activate.
+	if trimmed := strings.Trim(strings.Join(after, nl), "\r\n"); trimmed != "" {
 		out.WriteString(nl + trimmed + nl)
 	}
 	if out.String() == string(body) {
