@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/Portauw/caddie/internal/skills"
 )
 
 // ANSI codes — duplicated from cmd/caddie/main.go to keep this package
@@ -30,6 +32,29 @@ const (
 type Entry struct {
 	Name    string
 	RealDir string
+}
+
+// selfContained drops any entry holding a symlink that resolves outside its
+// own directory, and reports what it dropped.
+//
+// An export must not carry content from outside the skill it names. The S3
+// backend shells out to `aws s3 cp --recursive`, which follows symlinks, so
+// a skill containing `ref.md -> ~/.ssh/id_rsa` uploaded the key itself; the
+// local backend recreates the link verbatim, which at best ships a path that
+// means nothing on the machine the export is for. Skills placed in the store
+// by hand never pass through WalkRepoSkills, so its containment checks have
+// never applied to them — this is the only place they get checked.
+func selfContained(entries []Entry) []Entry {
+	out := make([]Entry, 0, len(entries))
+	for _, e := range entries {
+		if skills.ContainsEscapingSymlink(e.RealDir, e.RealDir) {
+			fmt.Printf("  %sskip%s   %s/  %s(contains a symlink pointing outside the skill)%s\n",
+				ansiRed, ansiReset, e.Name, ansiDim, ansiReset)
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // Options controls the two modes shared between dir and S3 exports.
@@ -129,10 +154,14 @@ func copyFile(src, dst string, mode os.FileMode) error {
 // Local copies entries into target/. With Clean, sibling directories not in
 // entries are removed first.
 func Local(target string, entries []Entry, opts Options) error {
+	// matched is built from the full list, before filtering: a skill dropped
+	// for containment must not then look "stale" to --clean and get an
+	// already-exported copy deleted out from under it.
 	matched := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		matched[e.Name] = true
 	}
+	entries = selfContained(entries)
 
 	exported, removed := 0, 0
 
@@ -259,10 +288,14 @@ func S3(uri string, entries []Entry, opts Options) error {
 	bucket, prefix := parseS3URI(uri)
 	flags := awsFlags()
 
+	// matched is built from the full list, before filtering: a skill dropped
+	// for containment must not then look "stale" to --clean and get an
+	// already-exported copy deleted out from under it.
 	matched := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		matched[e.Name] = true
 	}
+	entries = selfContained(entries)
 
 	exported, removed := 0, 0
 
