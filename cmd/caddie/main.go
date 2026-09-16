@@ -842,8 +842,17 @@ func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) error {
 		for _, e := range entries {
 			// Rename moves files, directories and symlinks alike.
 			if err := os.Rename(filepath.Join(claudeDir, e.Name()), filepath.Join(agentsDir, e.Name())); err != nil {
+				var stuck []string
 				for _, name := range moved {
-					_ = os.Rename(filepath.Join(agentsDir, name), filepath.Join(claudeDir, name))
+					if os.Rename(filepath.Join(agentsDir, name), filepath.Join(claudeDir, name)) != nil {
+						stuck = append(stuck, name)
+					}
+				}
+				if len(stuck) > 0 {
+					// Saying "left as-is" would be untrue, and these entries
+					// are invisible to Claude Code where they now sit.
+					return fmt.Errorf("could not move %s (%w), and %s are now under %s — move them back by hand",
+						e.Name(), err, strings.Join(stuck, ", "), agentsDir)
 				}
 				return fmt.Errorf("left %s as-is: cannot move %s: %w", claudeDir, e.Name(), err)
 			}
@@ -1278,14 +1287,15 @@ func ensureProjectGitignore(projectDir string) error {
 	}
 
 	// Rebuild caddie's own block rather than appending a second one: the
-	// "already present" check compares exact line text, so anchoring would
+	// "already present" check compared exact line text, so anchoring would
 	// otherwise leave the old unanchored lines in place — still winning, and
 	// under a duplicate header — and never reach anyone who had already run
 	// caddie.
 	//
-	// Only the four exact lines older versions wrote are removed. Anything
-	// else inside the block is kept, including anchored entries for other
-	// profiles in the same repo and any rule the user added there by hand.
+	// Only lines that are caddie's own patterns are touched. Everything else
+	// keeps its position, because .gitignore is order-sensitive: a "!" negation
+	// only works after the rule it negates, so absorbing a user's lines into a
+	// sorted block would silently change what git ignores.
 	const header = "# caddie managed skill directories"
 	legacy := map[string]bool{
 		".claude/skills/":             true,
@@ -1293,18 +1303,39 @@ func ensureProjectGitignore(projectDir string) error {
 		".claude/.caddie-fingerprint": true,
 		".caddie.yaml":                true,
 	}
+	// CRLF: compare on the trimmed line, and write back whatever the file
+	// already used, so a Windows checkout doesn't get its endings rewritten.
+	nl := "\n"
+	if strings.Contains(string(body), "\r\n") {
+		nl = "\r\n"
+	}
+	isManaged := func(line string) bool {
+		if legacy[line] {
+			return true
+		}
+		if !strings.HasPrefix(line, "/") {
+			return false
+		}
+		for suffix := range legacy {
+			if strings.HasSuffix(line, suffix) {
+				return true
+			}
+		}
+		return false
+	}
+
 	var kept, before []string
-	inBlock := false
-	for _, line := range strings.Split(string(body), "\n") {
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimSuffix(raw, "\r")
 		switch {
 		case line == header:
-			inBlock = true
-		case !inBlock:
+			// Dropped; re-emitted below.
+		case isManaged(line):
+			if !legacy[line] {
+				kept = append(kept, line)
+			}
+		default:
 			before = append(before, line)
-		case strings.TrimSpace(line) == "":
-			inBlock = false
-		case !legacy[line]:
-			kept = append(kept, line)
 		}
 	}
 	for _, e := range entries {
@@ -1315,12 +1346,12 @@ func ensureProjectGitignore(projectDir string) error {
 	slices.Sort(kept)
 
 	var out strings.Builder
-	if trimmed := strings.TrimRight(strings.Join(before, "\n"), "\n"); trimmed != "" {
-		out.WriteString(trimmed + "\n\n")
+	if trimmed := strings.TrimRight(strings.Join(before, nl), "\r\n"); trimmed != "" {
+		out.WriteString(trimmed + nl + nl)
 	}
-	out.WriteString(header + "\n")
+	out.WriteString(header + nl)
 	for _, e := range kept {
-		out.WriteString(e + "\n")
+		out.WriteString(e + nl)
 	}
 	if out.String() == string(body) {
 		return nil
