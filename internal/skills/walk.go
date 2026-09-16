@@ -202,15 +202,16 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 }
 
 // ContainsEscapingSymlink reports whether dir, or anything under it, contains
-// a symlink resolving outside root. Exported for callers that ship a skill
-// directory somewhere else (see internal/export): skills placed in the store
-// by hand never go through WalkRepoSkills, so nothing else has checked them.
-func ContainsEscapingSymlink(dir, root string) bool {
-	rootReal, err := filepath.EvalSymlinks(root)
+// a symlink resolving outside dir itself. Exported for callers that ship a
+// skill directory somewhere else (see internal/export): skills placed in the
+// store by hand never go through WalkRepoSkills, so nothing else has checked
+// them, and an artifact that leaves the directory it names isn't shippable.
+func ContainsEscapingSymlink(dir string) bool {
+	real, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		rootReal = root
+		real = dir
 	}
-	return hasEscapingSymlink(dir, rootReal, map[string]bool{})
+	return hasEscapingSymlink(dir, real, map[string]bool{})
 }
 
 // hasEscapingSymlink reports whether dir, or anything under it recursively,

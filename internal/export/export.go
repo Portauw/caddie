@@ -47,7 +47,7 @@ type Entry struct {
 func selfContained(entries []Entry) []Entry {
 	out := make([]Entry, 0, len(entries))
 	for _, e := range entries {
-		if skills.ContainsEscapingSymlink(e.RealDir, e.RealDir) {
+		if skills.ContainsEscapingSymlink(e.RealDir) {
 			fmt.Printf("  %sskip%s   %s/  %s(contains a symlink pointing outside the skill)%s\n",
 				ansiRed, ansiReset, e.Name, ansiDim, ansiReset)
 			continue
