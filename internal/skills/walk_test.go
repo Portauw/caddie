@@ -199,6 +199,32 @@ func TestWalkRepoSkills(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects_sibling_symlink_escaping_repo", func(t *testing.T) {
+		// SKILL.md itself is legitimate and inside repoDir, but a sibling
+		// file in the same skill directory is a symlink escaping repoDir.
+		// The whole directory (AbsPath) gets adopted and symlinked wholesale
+		// into the store, so validating SKILL.md alone isn't enough — every
+		// file in the directory must stay contained.
+		base := t.TempDir()
+		secret := filepath.Join(base, "id_rsa")
+		if err := os.WriteFile(secret, []byte("PRIVATE KEY"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		repo := filepath.Join(base, "repo")
+		evilDir := filepath.Join(repo, "skills", "evil")
+		mkSkill(t, evilDir)
+		if err := os.Symlink(secret, filepath.Join(evilDir, "reference.md")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := WalkRepoSkills(repo, "skills")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected the skill dir with an escaping sibling symlink to be ignored, got %v", got)
+		}
+	})
+
 	t.Run("terminates_on_branching_symlink_cycle", func(t *testing.T) {
 		// Two directories link to each other with two symlinks apiece
 		// (branching factor 2). Every followed symlink stays inside repoDir,
@@ -233,6 +259,33 @@ func TestWalkRepoSkills(t *testing.T) {
 		case <-done:
 		case <-time.After(3 * time.Second):
 			t.Fatal("walk did not terminate within 3s — exponential symlink fan-out")
+		}
+	})
+
+	t.Run("two_unrelated_symlinks_to_shared_target_both_adopted", func(t *testing.T) {
+		// Cycle detection is scoped to the current root-to-dir chain, not
+		// global to the whole walk — so two sibling symlinks pointing at the
+		// same shared (non-cyclic) target are each still walked and adopted
+		// as their own skill, rather than the second one being silently
+		// dropped because the target's real path was already "visited".
+		root := t.TempDir()
+		mkSkill(t, filepath.Join(root, "shared"))
+		if err := os.MkdirAll(filepath.Join(root, "skills"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(root, "shared"), filepath.Join(root, "skills", "one")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(root, "shared"), filepath.Join(root, "skills", "two")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := WalkRepoSkills(root, "skills")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"one", "two"}
+		if !reflect.DeepEqual(names(got), want) {
+			t.Errorf("got %v want %v", names(got), want)
 		}
 	})
 
