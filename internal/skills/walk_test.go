@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -479,11 +480,14 @@ func TestWalkRepoSkills(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, err := WalkRepoSkills(repo, "..")
-		if err != nil {
-			t.Fatal(err)
-		}
 		if len(got) != 0 {
 			t.Errorf("expected skills_path escaping repoDir to yield nothing, got %v", names(got))
+		}
+		// Distinguishable from "this repo has no skills": a rejected path
+		// used to return (nil, nil), so the repo silently stopped
+		// contributing anything with no message the user could search for.
+		if !errors.Is(err, ErrSkillsPathOutsideRepo) {
+			t.Errorf("err = %v, want ErrSkillsPathOutsideRepo", err)
 		}
 	})
 
