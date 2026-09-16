@@ -44,3 +44,32 @@ func TestYAMLQuotePreventsInjection(t *testing.T) {
 		}
 	}
 }
+
+// TestYAMLQuoteControlCharacters pins that no control character survives into
+// a quoted scalar. cmdInit's readLine trims only "\n", so CRLF-piped stdin
+// leaves a bare CR on the value; written raw it round-tripped back out and
+// mangled every line that printed the name.
+func TestYAMLQuoteControlCharacters(t *testing.T) {
+	for _, v := range []string{
+		"trailing cr\r",
+		"crlf\r\nsecond",
+		"bell\a and vtab\v",
+		"del\x7f",
+		"nul\x00byte",
+		"tab\tand newline\n",
+		`quote " and backslash \`,
+		"plain value",
+		"unicode é ☕",
+	} {
+		quoted := YAMLQuote(v)
+		for _, r := range quoted {
+			if r < 0x20 || r == 0x7f {
+				t.Errorf("YAMLQuote(%q) = %q, still contains a raw control character", v, quoted)
+				break
+			}
+		}
+		if got := StripQuotes(quoted); got != v {
+			t.Errorf("round trip of %q gave %q", v, got)
+		}
+	}
+}
