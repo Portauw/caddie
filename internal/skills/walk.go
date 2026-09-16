@@ -7,14 +7,15 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // escapeScans counts how many times a skill directory is actually scanned for
 // escaping symlinks, i.e. cache misses. Tests assert on it so the "scan once
 // per real directory, not once per alias" property is checked directly rather
-// than through a wall-clock budget. Not used outside tests; walks are
-// sequential, so a plain counter is enough.
-var escapeScans int
+// than through a wall-clock budget. Atomic because nothing should have to
+// remember that walks happen to be sequential today.
+var escapeScans atomic.Int64
 
 // ErrSkillsPathOutsideRepo is returned when the configured skills_path
 // resolves outside the repo's own checkout, so nothing under it is walked.
@@ -108,7 +109,7 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 	escapesOutside := func(dir, real string) bool {
 		bad, seen := escapes[real]
 		if !seen {
-			escapeScans++
+			escapeScans.Add(1)
 			bad = hasEscapingSymlink(dir, repoDirReal, map[string]bool{})
 			escapes[real] = bad
 		}
@@ -271,72 +272,87 @@ func hasEscapingSymlink(dir, repoDirReal string, visited map[string]bool) bool {
 }
 
 // danglingEscapes reports whether a symlink whose target does not exist points
-// outside root. The target can't be resolved (nothing is there), so it is
-// resolved lexically against the link's own real parent directory.
+// outside root. The target can't be handed to EvalSymlinks (nothing is there),
+// so it is resolved a component at a time from the link's real parent.
 //
-// Two subtleties, both of which were holes before:
-//
-//   - Join and Clean are purely lexical. Resolving only the link's own parent
-//     left "skills/s/key.md -> ../../out/x" accepted whenever "out" was itself
-//     a directory symlink out of the repo. So the longest prefix of the target
-//     that actually exists is resolved, and the missing tail re-appended.
-//   - The first missing component can itself be a dangling symlink, which is
-//     how "key.md -> ../../shared/k" with "shared/k -> ../../id_rsa" escaped.
-//     So the chain is followed, with a hop cap.
-//
-// The intermediate in both shapes only has to sit outside the skill directory
-// and inside the repo — the one region neither the per-skill containment scan
-// nor the discovery walk looks at.
+// What it must not do is normalise first. filepath.Join and filepath.Clean
+// collapse "X/.." lexically; the kernel resolves X when X is a symlink and
+// then applies ".." to the *target's* parent. So "../../out/../secret", with
+// "out" an in-repo symlink pointing elsewhere, normalises to a path inside the
+// repo while actually landing wherever "out" points. Three escapes hid behind
+// that difference, so this resolves in the kernel's order instead: each
+// component is resolved before the next one is considered, and ".." is the
+// parent of what has been resolved so far.
 func danglingEscapes(full, rootReal string) bool {
-	for hops := 0; hops < 40; hops++ {
-		target, err := os.Readlink(full)
-		if err != nil {
-			return true
-		}
-		resolved := target
-		if !filepath.IsAbs(resolved) {
-			parent, err := filepath.EvalSymlinks(filepath.Dir(full))
-			if err != nil {
-				return true
-			}
-			resolved = filepath.Join(parent, target)
-		}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(full))
+	if err != nil {
+		return true
+	}
+	target, err := os.Readlink(full)
+	if err != nil {
+		return true
+	}
+	hops := 40
+	resolved, ok := resolveStepwise(parent, target, &hops)
+	if !ok {
+		return true
+	}
+	return !isWithin(rootReal, resolved)
+}
 
-		existing := filepath.Clean(resolved)
-		var tail []string
-		for {
-			real, err := filepath.EvalSymlinks(existing)
-			if err == nil {
-				existing = real
-				break
-			}
-			parent := filepath.Dir(existing)
-			if parent == existing {
-				// Nothing on the path resolves, not even the root.
-				return true
-			}
-			tail = append([]string{filepath.Base(existing)}, tail...)
-			existing = parent
+// resolveStepwise resolves target relative to parent (which must already be
+// real), one component at a time. It returns false when anything is unsafe or
+// unresolvable — every failure is a rejection, since this runs on a path no
+// other check has been able to verify.
+func resolveStepwise(parent, target string, hops *int) (string, bool) {
+	if *hops <= 0 {
+		return "", false
+	}
+	*hops--
+
+	cur := parent
+	if filepath.IsAbs(target) {
+		cur = string(filepath.Separator)
+	}
+	for _, c := range strings.Split(filepath.ToSlash(target), "/") {
+		switch c {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
 		}
-		if len(tail) == 0 {
-			return !isWithin(rootReal, existing)
-		}
-		// The first component that doesn't resolve decides it: if it's a
-		// dangling symlink, follow it; anything below it inherits wherever it
-		// lands, so containment of that one link is what matters.
-		next := filepath.Join(existing, tail[0])
-		if !isWithin(rootReal, next) {
-			return true
+		next := filepath.Join(cur, c)
+		if real, err := filepath.EvalSymlinks(next); err == nil {
+			cur = real
+			continue
 		}
 		li, err := os.Lstat(next)
-		if err != nil || li.Mode()&os.ModeSymlink == 0 {
-			// A plain missing name inside root — the LFS-pointer case.
-			return false
+		switch {
+		case err == nil && li.Mode()&os.ModeSymlink != 0:
+			// A dangling symlink mid-path: follow it, then carry on from
+			// wherever it lands.
+			t, rerr := os.Readlink(next)
+			if rerr != nil {
+				return "", false
+			}
+			r, ok := resolveStepwise(cur, t, hops)
+			if !ok {
+				return "", false
+			}
+			cur = r
+		case err != nil && os.IsNotExist(err):
+			// A name that simply isn't there — the unfetched LFS pointer, the
+			// generated file. Nothing below it can exist either, so the rest
+			// resolves lexically without any symlink to hide behind.
+			cur = next
+		default:
+			// Anything else (a permission error, a broken path component) is
+			// a path we cannot vouch for.
+			return "", false
 		}
-		full = next
 	}
-	// A chain this long is not a real repo layout.
-	return true
+	return cur, true
 }
 
 // isWithin reports whether target is root itself or a descendant of root.

@@ -458,7 +458,7 @@ func TestWalkRepoSkills(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		escapeScans = 0
+		escapeScans.Store(0)
 		got, err := WalkRepoSkills(repo, "skills")
 		if err != nil {
 			t.Fatal(err)
@@ -466,8 +466,8 @@ func TestWalkRepoSkills(t *testing.T) {
 		if len(got) != aliases {
 			t.Errorf("got %d skills, want %d (one per alias)", len(got), aliases)
 		}
-		if escapeScans != 1 {
-			t.Errorf("containment scan ran %d times, want 1 — all aliases share one real directory", escapeScans)
+		if got := escapeScans.Load(); got != 1 {
+			t.Errorf("containment scan ran %d times, want 1 — all aliases share one real directory", got)
 		}
 	})
 
@@ -528,6 +528,41 @@ func TestDanglingSymlinkChainCannotEscape(t *testing.T) {
 			}
 			mkSkill(t, filepath.Join(repo, "skills", "s"))
 			if err := os.Symlink("../../out/x", filepath.Join(repo, "skills", "s", "key.md")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"via_dotdot_collapsing_a_symlink", func(t *testing.T, base, repo string) {
+			// filepath.Clean removes "out/.." lexically; the kernel resolves
+			// "out" first and then applies "..", so the target actually lands
+			// beside whatever "out" points at.
+			deep := filepath.Join(base, "outside", "deep")
+			if err := os.MkdirAll(deep, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(deep, filepath.Join(repo, "out")); err != nil {
+				t.Fatal(err)
+			}
+			mkSkill(t, filepath.Join(repo, "skills", "s"))
+			if err := os.Symlink("../../out/../secret", filepath.Join(repo, "skills", "s", "key.md")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"via_dotdot_collapse_behind_a_chain", func(t *testing.T, base, repo string) {
+			deep := filepath.Join(base, "outside", "deep")
+			if err := os.MkdirAll(deep, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(deep, filepath.Join(repo, "out")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(repo, "shared"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("../out/../secret", filepath.Join(repo, "shared", "k")); err != nil {
+				t.Fatal(err)
+			}
+			mkSkill(t, filepath.Join(repo, "skills", "s"))
+			if err := os.Symlink("../../shared/k", filepath.Join(repo, "skills", "s", "key.md")); err != nil {
 				t.Fatal(err)
 			}
 		}},
