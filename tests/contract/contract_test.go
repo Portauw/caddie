@@ -1384,12 +1384,39 @@ func TestActivateContract(t *testing.T) {
 		}
 	})
 
-	t.Run("migration_never_deletes_user_content", func(t *testing.T) {
-		// .claude/skills is where Claude Code reads project skills from, so a
-		// real directory of hand-written content there is the expected
-		// pre-adoption state — and activate runs from the claude() shell
-		// function, before the user knows caddie will touch it. Migration
-		// must move what it can and leave the rest; it must never delete.
+	t.Run("migration_moves_everything_when_nothing_collides", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		claudeSkills := filepath.Join(projectDir, ".claude", "skills")
+		agentsSkills := filepath.Join(projectDir, ".agents", "skills")
+		if err := os.MkdirAll(filepath.Join(claudeSkills, "handwritten"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(claudeSkills, "handwritten", "SKILL.md"), "mine\n")
+		// A loose file: the old migration never moved these and then deleted
+		// the directory they were in.
+		mustWrite(t, filepath.Join(claudeSkills, "README.md"), "readme\n")
+
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		for _, f := range []string{"README.md", filepath.Join("handwritten", "SKILL.md")} {
+			if _, err := os.Stat(filepath.Join(agentsSkills, f)); err != nil {
+				t.Errorf("%s should have been migrated: %v", f, err)
+			}
+		}
+		if li, err := os.Lstat(claudeSkills); err != nil || li.Mode()&os.ModeSymlink == 0 {
+			t.Errorf(".claude/skills should now be a symlink: %v", err)
+		}
+	})
+
+	t.Run("migration_is_all_or_nothing_on_collision", func(t *testing.T) {
+		// A partial migration is worse than none: the entries that moved
+		// would leave .claude/skills — which is the directory Claude Code
+		// actually reads — while it stays a real directory because the
+		// symlink is never created. The user's working skill would silently
+		// disappear from the tool using it. So on any collision, move
+		// nothing and leave everything exactly as found.
 		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
 		claudeSkills := filepath.Join(projectDir, ".claude", "skills")
 		agentsSkills := filepath.Join(projectDir, ".agents", "skills")
@@ -1407,23 +1434,24 @@ func TestActivateContract(t *testing.T) {
 		mustWrite(t, filepath.Join(agentsSkills, "collides", "SKILL.md"), "agents-version\n")
 		mustWrite(t, filepath.Join(claudeSkills, "README.md"), "readme\n")
 
-		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate")
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}
+		r := runWith(t, goBin, opts, "activate")
 		if r.exitCode != 0 {
 			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
 		}
-
-		// Loose files and free-named directories move across.
-		for _, f := range []string{
-			filepath.Join(agentsSkills, "README.md"),
-			filepath.Join(agentsSkills, "handwritten", "SKILL.md"),
-		} {
-			if _, err := os.Stat(f); err != nil {
-				t.Errorf("%s should have been migrated: %v", f, err)
-			}
-		}
-		// Neither side of a name collision may be destroyed.
-		assertFileContains(t, filepath.Join(agentsSkills, "collides", "SKILL.md"), "agents-version")
+		// Everything stays where it was — nothing moved, nothing deleted.
+		assertFileContains(t, filepath.Join(claudeSkills, "handwritten", "SKILL.md"), "mine")
+		assertFileContains(t, filepath.Join(claudeSkills, "README.md"), "readme")
 		assertFileContains(t, filepath.Join(claudeSkills, "collides", "SKILL.md"), "claude-version")
+		assertFileContains(t, filepath.Join(agentsSkills, "collides", "SKILL.md"), "agents-version")
+
+		// And the warning repeats: the fingerprint fast path used to return
+		// before this was re-checked, so a blocked project was told once and
+		// then stayed quietly broken.
+		again := runWith(t, goBin, opts, "activate")
+		if !strings.Contains(again.stdout+again.stderr, "collides") {
+			t.Errorf("second activate should warn again, got stdout=%q stderr=%q", again.stdout, again.stderr)
+		}
 	})
 
 	t.Run("idempotent_second_run", func(t *testing.T) {
