@@ -514,7 +514,7 @@ func updateOneRepo(e repos.Entry) (string, bool) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), repos.GitFetchTimeout)
 	defer cancel()
-	pullErr := exec.CommandContext(ctx, "git", "-C", repoDir, "pull", "--ff-only").Run()
+	pullErr := repos.GitCommand(ctx, "-C", repoDir, "pull", "--ff-only").Run()
 	if pullErr != nil {
 		fmt.Fprintf(&b, "%s⚠%s  Update failed for '%s'. Try: cd %s && git pull\n",
 			ansiYellow, ansiReset, e.Name, repoDir)
@@ -532,11 +532,12 @@ func updateOneRepo(e repos.Entry) (string, bool) {
 }
 
 // gitClone shallow-clones url into dir. Uses GitCloneTimeout (longer than
-// fetch) to accommodate larger first-time pulls over slow links.
+// fetch) to accommodate larger first-time pulls over slow links. The "--"
+// stops a url starting with "-" from being parsed as a git flag.
 func gitClone(url, dir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), repos.GitCloneTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "git", "clone", "--depth", "1", url, dir).Run()
+	return repos.GitCommand(ctx, "clone", "--depth", "1", "--", url, dir).Run()
 }
 
 // cmdReset cleans managed symlinks in ~/.agents/skills, removes the

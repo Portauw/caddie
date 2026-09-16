@@ -21,6 +21,27 @@ const (
 	GitCloneTimeout = 90 * time.Second
 )
 
+// gitAllowedProtocols restricts git subprocesses to these transports. Repo
+// URLs come from sources.yaml, which users often populate by copy-pasting a
+// `caddie repo add <name> <url>` one-liner from a README or chat message.
+// Without this, a URL using git's "ext::" (or "fd::") transport helper runs
+// an arbitrary shell command the moment the repo is cloned or updated —
+// before any file from the "repo" is ever inspected. "file" stays allowed:
+// it only reads a local git repo (a legitimate on-disk skill source, and
+// what the contract tests use in place of a network fixture), it can't
+// execute anything.
+const gitAllowedProtocols = "GIT_ALLOW_PROTOCOL=http:https:ssh:git:file"
+
+// GitCommand returns a `git <args...>` subprocess with the protocol
+// allowlist applied. Callers that pass a repo URL as a positional argument
+// should put "--" immediately before it so a URL starting with "-" can't be
+// parsed as a flag.
+func GitCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = append(os.Environ(), gitAllowedProtocols)
+	return cmd
+}
+
 // Entry is one registered git repo. Prefix may be "", "false", "true", or a
 // literal prefix string — callers must interpret it.
 type Entry struct {
@@ -231,7 +252,7 @@ func isRepoNameLine(line, name string) bool {
 func GitOutput(dir string, args ...string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), GitReadTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd := GitCommand(ctx, append([]string{"-C", dir}, args...)...)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
