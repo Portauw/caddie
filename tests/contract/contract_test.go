@@ -1748,6 +1748,34 @@ func TestExportContract(t *testing.T) {
 		return
 	}
 
+	t.Run("dir_skips_skill_escaping_its_own_directory", func(t *testing.T) {
+		// An export must not carry content from outside the skill it names.
+		// The S3 backend runs `aws s3 cp --recursive`, which follows
+		// symlinks, so this would upload the target's bytes; the local
+		// backend would ship a path meaningless on the receiving machine.
+		// Skills placed in the store by hand never pass through
+		// WalkRepoSkills, so nothing else has ever checked them.
+		aiEnvDir, cwd := setupStore(t)
+		secretDir := realTempDir(t)
+		secret := filepath.Join(secretDir, "id_rsa")
+		mustWrite(t, secret, "PRIVATE KEY\n")
+		if err := os.Symlink(secret, filepath.Join(aiEnvDir, "skills", "foo-one", "ref.md")); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(t.TempDir(), "out")
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export", "--to", target)
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if _, err := os.Stat(filepath.Join(target, "foo-one")); !os.IsNotExist(err) {
+			t.Errorf("foo-one escapes its own directory and must not be exported: %v", err)
+		}
+		// The clean skill in the same run still exports.
+		if _, err := os.Stat(filepath.Join(target, "foo-two", "SKILL.md")); err != nil {
+			t.Errorf("foo-two should still export: %v", err)
+		}
+	})
+
 	t.Run("dir_basic", func(t *testing.T) {
 		aiEnvDir, cwd := setupStore(t)
 		target := filepath.Join(t.TempDir(), "out")
