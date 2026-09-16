@@ -73,3 +73,19 @@ func TestYAMLQuoteControlCharacters(t *testing.T) {
 		}
 	}
 }
+
+// TestYAMLQuoteInvalidUTF8 guards the round trip for values that aren't valid
+// UTF-8. argv makes no such promise, and a repo name that came back different
+// would stop matching its own checkout directory.
+func TestYAMLQuoteInvalidUTF8(t *testing.T) {
+	for _, v := range []string{
+		"a\xffb",
+		"\xc3(",
+		"lone surrogate \xed\xa0\x80",
+		"valid é then \xfe",
+	} {
+		if got := StripQuotes(YAMLQuote(v)); got != v {
+			t.Errorf("round trip of %q gave %q", v, got)
+		}
+	}
+}
