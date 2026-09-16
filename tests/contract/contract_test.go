@@ -1731,12 +1731,34 @@ func TestExportContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		mustWrite(t, filepath.Join(target, "stale", "old.txt"), "old\n")
-		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export", "--to", target, "--clean")
+		// --clean deletes directories the user never asked caddie to manage,
+		// so it prompts; --force is how a non-interactive caller opts in.
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export", "--to", target, "--clean", "--force")
 		if r.exitCode != 0 {
 			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
 		}
 		if _, err := os.Stat(filepath.Join(target, "stale")); !os.IsNotExist(err) {
 			t.Errorf("%s/stale should be removed: %v", target, err)
+		}
+	})
+
+	t.Run("dir_clean_requires_confirmation", func(t *testing.T) {
+		aiEnvDir, cwd := setupStore(t)
+		target := filepath.Join(t.TempDir(), "out")
+		if err := os.MkdirAll(filepath.Join(target, "stale"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(target, "stale", "old.txt"), "old\n")
+		// No --force and no "y" on stdin: the delete must not happen. The
+		// target is whatever was passed to --to, with nothing proving it is
+		// a caddie export directory, so `--to ~/Documents` is a working
+		// command and must not silently rm -rf what it finds there.
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, "export", "--to", target, "--clean")
+		if r.exitCode == 0 {
+			t.Fatalf("expected a non-zero exit, got 0: stdout=%q", r.stdout)
+		}
+		if _, err := os.Stat(filepath.Join(target, "stale", "old.txt")); err != nil {
+			t.Errorf("%s/stale/old.txt must survive an unconfirmed --clean: %v", target, err)
 		}
 	})
 

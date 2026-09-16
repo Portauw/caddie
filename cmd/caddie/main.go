@@ -1243,6 +1243,14 @@ func ensureProjectGitignore(projectDir string) error {
 	return os.WriteFile(gitignore, []byte(out.String()), 0o644)
 }
 
+// pluralIes renders the "entry"/"entries" suffix for n.
+func pluralIes(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
+}
+
 // cmdExport resolves the cwd profile's skills (or all skills with --all),
 // then dispatches to internal/export for either a local directory or an
 // s3:// URL.
@@ -1252,14 +1260,22 @@ func cmdExport(args []string) {
 		dryRun bool
 		clean  bool
 		all    bool
+		force  bool
 	)
 
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch a {
 		case "--to":
+			// Taking args[i+1] unconditionally swallowed the next flag:
+			// `--clean --to --dry-run` exported to a directory literally
+			// named "--dry-run" with dry-run off and --clean live, which
+			// with the deletion below is a real rm of whatever was there.
 			if i+1 >= len(args) {
-				die("Unknown flag: --to")
+				die("--to needs a directory or s3:// URL")
+			}
+			if strings.HasPrefix(args[i+1], "-") {
+				die(fmt.Sprintf("--to needs a directory or s3:// URL, got the flag %s", args[i+1]))
 			}
 			target = args[i+1]
 			i++
@@ -1269,6 +1285,8 @@ func cmdExport(args []string) {
 			clean = true
 		case "--all":
 			all = true
+		case "--force", "-f":
+			force = true
 		default:
 			if strings.HasPrefix(a, "-") {
 				die("Unknown flag: " + a)
@@ -1278,7 +1296,7 @@ func cmdExport(args []string) {
 	}
 
 	if target == "" {
-		die("Usage: caddie export [--all] --to <dir-or-s3> [--clean] [--dry-run]")
+		die("Usage: caddie export [--all] --to <dir-or-s3> [--clean] [--dry-run] [--force]")
 	}
 
 	var patterns []string
@@ -1310,7 +1328,23 @@ func cmdExport(args []string) {
 		return
 	}
 
-	opts := export.Options{Clean: clean, DryRun: dryRun}
+	opts := export.Options{Clean: clean, DryRun: dryRun, ConfirmRemove: func(names []string) bool {
+		if force {
+			return true
+		}
+		fmt.Printf("%s⚠%s  %s--clean%s will recursively delete %d entr%s under %s%s%s that caddie did not export:\n",
+			ansiYellow, ansiReset, ansiBold, ansiReset, len(names), pluralIes(len(names)), ansiBold, target, ansiReset)
+		for _, n := range names {
+			fmt.Printf("    %s%s/%s\n", ansiRed, n, ansiReset)
+		}
+		fmt.Print("Proceed? [y/N] ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		answer := strings.TrimSpace(line)
+		if answer != "y" && answer != "Y" {
+			return false
+		}
+		return true
+	}}
 	if strings.HasPrefix(target, "s3://") {
 		if err := export.S3(target, entries, opts); err != nil {
 			die(err.Error())

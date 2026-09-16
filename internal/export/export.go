@@ -36,6 +36,16 @@ type Entry struct {
 type Options struct {
 	Clean  bool
 	DryRun bool
+
+	// ConfirmRemove is called before --clean deletes anything, with the
+	// directory names about to be removed, and must return true to proceed.
+	// --clean recursively deletes every subdirectory of the target that
+	// isn't a matched skill, and the target is whatever the user passed to
+	// --to — there is no marker file proving it is a caddie export
+	// directory, so `--to ~/Documents` is a working command. A nil hook
+	// means "never remove": callers have to opt in explicitly rather than
+	// inherit a destructive default.
+	ConfirmRemove func(names []string) bool
 }
 
 // countFiles counts regular files under dir (recursive). Errors are silently
@@ -139,18 +149,27 @@ func Local(target string, entries []Entry, opts Options) error {
 				names = append(names, e.Name())
 			}
 			sort.Strings(names)
+			stale := make([]string, 0, len(names))
 			for _, name := range names {
-				if matched[name] {
-					continue
+				if !matched[name] {
+					stale = append(stale, name)
 				}
-				if opts.DryRun {
+			}
+			if opts.DryRun {
+				for _, name := range stale {
 					fmt.Printf("  %sremove%s %s/\n", ansiRed, ansiReset, name)
-				} else {
+				}
+				removed = len(stale)
+			} else if len(stale) > 0 {
+				if opts.ConfirmRemove == nil || !opts.ConfirmRemove(stale) {
+					return fmt.Errorf("aborted: --clean would delete %d existing directories under %s", len(stale), target)
+				}
+				for _, name := range stale {
 					if err := os.RemoveAll(filepath.Join(target, name)); err != nil {
 						return err
 					}
+					removed++
 				}
-				removed++
 			}
 		}
 	}
@@ -250,21 +269,30 @@ func S3(uri string, entries []Entry, opts Options) error {
 	if opts.Clean {
 		existing := awsListPrefixes(bucket, prefix, flags)
 		sort.Strings(existing)
+		stale := make([]string, 0, len(existing))
 		for _, name := range existing {
-			if name == "" || matched[name] {
-				continue
+			if name != "" && !matched[name] {
+				stale = append(stale, name)
 			}
-			if opts.DryRun {
+		}
+		if opts.DryRun {
+			for _, name := range stale {
 				fmt.Printf("  %sremove%s s3://%s/%s/%s/\n", ansiRed, ansiReset, bucket, prefix, name)
-			} else {
+			}
+			removed = len(stale)
+		} else if len(stale) > 0 {
+			if opts.ConfirmRemove == nil || !opts.ConfirmRemove(stale) {
+				return fmt.Errorf("aborted: --clean would delete %d existing prefixes under s3://%s/%s", len(stale), bucket, prefix)
+			}
+			for _, name := range stale {
 				args := append([]string{}, flags...)
 				args = append(args, "s3", "rm",
 					fmt.Sprintf("s3://%s/%s/%s/", bucket, prefix, name),
 					"--recursive")
 				// A single rm failing should not abort the rest of the export.
 				_ = exec.Command("aws", args...).Run()
+				removed++
 			}
-			removed++
 		}
 	}
 
