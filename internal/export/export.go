@@ -27,6 +27,11 @@ const (
 	ansiGreen = "\033[0;32m"
 )
 
+// gitDir is excluded from every export path: for skills_path: "." the skill
+// directory is the git checkout itself, and .git is VCS metadata rather than
+// skill content.
+const gitDir = ".git"
+
 // Entry is one resolved skill to be exported: Name is the store dirname,
 // RealDir is the filesystem directory whose contents are copied.
 type Entry struct {
@@ -77,9 +82,12 @@ type Options struct {
 // counted as zero.
 func countFiles(dir string) int {
 	n := 0
-	_ = filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
+		}
+		if info.IsDir() && info.Name() == gitDir {
+			return filepath.SkipDir
 		}
 		if info.Mode().IsRegular() {
 			n++
@@ -105,6 +113,14 @@ func copyDir(src, dst string) error {
 		return err
 	}
 	for _, e := range entries {
+		// A "one repo = one skill" registration (skills_path: ".") makes the
+		// skill directory the checkout itself, so .git is inside what gets
+		// copied. It is not skill content: it carries the remote URL (which
+		// for some setups embeds a token), and git's init.templateDir leaves
+		// symlinked hooks in it pointing outside the repo entirely.
+		if e.Name() == gitDir {
+			continue
+		}
 		srcPath := filepath.Join(src, e.Name())
 		dstPath := filepath.Join(dst, e.Name())
 		// Lstat so source symlinks are preserved verbatim, not followed.
@@ -337,7 +353,11 @@ func S3(uri string, entries []Entry, opts Options) error {
 				ansiGreen, ansiReset, s3Dest, ansiDim, fileCount, e.RealDir, ansiReset)
 		} else {
 			args := append([]string{}, flags...)
-			args = append(args, "s3", "cp", e.RealDir, s3Dest, "--recursive")
+			// --recursive follows symlinks, so without this exclude a
+			// repo-root skill would upload the contents of whatever
+			// .git/hooks points at, which is outside the repo by design.
+			args = append(args, "s3", "cp", e.RealDir, s3Dest, "--recursive",
+				"--exclude", gitDir+"/*")
 			_ = exec.Command("aws", args...).Run()
 		}
 		exported++
