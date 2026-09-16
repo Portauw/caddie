@@ -50,3 +50,42 @@ func TestGitCommandAllowsFileTransport(t *testing.T) {
 		t.Fatalf("expected clone at %s: %v", dst, err)
 	}
 }
+
+func TestValidName(t *testing.T) {
+	// The checkout path is built by joining the name onto Dir(), and
+	// `repo remove` rm -rf's it, so traversal here is a delete primitive.
+	bad := []string{
+		"",
+		".",
+		"..",
+		"../../../Documents/thesis",
+		"foo/bar",
+		`foo\bar`,
+		"/etc",
+		"-upload-pack=touch",
+		"~/Documents",
+		"a\x00b",
+	}
+	for _, name := range bad {
+		if err := ValidName(name); err == nil {
+			t.Errorf("ValidName(%q) = nil, want an error", name)
+		}
+		if _, err := CheckoutDir(name); err == nil {
+			t.Errorf("CheckoutDir(%q) = nil error, want one", name)
+		}
+	}
+
+	good := []string{"lenny", "gws-beta", "my_repo", "Repo.2", "skills4"}
+	for _, name := range good {
+		if err := ValidName(name); err != nil {
+			t.Errorf("ValidName(%q) = %v, want nil", name, err)
+		}
+		dir, err := CheckoutDir(name)
+		if err != nil {
+			t.Fatalf("CheckoutDir(%q) = %v", name, err)
+		}
+		if got, want := filepath.Dir(dir), filepath.Clean(Dir()); got != want {
+			t.Errorf("CheckoutDir(%q) parent = %q, want %q", name, got, want)
+		}
+	}
+}
