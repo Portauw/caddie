@@ -89,15 +89,25 @@ func BuildRepoMap() (map[string]string, error) {
 // Plain dirs and orphan symlinks are TypeLocal.
 //
 // repoKeys must be the sorted keys of repoMap so classification is
-// deterministic regardless of map iteration order.
-func resolve(full, dirName string, isSymlink bool, repoMap map[string]string, repoKeys []string) (prefix, remainder string, typ SourceType) {
+// deterministic regardless of map iteration order. reposRoot is the resolved
+// repos checkout directory; a target counts as belonging to a repo only when
+// it is that repo's checkout or something inside it.
+//
+// The match used to be an unanchored strings.Contains of "repos/<name>" over
+// the whole target path, so a repo whose name was a prefix of another's
+// captured it: with `gws` and `gws-beta` registered, gws-beta's skills were
+// attributed to gws, `gws-beta:*` matched nothing while reporting "the source
+// may have been removed", and `gws:*` silently activated gws-beta's skills.
+// A bare substring also matched unrelated paths like ~/repos/gws/.
+func resolve(full, dirName string, isSymlink bool, repoMap map[string]string, repoKeys []string, reposRoot string) (prefix, remainder string, typ SourceType) {
 	if isSymlink {
 		target, err := filepath.EvalSymlinks(full)
 		if err != nil {
 			target = full
 		}
 		for _, k := range repoKeys {
-			if strings.Contains(target, k) {
+			dir := filepath.Join(reposRoot, strings.TrimPrefix(k, "repos/"))
+			if target == dir || strings.HasPrefix(target, dir+string(filepath.Separator)) {
 				prefix = repoMap[k]
 				remainder = strings.TrimPrefix(dirName, prefix+"-")
 				return prefix, remainder, TypeRepo
@@ -128,6 +138,15 @@ func Scan() ([]Item, error) {
 	}
 	sort.Strings(repoKeys)
 
+	// Resolve the checkout root once: store links are compared after
+	// EvalSymlinks, so the root has to be resolved the same way or nothing
+	// matches when the config dir is reached through a symlink (/tmp on
+	// macOS, for one).
+	reposRoot := repos.Dir()
+	if r, err := filepath.EvalSymlinks(reposRoot); err == nil {
+		reposRoot = r
+	}
+
 	var items []Item
 	for _, e := range entries {
 		full := filepath.Join(storeDir, e.Name())
@@ -136,7 +155,7 @@ func Scan() ([]Item, error) {
 			continue
 		}
 		isSymlink := e.Type()&os.ModeSymlink != 0
-		prefix, remainder, typ := resolve(full, e.Name(), isSymlink, repoMap, repoKeys)
+		prefix, remainder, typ := resolve(full, e.Name(), isSymlink, repoMap, repoKeys, reposRoot)
 		items = append(items, Item{
 			Prefix:    prefix,
 			Remainder: remainder,
