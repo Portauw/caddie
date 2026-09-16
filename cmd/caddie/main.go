@@ -1303,21 +1303,25 @@ func ensureProjectGitignore(projectDir string) error {
 		".claude/.caddie-fingerprint": true,
 		".caddie.yaml":                true,
 	}
-	// CRLF: compare on the trimmed line, and write back whatever the file
-	// already used, so a Windows checkout doesn't get its endings rewritten.
+	// CRLF: compare on the trimmed line, and write CRLF back when the file is
+	// consistently CRLF, so a Windows checkout doesn't get its endings
+	// rewritten. A file with mixed endings is normalised to LF — it is
+	// already inconsistent, and picking the majority would be guesswork.
 	nl := "\n"
-	if strings.Contains(string(body), "\r\n") {
+	if crlf := strings.Count(string(body), "\r\n"); crlf > 0 && crlf == strings.Count(string(body), "\n") {
 		nl = "\r\n"
 	}
-	isManaged := func(line string) bool {
-		if legacy[line] {
-			return true
-		}
+	// An anchored entry is "/" or "/<dir>/" followed by one of the four
+	// suffixes. Requiring the suffix to start at a separator matters: a
+	// plain HasSuffix also claims "/data/backup.caddie.yaml", an ordinary
+	// rule for a file that happens to end in those characters, and moving a
+	// user's line is what this is here to avoid.
+	isAnchored := func(line string) bool {
 		if !strings.HasPrefix(line, "/") {
 			return false
 		}
 		for suffix := range legacy {
-			if strings.HasSuffix(line, suffix) {
+			if rest := strings.TrimSuffix(line, suffix); rest != line && strings.HasSuffix(rest, "/") {
 				return true
 			}
 		}
@@ -1325,15 +1329,20 @@ func ensureProjectGitignore(projectDir string) error {
 	}
 
 	var kept, before []string
+	seenHeader := false
 	for _, raw := range strings.Split(string(body), "\n") {
 		line := strings.TrimSuffix(raw, "\r")
 		switch {
 		case line == header:
-			// Dropped; re-emitted below.
-		case isManaged(line):
-			if !legacy[line] {
-				kept = append(kept, line)
-			}
+			seenHeader = true // dropped; re-emitted below
+		case isAnchored(line):
+			kept = append(kept, line)
+		case seenHeader && legacy[line]:
+			// An unanchored line caddie itself wrote, dropped so the anchored
+			// replacement is the only rule left. Scoped to lines after the
+			// header: the same four strings are perfectly reasonable rules for
+			// a team to write on purpose, and deleting one of those — every
+			// activate, so re-adding it never sticks — is not caddie's call.
 		default:
 			before = append(before, line)
 		}
