@@ -264,20 +264,70 @@ func hasEscapingSymlink(dir, repoDirReal string, visited map[string]bool) bool {
 // danglingEscapes reports whether a symlink whose target does not exist points
 // outside root. The target can't be resolved (nothing is there), so it is
 // resolved lexically against the link's own real parent directory.
+//
+// Two subtleties, both of which were holes before:
+//
+//   - Join and Clean are purely lexical. Resolving only the link's own parent
+//     left "skills/s/key.md -> ../../out/x" accepted whenever "out" was itself
+//     a directory symlink out of the repo. So the longest prefix of the target
+//     that actually exists is resolved, and the missing tail re-appended.
+//   - The first missing component can itself be a dangling symlink, which is
+//     how "key.md -> ../../shared/k" with "shared/k -> ../../id_rsa" escaped.
+//     So the chain is followed, with a hop cap.
+//
+// The intermediate in both shapes only has to sit outside the skill directory
+// and inside the repo — the one region neither the per-skill containment scan
+// nor the discovery walk looks at.
 func danglingEscapes(full, rootReal string) bool {
-	target, err := os.Readlink(full)
-	if err != nil {
-		return true
-	}
-	resolved := target
-	if !filepath.IsAbs(resolved) {
-		parent, err := filepath.EvalSymlinks(filepath.Dir(full))
+	for hops := 0; hops < 40; hops++ {
+		target, err := os.Readlink(full)
 		if err != nil {
 			return true
 		}
-		resolved = filepath.Join(parent, target)
+		resolved := target
+		if !filepath.IsAbs(resolved) {
+			parent, err := filepath.EvalSymlinks(filepath.Dir(full))
+			if err != nil {
+				return true
+			}
+			resolved = filepath.Join(parent, target)
+		}
+
+		existing := filepath.Clean(resolved)
+		var tail []string
+		for {
+			real, err := filepath.EvalSymlinks(existing)
+			if err == nil {
+				existing = real
+				break
+			}
+			parent := filepath.Dir(existing)
+			if parent == existing {
+				// Nothing on the path resolves, not even the root.
+				return true
+			}
+			tail = append([]string{filepath.Base(existing)}, tail...)
+			existing = parent
+		}
+		if len(tail) == 0 {
+			return !isWithin(rootReal, existing)
+		}
+		// The first component that doesn't resolve decides it: if it's a
+		// dangling symlink, follow it; anything below it inherits wherever it
+		// lands, so containment of that one link is what matters.
+		next := filepath.Join(existing, tail[0])
+		if !isWithin(rootReal, next) {
+			return true
+		}
+		li, err := os.Lstat(next)
+		if err != nil || li.Mode()&os.ModeSymlink == 0 {
+			// A plain missing name inside root — the LFS-pointer case.
+			return false
+		}
+		full = next
 	}
-	return !isWithin(rootReal, filepath.Clean(resolved))
+	// A chain this long is not a real repo layout.
+	return true
 }
 
 // isWithin reports whether target is root itself or a descendant of root.
