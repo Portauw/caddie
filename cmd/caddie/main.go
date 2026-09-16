@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -832,12 +833,21 @@ func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) error {
 			return fmt.Errorf("left %s as-is: %s already exist under %s — move or remove one side, then re-run",
 				claudeDir, strings.Join(blocked, ", "), agentsDir)
 		}
+		// The name pre-check proves the destinations are free, not that every
+		// rename will succeed — EXDEV (if .agents is a symlink onto another
+		// volume), EACCES, ENOSPC are all still possible. Undo what moved so
+		// a failure mid-way can't leave the half-state this function exists
+		// to prevent.
+		var moved []string
 		for _, e := range entries {
-			// Rename moves files, directories and symlinks alike, and both
-			// paths are inside the project, so this stays on one filesystem.
+			// Rename moves files, directories and symlinks alike.
 			if err := os.Rename(filepath.Join(claudeDir, e.Name()), filepath.Join(agentsDir, e.Name())); err != nil {
+				for _, name := range moved {
+					_ = os.Rename(filepath.Join(agentsDir, name), filepath.Join(claudeDir, name))
+				}
 				return fmt.Errorf("left %s as-is: cannot move %s: %w", claudeDir, e.Name(), err)
 			}
+			moved = append(moved, e.Name())
 		}
 		// Only succeeds when the migration emptied it.
 		if err := os.Remove(claudeDir); err != nil {
@@ -1253,7 +1263,7 @@ func ensureProjectGitignore(projectDir string) error {
 	prefix := "/"
 	if rel, err := filepath.Rel(root, projectDir); err == nil && rel != "." &&
 		!strings.HasPrefix(rel, "..") {
-		prefix = "/" + filepath.ToSlash(rel) + "/"
+		prefix = "/" + escapeGitignorePath(filepath.ToSlash(rel)) + "/"
 	}
 	entries := []string{
 		prefix + ".claude/skills/",
@@ -1266,37 +1276,66 @@ func ensureProjectGitignore(projectDir string) error {
 	if b, err := os.ReadFile(gitignore); err == nil {
 		body = b
 	}
-	existing := map[string]bool{}
-	for _, line := range strings.Split(string(body), "\n") {
-		existing[line] = true
-	}
 
-	needsUpdate := false
-	for _, e := range entries {
-		if !existing[e] {
-			needsUpdate = true
-			break
+	// Rebuild caddie's own block rather than appending a second one. Anchored
+	// lines from other profiles in the same repo are kept; unanchored ones
+	// left by older versions are dropped, because they are what made this
+	// wrong — they stay in the file otherwise and keep winning, so the fix
+	// would never reach anyone who had already run caddie.
+	const header = "# caddie managed skill directories"
+	var kept []string
+	var before []string
+	inBlock := false
+	for _, line := range strings.Split(string(body), "\n") {
+		switch {
+		case line == header:
+			inBlock = true
+		case inBlock && strings.HasPrefix(line, "/"):
+			kept = append(kept, line)
+		case inBlock && strings.TrimSpace(line) == "":
+			inBlock = false
+		case inBlock:
+			// An unanchored managed line: drop it.
+		default:
+			before = append(before, line)
 		}
 	}
-	if !needsUpdate {
-		return nil
+	for _, e := range entries {
+		if !slices.Contains(kept, e) {
+			kept = append(kept, e)
+		}
 	}
+	slices.Sort(kept)
 
 	var out strings.Builder
-	out.Write(body)
-	if len(body) > 0 && body[len(body)-1] != '\n' {
-		out.WriteByte('\n')
+	trimmed := strings.TrimRight(strings.Join(before, "\n"), "\n")
+	if trimmed != "" {
+		out.WriteString(trimmed)
+		out.WriteString("\n")
 	}
-	out.WriteByte('\n')
-	out.WriteString("# caddie managed skill directories\n")
-	for _, e := range entries {
-		if !existing[e] {
-			out.WriteString(e)
-			out.WriteByte('\n')
-			existing[e] = true
-		}
+	out.WriteString("\n" + header + "\n")
+	for _, e := range kept {
+		out.WriteString(e + "\n")
+	}
+	if out.String() == string(body) {
+		return nil
 	}
 	return os.WriteFile(gitignore, []byte(out.String()), 0o644)
+}
+
+// escapeGitignorePath escapes the glob metacharacters gitignore honours, so a
+// directory literally named "[slug]" (an ordinary dynamic route in Next.js,
+// SvelteKit or Remix) produces a pattern that matches it rather than a
+// character class that matches nothing.
+func escapeGitignorePath(p string) string {
+	var b strings.Builder
+	for _, r := range p {
+		if strings.ContainsRune(`\[]*?`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // pluralIes renders the "entry"/"entries" suffix for n.
