@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Home returns the user's home directory, preferring $HOME (so tests and
@@ -46,8 +47,23 @@ func Dir() string {
 func YAMLQuote(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
+	// Ranging over the string would replace every invalid byte with U+FFFD,
+	// so a value that isn't valid UTF-8 — argv makes no such promise — would
+	// round-trip to a different string, and a repo name would stop matching
+	// its own checkout directory. Walk bytes, and only decode where a rune is
+	// actually needed.
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			r, size := utf8.DecodeRuneInString(s[i:])
+			if r == utf8.RuneError && size == 1 {
+				fmt.Fprintf(&b, `\x%02x`, s[i])
+				continue
+			}
+			b.WriteString(s[i : i+size])
+			i += size - 1
+			continue
+		}
+		switch r := rune(s[i]); r {
 		case '\\':
 			b.WriteString(`\\`)
 		case '"':
@@ -72,6 +88,7 @@ func YAMLQuote(s string) string {
 			}
 			b.WriteRune(r)
 		}
+
 	}
 	b.WriteByte('"')
 	return b.String()
