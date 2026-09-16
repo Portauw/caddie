@@ -197,7 +197,8 @@ func Append(e Entry) error {
 			return err
 		}
 	}
-	_, err = fmt.Fprintf(f, "  - name: \"%s\"\n    url: \"%s\"\n    skills_path: \"%s\"\n", e.Name, e.URL, e.SkillsPath)
+	_, err = fmt.Fprintf(f, "  - name: %s\n    url: %s\n    skills_path: %s\n",
+		config.YAMLQuote(e.Name), config.YAMLQuote(e.URL), config.YAMLQuote(e.SkillsPath))
 	return err
 }
 

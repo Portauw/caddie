@@ -33,15 +33,81 @@ func Dir() string {
 	return cmp.Or(os.Getenv("CADDIE_DIR"), filepath.Join(Home(), ".config", "caddie"))
 }
 
+// YAMLQuote renders s as a double-quoted YAML scalar, escaping backslashes,
+// double quotes, and the control characters this codebase actually emits.
+// Every value caddie writes into hand-rolled YAML (repo names/URLs, profile
+// names/descriptions, skill patterns) must go through this — otherwise a
+// value containing a literal `"` breaks out of its quotes and lets
+// attacker-controlled input inject arbitrary extra YAML keys that caddie's
+// own line-oriented parser (StripQuotes, ReadScalar, ReadList) will read
+// back as real fields.
+func YAMLQuote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
 // StripQuotes removes a single layer of matched surrounding ' or " quotes.
+// For double-quoted values it also unescapes the backslash sequences that
+// YAMLQuote produces, so quoting round-trips.
 func StripQuotes(v string) string {
 	if len(v) >= 2 {
 		c := v[0]
 		if (c == '"' || c == '\'') && v[len(v)-1] == c {
-			return v[1 : len(v)-1]
+			inner := v[1 : len(v)-1]
+			if c == '"' {
+				return unescapeDoubleQuoted(inner)
+			}
+			return inner
 		}
 	}
 	return v
+}
+
+// unescapeDoubleQuoted reverses YAMLQuote's escaping. Unrecognized escape
+// sequences (e.g. a literal `\f` in a Windows-style path someone typed by
+// hand) are passed through verbatim rather than mangled.
+func unescapeDoubleQuoted(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			switch s[i] {
+			case '\\':
+				b.WriteByte('\\')
+			case '"':
+				b.WriteByte('"')
+			case 'n':
+				b.WriteByte('\n')
+			case 't':
+				b.WriteByte('\t')
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(s[i])
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // ReadScalar returns the value of a top-level "key:" line:
