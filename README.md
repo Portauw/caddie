@@ -136,6 +136,8 @@ skills:
 
 There is no other schema. `name` and `description` are just labels; only `skills` is resolved against the store. See [`examples/profile.yaml`](examples/profile.yaml).
 
+**Not in your home directory.** `caddie init` and `caddie activate` refuse to run when the resolved profile is `$HOME` itself. `~/.claude/skills` and `~/.agents/skills` are your *user-scoped* skills, shared by every project — managing them from a profile would replace one with a symlink and prune the other against the profile's pattern list. Keep profiles in project folders.
+
 **Resolution.** `caddie activate`, `caddie edit`, `caddie which` and `caddie export` all resolve the *nearest* `.caddie.yaml` by walking up from the current directory to `/`. If none is found, they fail and tell you to run `caddie init`. There is no fallback profile and no interactive picker.
 
 **Not portable.** `.caddie.yaml` is gitignored by default (caddie adds it to your repo's `.gitignore` the first time it touches the folder). Cloning the repo on another machine, or for a teammate, does not bring the profile with it; each checkout needs its own `caddie init`.

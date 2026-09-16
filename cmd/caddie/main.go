@@ -94,6 +94,42 @@ func resolveProfileOrDie(hints ...string) string {
 	return profilePath
 }
 
+// refuseHomeProfile stops caddie managing the home directory itself.
+//
+// $HOME is where the *user-scoped* skill directories live: ~/.claude/skills is
+// what Claude Code reads for skills available in every project, and
+// ~/.agents/skills is the equivalent for other agents. Treating $HOME as a
+// project profile points caddie's reconciler at exactly those directories — it
+// replaces ~/.claude/skills with a symlink and reconciles ~/.agents/skills
+// against a profile's pattern list, so anything there that the profile doesn't
+// match is removed. A global skill set can disappear in one command.
+//
+// It is also easy to reach by accident: with a ~/.caddie.yaml present, every
+// folder under $HOME without its own profile resolves to it by walking up.
+func refuseHomeProfile(profileDir, action string) {
+	home := config.Home()
+	if home == "" {
+		return
+	}
+	dir, err := filepath.EvalSymlinks(profileDir)
+	if err != nil {
+		dir = profileDir
+	}
+	realHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		realHome = home
+	}
+	if filepath.Clean(dir) != filepath.Clean(realHome) {
+		return
+	}
+	die(fmt.Sprintf(
+		"Refusing to %s the home directory (%s).\n"+
+			"   %s~/.claude/skills%s and %s~/.agents/skills%s are your user-scoped skills, shared by every\n"+
+			"   project. Managing them from a profile would replace and prune them.\n"+
+			"   Run caddie in a project folder instead.",
+		action, home, ansiCyan, ansiReset, ansiCyan, ansiReset))
+}
+
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -666,6 +702,7 @@ func cmdInit(args []string) {
 	if err != nil {
 		die(err.Error())
 	}
+	refuseHomeProfile(cwd, "create a profile in")
 	target := filepath.Join(cwd, ".caddie.yaml")
 	if _, err := os.Stat(target); err == nil {
 		die(fmt.Sprintf("A profile already exists here: %s\n   Edit it with %scaddie edit%s.",
@@ -1006,6 +1043,7 @@ func cmdActivate(args []string) {
 	profilePath := resolveProfileOrDie()
 
 	profileDir := filepath.Dir(profilePath)
+	refuseHomeProfile(profileDir, "activate")
 	displayName := config.ReadScalar(profilePath, "name")
 	label := cmp.Or(displayName, filepath.Base(profileDir))
 

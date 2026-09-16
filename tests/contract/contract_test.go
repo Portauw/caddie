@@ -1384,6 +1384,51 @@ func TestActivateContract(t *testing.T) {
 		}
 	})
 
+	t.Run("refuses_to_manage_the_home_directory", func(t *testing.T) {
+		// $HOME holds the USER-SCOPED skill directories: ~/.claude/skills is
+		// what Claude Code reads for every project, ~/.agents/skills the same
+		// for other agents. Treating $HOME as a project profile points the
+		// reconciler at exactly those, replacing one with a symlink and
+		// pruning the other against a pattern list — a global skill set can
+		// disappear in one command. Reported from a real machine.
+		aiEnvDir, home, _ := setupActivateFixture(t, "proj", []string{"*"})
+		precious := filepath.Join(home, ".claude", "skills", "precious")
+		global := filepath.Join(home, ".agents", "skills", "global-skill")
+		for _, d := range []string{precious, global} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			mustWrite(t, filepath.Join(d, "SKILL.md"), "mine\n")
+		}
+		mustWrite(t, filepath.Join(home, ".caddie.yaml"), "skills:\n  - \"*\"\n")
+
+		// Directly in $HOME, and from a subdirectory that inherits the home
+		// profile by walking up — the way this is reached by accident.
+		sub := filepath.Join(home, "notes")
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, cwd := range []string{home, sub} {
+			r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: cwd}, "activate")
+			if r.exitCode == 0 {
+				t.Errorf("activate in %s should have been refused, got exit 0: %q", cwd, r.stdout)
+			}
+			if !strings.Contains(r.stdout+r.stderr, "home directory") {
+				t.Errorf("expected an explanation naming the home directory, got %q / %q", r.stdout, r.stderr)
+			}
+		}
+		if r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: home}, "init"); r.exitCode == 0 {
+			t.Errorf("init in $HOME should have been refused, got exit 0: %q", r.stdout)
+		}
+
+		// Nothing touched, and ~/.claude/skills is still a real directory.
+		assertFileContains(t, filepath.Join(precious, "SKILL.md"), "mine")
+		assertFileContains(t, filepath.Join(global, "SKILL.md"), "mine")
+		if li, err := os.Lstat(filepath.Join(home, ".claude", "skills")); err != nil || li.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("~/.claude/skills must remain a real directory: err=%v", err)
+		}
+	})
+
 	t.Run("gitignore_is_byte_stable_across_reconciles", func(t *testing.T) {
 		// ensureProjectGitignore writes to a file the user version-controls,
 		// and it runs on every reconciling activate. Four successive
