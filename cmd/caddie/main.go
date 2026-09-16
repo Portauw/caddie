@@ -1328,7 +1328,13 @@ func ensureProjectGitignore(projectDir string) error {
 		return false
 	}
 
-	var kept, before []string
+	// Lines are emitted in three groups — everything before caddie's header,
+	// then caddie's block, then everything after it. Keeping the "after"
+	// group after matters: a negation of one of caddie's own rules
+	// ("!/.caddie.yaml", to commit a shared profile) can only work below the
+	// rule it negates, and hoisting it silently stopped it working — stickily,
+	// since re-adding it would be hoisted again.
+	var kept, before, after []string
 	seenHeader := false
 	for _, raw := range strings.Split(string(body), "\n") {
 		line := strings.TrimSuffix(raw, "\r")
@@ -1343,6 +1349,8 @@ func ensureProjectGitignore(projectDir string) error {
 			// header: the same four strings are perfectly reasonable rules for
 			// a team to write on purpose, and deleting one of those — every
 			// activate, so re-adding it never sticks — is not caddie's call.
+		case seenHeader:
+			after = append(after, line)
 		default:
 			before = append(before, line)
 		}
@@ -1361,6 +1369,9 @@ func ensureProjectGitignore(projectDir string) error {
 	out.WriteString(header + nl)
 	for _, e := range kept {
 		out.WriteString(e + nl)
+	}
+	if trimmed := strings.TrimRight(strings.Join(after, nl), "\r\n"); trimmed != "" {
+		out.WriteString(nl + trimmed + nl)
 	}
 	if out.String() == string(body) {
 		return nil
