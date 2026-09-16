@@ -140,6 +140,13 @@ There is no other schema. `name` and `description` are just labels; only `skills
 
 **Not portable.** `.caddie.yaml` is gitignored by default (caddie adds it to your repo's `.gitignore` the first time it touches the folder). Cloning the repo on another machine, or for a teammate, does not bring the profile with it; each checkout needs its own `caddie init`.
 
+The entries are written to the enclosing git repo's root `.gitignore`, anchored
+to the profile's own directory — activating in `apps/web` writes
+`/apps/web/.caddie.yaml`, not a bare `.caddie.yaml` that would also hide a
+teammate's profile elsewhere in the repo. caddie rewrites only the block under
+its own `# caddie managed skill directories` header and leaves the rest of the
+file alone.
+
 ## Key Directories
 
 ```
@@ -163,6 +170,36 @@ There is no other schema. `name` and `description` are just labels; only `skills
 ```
 
 The `~/.config/caddie/skills/` layer is the **canonical store**, every project's `.agents/skills/` symlink points there, not directly into the repo checkouts. This makes per-project filtering cheap and lets multiple projects share one cached source repo.
+
+## Security Model
+
+A registered repo is untrusted input. caddie clones it and puts its files where
+your coding agent will read them, so it treats repo contents the way a browser
+treats a website, not the way a package manager treats a signed release.
+
+What caddie enforces:
+
+- **Skills stay inside their own checkout.** A symlink in a skill that resolves
+  outside the repo — directly, through a chain, or while its target does not yet
+  exist — means the skill is not adopted. The same check runs again at export
+  time, scoped to the skill's own directory.
+- **Git transports are restricted.** `GIT_ALLOW_PROTOCOL` limits clones and
+  pulls to http, https, ssh, git and file, which blocks git's `ext::` helper
+  from running a shell command out of a repo URL. It overrides a permissive
+  `protocol.*.allow` in your own git config.
+- **Repo names are plain directory names.** The name becomes a directory under
+  `~/.config/caddie/repos/` that `caddie repo remove` deletes, so anything with
+  a path separator, `..`, or a leading `-` or `~` is refused.
+- **Destructive operations ask first.** `caddie export --clean` deletes
+  directories caddie did not create; it lists them and prompts unless you pass
+  `--force`. `caddie activate` never deletes anything while adopting an existing
+  `.claude/skills` directory — if a name is already taken on the other side it
+  moves nothing and tells you.
+
+What it does **not** protect against: the skill content itself. A `SKILL.md` is
+a set of instructions your agent will read and act on, and no amount of path
+containment changes that. Review a repo before registering it, and prefer
+pinned, known sources.
 
 ## Exporting Skills
 
@@ -188,7 +225,13 @@ caddie export --to ./skills/ --clean
 **Flags:**
 - `--all`: export every skill in the store instead of resolving the cwd profile
 - `--dry-run` / `-n`: preview what would be copied without writing anything
-- `--clean`: remove skill directories in the target that aren't in the export set
+- `--clean`: remove skill directories in the target that aren't in the export set. This deletes directories caddie did not create, so it lists them and asks before doing it.
+- `--force` / `-f`: answer yes to that prompt (for scripts and CI)
+
+A skill containing a symlink that points outside its own directory is skipped
+and named in the output, rather than exported. Otherwise a local export ships
+a link that resolves to nothing on the receiving machine, and the S3 upload —
+which follows symlinks — would send whatever the link pointed at.
 
 **S3 environment variables:**
 - `AWS_PROFILE`: passed through to `aws s3 cp`
@@ -226,7 +269,8 @@ caddie reset [--force|-f]          # remove managed symlinks + state files
 
 # Repo registry
 caddie repo list                   # show registered repos + clone status
-caddie repo add <name> <url> [path]   # register + shallow-clone a repo
+caddie repo add <name> <url> [path]   # register + shallow-clone a repo (name must be a plain
+                                   #   directory name — no "/", "..", leading "-" or "~")
 caddie repo remove <name>          # unregister + clean store links + rm checkout
 caddie repo update [name]          # git pull (all, or one)
 
@@ -248,7 +292,7 @@ caddie activate [-n|-f]            # scan + rebuild project symlinks for the nea
 caddie export --to <dir>           # local directory, cwd profile
 caddie export --to s3://b/         # S3 prefix, cwd profile
 caddie export --all --to <target>  # export every skill (no profile filter)
-                                   # extras: --clean, --dry-run / -n
+                                   # extras: --clean (prompts), --force / -f, --dry-run / -n
 ```
 
 ## Shell Integration
