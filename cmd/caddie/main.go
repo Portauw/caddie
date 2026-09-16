@@ -780,47 +780,65 @@ func cmdSetup(args []string) {
 
 // ensureClaudeSkillsSymlink makes claudeDir a relative symlink to
 // "../.agents/skills". If claudeDir is a real directory, its contents are
-// migrated into agentsDir before recreating the symlink.
-func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) {
+// migrated into agentsDir first.
+//
+// Nothing is ever deleted. The previous version migrated only directories
+// whose name was still free in agentsDir, then os.RemoveAll'd claudeDir —
+// so loose files (README.md, NOTES.txt) and any name-colliding directory
+// were destroyed without a prompt, a warning or a backup. .claude/skills is
+// exactly where Claude Code reads project skills from, so a real directory
+// full of hand-written content there is the expected pre-adoption state, and
+// the README wires `caddie activate` into the claude() shell function — this
+// fired the first time the user launched claude in such a project.
+//
+// Now every entry is moved, an entry whose name is already taken is left
+// alone, and claudeDir is removed with os.Remove, which only succeeds once
+// it is empty. Anything left behind blocks the symlink and is reported
+// instead of being deleted.
+func ensureClaudeSkillsSymlink(claudeDir, agentsDir string) error {
 	if li, err := os.Lstat(claudeDir); err == nil && li.Mode()&os.ModeSymlink != 0 {
 		target, _ := os.Readlink(claudeDir)
 		if target == "../.agents/skills" {
-			return
+			return nil
 		}
 		// Check whether it resolves to agentsDir.
 		resolved, err1 := filepath.EvalSymlinks(claudeDir)
 		absAgents, err2 := filepath.EvalSymlinks(agentsDir)
 		if err1 == nil && err2 == nil && resolved == absAgents {
-			return
+			return nil
 		}
 		_ = os.Remove(claudeDir)
 	}
 	if info, err := os.Stat(claudeDir); err == nil && info.IsDir() {
 		_ = os.MkdirAll(agentsDir, 0o755)
-		if entries, err := os.ReadDir(claudeDir); err == nil {
-			for _, e := range entries {
-				src := filepath.Join(claudeDir, e.Name())
-				dst := filepath.Join(agentsDir, e.Name())
-				li, err := os.Lstat(src)
-				if err != nil {
-					continue
-				}
-				if li.Mode()&os.ModeSymlink == 0 && li.IsDir() {
-					if _, err := os.Stat(dst); os.IsNotExist(err) {
-						_ = os.Rename(src, dst)
-					}
-				} else if li.Mode()&os.ModeSymlink != 0 {
-					if _, err := os.Lstat(dst); os.IsNotExist(err) {
-						target, _ := os.Readlink(src)
-						_ = os.Symlink(target, dst)
-					}
-				}
+		entries, err := os.ReadDir(claudeDir)
+		if err != nil {
+			return fmt.Errorf("cannot read %s: %w", claudeDir, err)
+		}
+		var kept []string
+		for _, e := range entries {
+			src := filepath.Join(claudeDir, e.Name())
+			dst := filepath.Join(agentsDir, e.Name())
+			// Lstat, so an existing symlink at dst counts as taken too.
+			if _, err := os.Lstat(dst); err == nil {
+				kept = append(kept, e.Name())
+				continue
+			}
+			// Rename moves files, directories and symlinks alike, and both
+			// paths are inside the project, so this stays on one filesystem.
+			if err := os.Rename(src, dst); err != nil {
+				kept = append(kept, e.Name())
 			}
 		}
-		_ = os.RemoveAll(claudeDir)
+		// Only succeeds when the migration emptied it.
+		if err := os.Remove(claudeDir); err != nil {
+			return fmt.Errorf("left %s in place: %s already exist(s) under %s",
+				claudeDir, strings.Join(kept, ", "), agentsDir)
+		}
 	}
 	_ = os.MkdirAll(filepath.Dir(claudeDir), 0o755)
 	_ = os.Symlink("../.agents/skills", claudeDir)
+	return nil
 }
 
 type scanOpts struct {
@@ -1029,7 +1047,9 @@ func cmdActivate(args []string) {
 	}
 	totalAdded, totalRemoved := res.Added, res.Removed
 
-	ensureClaudeSkillsSymlink(filepath.Join(profileDir, ".claude", "skills"), targetAgents)
+	if err := ensureClaudeSkillsSymlink(filepath.Join(profileDir, ".claude", "skills"), targetAgents); err != nil {
+		fmt.Printf("%s⚠%s  %v\n", ansiYellow, ansiReset, err)
+	}
 	if err := ensureProjectGitignore(profileDir); err != nil {
 		fmt.Printf("%s⚠%s  Could not update .gitignore: %v\n", ansiYellow, ansiReset, err)
 	}

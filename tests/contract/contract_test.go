@@ -1350,6 +1350,18 @@ func setupActivateFixture(t *testing.T, profileName string, skillPatterns []stri
 // TestActivateContract exercises the native `activate`/`use` handler.
 // Bash parity is not required where the Go side intentionally diverges
 // (no SOURCES.md generation); those subtests assert Go's own invariants.
+func assertFileContains(t *testing.T, path, want string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Errorf("%s should still exist: %v", path, err)
+		return
+	}
+	if !strings.Contains(string(b), want) {
+		t.Errorf("%s = %q, want it to contain %q", path, string(b), want)
+	}
+}
+
 func TestActivateContract(t *testing.T) {
 	goBin := buildGoBinary(t)
 
@@ -1370,6 +1382,48 @@ func TestActivateContract(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(projectDir, ".claude", ".caddie-fingerprint")); err != nil {
 			t.Errorf("fingerprint not written: %v", err)
 		}
+	})
+
+	t.Run("migration_never_deletes_user_content", func(t *testing.T) {
+		// .claude/skills is where Claude Code reads project skills from, so a
+		// real directory of hand-written content there is the expected
+		// pre-adoption state — and activate runs from the claude() shell
+		// function, before the user knows caddie will touch it. Migration
+		// must move what it can and leave the rest; it must never delete.
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		claudeSkills := filepath.Join(projectDir, ".claude", "skills")
+		agentsSkills := filepath.Join(projectDir, ".agents", "skills")
+		for _, d := range []string{
+			filepath.Join(claudeSkills, "handwritten"),
+			filepath.Join(claudeSkills, "collides"),
+			filepath.Join(agentsSkills, "collides"),
+		} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mustWrite(t, filepath.Join(claudeSkills, "handwritten", "SKILL.md"), "mine\n")
+		mustWrite(t, filepath.Join(claudeSkills, "collides", "SKILL.md"), "claude-version\n")
+		mustWrite(t, filepath.Join(agentsSkills, "collides", "SKILL.md"), "agents-version\n")
+		mustWrite(t, filepath.Join(claudeSkills, "README.md"), "readme\n")
+
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+
+		// Loose files and free-named directories move across.
+		for _, f := range []string{
+			filepath.Join(agentsSkills, "README.md"),
+			filepath.Join(agentsSkills, "handwritten", "SKILL.md"),
+		} {
+			if _, err := os.Stat(f); err != nil {
+				t.Errorf("%s should have been migrated: %v", f, err)
+			}
+		}
+		// Neither side of a name collision may be destroyed.
+		assertFileContains(t, filepath.Join(agentsSkills, "collides", "SKILL.md"), "agents-version")
+		assertFileContains(t, filepath.Join(claudeSkills, "collides", "SKILL.md"), "claude-version")
 	})
 
 	t.Run("idempotent_second_run", func(t *testing.T) {
