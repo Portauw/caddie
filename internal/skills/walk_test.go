@@ -413,6 +413,64 @@ func TestWalkRepoSkills(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects_dangling_symlink_escaping_repo", func(t *testing.T) {
+		// A dangling link is only harmless while it stays in-repo. Pointing
+		// outside, it is adopted now and live the moment the target appears
+		// — by which time the skill is already linked into every project and
+		// the scan result is cached.
+		base := t.TempDir()
+		repo := filepath.Join(base, "repo")
+		skill := filepath.Join(repo, "skills", "sneaky")
+		mkSkill(t, skill)
+		if err := os.Symlink("../../../../not-there-yet/id_rsa", filepath.Join(skill, "key.md")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := WalkRepoSkills(repo, "skills")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Errorf("got %v want no skills — dangling symlink points outside the repo", names(got))
+		}
+	})
+
+	t.Run("alias_fan_out_scans_each_skill_dir_once", func(t *testing.T) {
+		// The SKILL.md match runs before the descent dedupe so aliases each
+		// yield a skill; without caching the containment scan, N aliases of
+		// one M-file skill cost N full scans of it.
+		base := t.TempDir()
+		repo := filepath.Join(base, "repo")
+		shared := filepath.Join(repo, "shared")
+		mkSkill(t, shared)
+		for i := 0; i < 1500; i++ {
+			mustWrite(t, filepath.Join(shared, "f"+strconv.Itoa(i)+".md"), "x")
+		}
+		skillsDir := filepath.Join(repo, "skills")
+		if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 1500; i++ {
+			if err := os.Symlink(shared, filepath.Join(skillsDir, "a"+strconv.Itoa(i))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		done := make(chan int, 1)
+		go func() {
+			got, _ := WalkRepoSkills(repo, "skills")
+			done <- len(got)
+		}()
+		select {
+		case n := <-done:
+			if n != 1500 {
+				t.Errorf("got %d skills, want 1500 (one per alias)", n)
+			}
+		// Budget covers the walk only, not fixture creation. Re-scanning per
+		// alias measured ~2.9s here against ~0.2s when the scan is cached.
+		case <-time.After(2 * time.Second):
+			t.Fatal("walk did not finish within 2s — containment scan re-run per alias")
+		}
+	})
+
 	t.Run("rejects_skills_path_escaping_repo", func(t *testing.T) {
 		base := t.TempDir()
 		mkSkill(t, filepath.Join(base, "shared-skill"))

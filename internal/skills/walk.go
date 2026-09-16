@@ -69,11 +69,34 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 	// directories, whatever the symlink topology.
 	//
 	// Crucially this gates *descent* only. A directory that is itself a skill
-	// is matched before the check, so two symlinks aimed at the same skill
-	// still yield one skill each — which is the legitimate aliasing case. The
-	// exponential blowup comes from re-descending shared intermediate
-	// directories, and nothing is lost by doing that once.
+	// is matched before the check, so two symlinks aimed directly at the same
+	// skill still yield one skill each — the legitimate aliasing case, and
+	// the one earlier attempts regressed.
+	//
+	// Indirect aliases are not preserved: with the SKILL.md at shared/thing/,
+	// "alpha -> shared" and "beta -> shared" yield alpha-thing only, because
+	// shared is descended once. origin/main loses this too, so it is not a
+	// regression, but it is a real limit rather than a general guarantee.
 	visited := map[string]bool{}
+
+	// escapes memoizes hasEscapingSymlink per resolved real directory. The
+	// SKILL.md match deliberately runs before the `visited` gate so aliases
+	// each yield a skill, which means without this a repo with N aliases of
+	// one M-file skill directory costs N full recursive scans of it: 2000
+	// aliases over 2000 files measured at 4.1s, 5000 over 5000 at 26.7s, from
+	// a few MB of empty files. `caddie scan` runs from `activate`, which runs
+	// from the claude() shell function, so that is a stall a repo can impose
+	// on every shell. All aliases share one real directory, so caching by it
+	// collapses this back to linear.
+	escapes := map[string]bool{}
+	escapesOutside := func(dir, real string) bool {
+		bad, seen := escapes[real]
+		if !seen {
+			bad = hasEscapingSymlink(dir, repoDirReal, map[string]bool{})
+			escapes[real] = bad
+		}
+		return bad
+	}
 
 	var out []RepoSkill
 	var walk func(dir, real string, parts []string)
@@ -93,7 +116,7 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 			// read directly by whatever loads the skill's files, no export
 			// step required.
 			if r, err := filepath.EvalSymlinks(skillMD); err == nil && isWithin(repoDirReal, r) &&
-				!hasEscapingSymlink(dir, repoDirReal, map[string]bool{}) {
+				!escapesOutside(dir, real) {
 				name := strings.Join(parts, "-")
 				if name == "" {
 					// SKILL.md at the walk root: the repo itself is a single
@@ -194,12 +217,15 @@ func hasEscapingSymlink(dir, repoDirReal string, visited map[string]bool) bool {
 		if e.Type()&os.ModeSymlink != 0 {
 			fi, statErr := os.Stat(full)
 			if statErr != nil {
-				if os.IsNotExist(statErr) {
-					// Dangling: the target doesn't exist, so there is nothing
-					// to leak. Legitimate repos carry these (an unfetched LFS
-					// pointer, a sparse-checkout gap, a generated file), and
-					// rejecting the whole skill over one is a false positive
-					// rather than a defence.
+				// Dangling links are tolerated only while they point inside
+				// root. Legitimate repos carry them (an unfetched LFS
+				// pointer, a sparse-checkout gap, a generated file) and those
+				// are in-repo relative paths. Tolerating *any* dangling link
+				// would let a repo ship "key.md -> ../../../../.ssh/id_rsa"
+				// and be adopted on a machine where the target doesn't exist
+				// yet — the skill is already linked into every project by the
+				// time the target appears, and scan results are cached.
+				if os.IsNotExist(statErr) && !danglingEscapes(full, repoDirReal) {
 					continue
 				}
 				return true
@@ -224,6 +250,25 @@ func hasEscapingSymlink(dir, repoDirReal string, visited map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// danglingEscapes reports whether a symlink whose target does not exist points
+// outside root. The target can't be resolved (nothing is there), so it is
+// resolved lexically against the link's own real parent directory.
+func danglingEscapes(full, rootReal string) bool {
+	target, err := os.Readlink(full)
+	if err != nil {
+		return true
+	}
+	resolved := target
+	if !filepath.IsAbs(resolved) {
+		parent, err := filepath.EvalSymlinks(filepath.Dir(full))
+		if err != nil {
+			return true
+		}
+		resolved = filepath.Join(parent, target)
+	}
+	return !isWithin(rootReal, filepath.Clean(resolved))
 }
 
 // isWithin reports whether target is root itself or a descendant of root.
