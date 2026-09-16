@@ -6,7 +6,6 @@ import (
 	"cmp"
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -130,14 +129,14 @@ func checkRemoteAhead(name, repoDir string) (RepoUpdate, bool) {
 func hasRemoteUpdates(repoDir string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), repos.GitFetchTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", repoDir, "fetch", "--dry-run").CombinedOutput()
+	out, err := repos.GitCommand(ctx, "-C", repoDir, "fetch", "--dry-run").CombinedOutput()
 	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }
 
 func runGit(dir string, timeout time.Duration, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Run()
+	return repos.GitCommand(ctx, append([]string{"-C", dir}, args...)...).Run()
 }
 
 func prefixSkillName(e repos.Entry, name string) string {
