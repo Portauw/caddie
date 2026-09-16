@@ -57,6 +57,49 @@ func File() string { return filepath.Join(config.Dir(), "sources.yaml") }
 // Dir returns the repos checkout directory ($CONFIG_DIR/repos).
 func Dir() string { return filepath.Join(config.Dir(), "repos") }
 
+// ValidName reports an error when name cannot be used as a repo identifier.
+//
+// The name is joined onto Dir() to build the checkout path, and that path is
+// both written to (`repo add` clones into it) and recursively deleted
+// (`repo remove` rm -rf's it). It comes from the same untrusted place the URL
+// does — a `caddie repo add <name> <url>` one-liner pasted out of a README or
+// a chat message — so a name like "../../../Documents/thesis" turns a
+// two-line snippet into "delete that directory". Names are also passed to
+// git as positional arguments, hence the leading-dash rule.
+func ValidName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("repo name must not be empty")
+	case name == "." || name == "..":
+		return fmt.Errorf("repo name %q is not a usable directory name", name)
+	case strings.ContainsAny(name, `/\`):
+		return fmt.Errorf("repo name %q must not contain a path separator", name)
+	case strings.HasPrefix(name, "-"):
+		return fmt.Errorf("repo name %q must not start with '-' (it would be read as a flag)", name)
+	case strings.HasPrefix(name, "~"):
+		return fmt.Errorf("repo name %q must not start with '~'", name)
+	case strings.ContainsRune(name, 0):
+		return fmt.Errorf("repo name must not contain a NUL byte")
+	}
+	return nil
+}
+
+// CheckoutDir returns the checkout directory for repo `name`, after checking
+// that the name is usable and that the result really is a direct child of
+// Dir(). The containment check is belt and braces — ValidName already rejects
+// separators — but this is the path every destructive operation runs against,
+// so it is worth confirming rather than assuming.
+func CheckoutDir(name string) (string, error) {
+	if err := ValidName(name); err != nil {
+		return "", err
+	}
+	dir := filepath.Join(Dir(), name)
+	if filepath.Dir(dir) != filepath.Clean(Dir()) {
+		return "", fmt.Errorf("repo name %q does not resolve to a directory inside %s", name, Dir())
+	}
+	return dir, nil
+}
+
 // Parse reads sources.yaml and returns one Entry per `  - name: ...` block
 // under `repos:`. Missing `skills_path` defaults to "skills".
 func Parse() ([]Entry, error) {
@@ -285,4 +328,3 @@ func (e Entry) EffectivePrefix() string {
 	}
 	return e.Prefix
 }
-

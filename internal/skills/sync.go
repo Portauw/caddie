@@ -74,7 +74,11 @@ func SyncRepos(log LogFn, skipFetch bool) (total int, updates []RepoUpdate, shad
 	}
 	store := Store()
 	for _, e := range entries {
-		repoDir := filepath.Join(repos.Dir(), e.Name)
+		repoDir, err := repos.CheckoutDir(e.Name)
+		if err != nil {
+			perRepo = append(perRepo, PerRepoSync{Name: e.Name, Warning: "unusable repo name"})
+			continue
+		}
 		gitDir := filepath.Join(repoDir, ".git")
 		if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
 			perRepo = append(perRepo, PerRepoSync{Name: e.Name, Warning: "not cloned"})

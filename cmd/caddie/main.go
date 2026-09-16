@@ -164,9 +164,12 @@ func cmdRepoList(_ []string) {
 	fmt.Printf("%sRegistered git repos:%s\n\n", ansiBold, ansiReset)
 
 	for _, e := range entries {
-		repoDir := filepath.Join(repos.Dir(), e.Name)
+		repoDir, nameErr := repos.CheckoutDir(e.Name)
 		status := fmt.Sprintf("%s(not cloned)%s", ansiDim, ansiReset)
-		if info, err := os.Stat(filepath.Join(repoDir, ".git")); err == nil && info.IsDir() {
+		if nameErr != nil {
+			status = fmt.Sprintf("%s(unusable name)%s", ansiYellow, ansiReset)
+		}
+		if info, err := os.Stat(filepath.Join(repoDir, ".git")); nameErr == nil && err == nil && info.IsDir() {
 			branch := cmp.Or(repos.GitOutput(repoDir, "rev-parse", "--abbrev-ref", "HEAD"), "?")
 			shortHash := cmp.Or(repos.GitOutput(repoDir, "rev-parse", "--short", "HEAD"), "?")
 			status = fmt.Sprintf("%s%s@%s%s", ansiGreen, branch, shortHash, ansiReset)
@@ -192,6 +195,12 @@ func cmdRepoAdd(args []string) {
 		die("Usage: caddie repo add <name> <url> [skills_path]\n  Example: caddie repo add lenny https://github.com/RefoundAI/lenny-skills skills")
 	}
 	name, url := args[0], args[1]
+	// Before anything is written or cloned: the name becomes a directory
+	// under repos.Dir() that `repo remove` later rm -rf's.
+	repoDir, err := repos.CheckoutDir(name)
+	if err != nil {
+		die(err.Error())
+	}
 	skillsPath := "skills"
 	if len(args) >= 3 && args[2] != "" {
 		skillsPath = args[2]
@@ -212,7 +221,6 @@ func cmdRepoAdd(args []string) {
 	if err := os.MkdirAll(repos.Dir(), 0o755); err != nil {
 		die(err.Error())
 	}
-	repoDir := filepath.Join(repos.Dir(), name)
 	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
 		fmt.Printf("%sℹ%s  Cloning %s...\n", ansiBlue, ansiReset, url)
 		if err := gitClone(url, repoDir); err == nil {
@@ -264,7 +272,6 @@ func cmdRepoRemove(args []string) {
 	}
 
 	removed := 0
-	repoDir := filepath.Join(repos.Dir(), name)
 	skills.EachSymlinkTarget(skills.Store(), func(_, full, target string) {
 		if repos.LinkPointsTo(target, name) {
 			if os.Remove(full) == nil {
@@ -273,7 +280,14 @@ func cmdRepoRemove(args []string) {
 		}
 	})
 
-	if info, err := os.Stat(repoDir); err == nil && info.IsDir() {
+	// The entry is gone from sources.yaml either way. Deleting the checkout
+	// only happens for a name that still resolves inside repos.Dir() — an
+	// entry registered before names were validated must be unregisterable
+	// without this command rm -rf'ing whatever its name points at.
+	repoDir, err := repos.CheckoutDir(name)
+	if err != nil {
+		fmt.Printf("%s⚠%s  Unregistered only: %s. Delete any stray checkout yourself.\n", ansiYellow, ansiReset, err)
+	} else if info, err := os.Stat(repoDir); err == nil && info.IsDir() {
 		if err := os.RemoveAll(repoDir); err != nil {
 			die(err.Error())
 		}
@@ -495,9 +509,13 @@ func runRepoUpdate(args []string) (updated, attempted int) {
 // updateOneRepo pulls (or clones) a single repo and returns its rendered
 // status block plus whether anything actually changed.
 func updateOneRepo(e repos.Entry) (string, bool) {
-	repoDir := filepath.Join(repos.Dir(), e.Name)
-	gitDir := filepath.Join(repoDir, ".git")
 	var b strings.Builder
+	repoDir, err := repos.CheckoutDir(e.Name)
+	if err != nil {
+		fmt.Fprintf(&b, "%s⚠%s  Skipped: %s\n", ansiYellow, ansiReset, err)
+		return b.String(), false
+	}
+	gitDir := filepath.Join(repoDir, ".git")
 
 	if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
 		fmt.Fprintf(&b, "%sℹ%s  Repo '%s' not cloned yet. Cloning...\n", ansiBlue, ansiReset, e.Name)
