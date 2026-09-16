@@ -2,11 +2,16 @@
 package skills
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
+
+// ErrSkillsPathOutsideRepo is returned when the configured skills_path
+// resolves outside the repo's own checkout, so nothing under it is walked.
+var ErrSkillsPathOutsideRepo = errors.New("skills_path resolves outside the repo checkout")
 
 // RepoSkill is one skill discovered in a repo, ready to be linked into the
 // canonical store. Name is the path relative to skillsPath joined with "-"
@@ -55,8 +60,12 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 	if err != nil || !isWithin(repoDirReal, rootReal) {
 		// skills_path escaped repoDir (e.g. "../../.."). Whoever registered
 		// the repo chose that path, but there's no legitimate reason for a
-		// skill root to live outside the repo's own checkout.
-		return nil, nil
+		// skill root to live outside the repo's own checkout. Returning a
+		// distinguishable error rather than (nil, nil): a rejected path used
+		// to be indistinguishable from "this repo has no skills", so a repo
+		// that silently stopped contributing anything gave the user no
+		// message to search for.
+		return nil, ErrSkillsPathOutsideRepo
 	}
 
 	// visited holds the resolved real path of every directory the walk has

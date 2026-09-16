@@ -920,6 +920,9 @@ func runScan(opts scanOpts) {
 			case "skills_path not found":
 				fmt.Fprintf(out, "%s⚠%s  Repo '%s': skills_path '%s' not found\n",
 					ansiYellow, ansiReset, r.Name, r.SkillsPath)
+			case "skills_path outside repo":
+				fmt.Fprintf(out, "%s⚠%s  Repo '%s': skills_path '%s' resolves outside the checkout — nothing was scanned\n",
+					ansiYellow, ansiReset, r.Name, r.SkillsPath)
 			case "unusable repo name":
 				fmt.Fprintf(out, "%s⚠%s  Repo '%s': name can't be used as a directory. Remove it with %scaddie repo remove '%s'%s\n",
 					ansiYellow, ansiReset, r.Name, ansiCyan, r.Name, ansiReset)

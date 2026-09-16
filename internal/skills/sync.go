@@ -5,6 +5,7 @@ package skills
 import (
 	"cmp"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,6 +101,14 @@ func SyncRepos(log LogFn, skipFetch bool) (total int, updates []RepoUpdate, shad
 		}
 		walked, err := WalkRepoSkills(repoDir, e.SkillsPath)
 		if err != nil {
+			// Previously a bare `continue`: any failure here, including a
+			// skills_path pointing outside the checkout, left the repo
+			// reporting nothing at all with no warning anywhere.
+			warning := "walk failed: " + err.Error()
+			if errors.Is(err, ErrSkillsPathOutsideRepo) {
+				warning = "skills_path outside repo"
+			}
+			perRepo = append(perRepo, PerRepoSync{Name: e.Name, SkillsPath: e.SkillsPath, Warning: warning})
 			continue
 		}
 		count := syncRepoSkills(e, walked, store, log, &shadowed)
