@@ -471,7 +471,7 @@ func cmdHelp(_ []string) {
 // args[0] is set). Returns nothing; the result is reflected in stdout and
 // in the .last-pull mtime via the caller (when used as auto-pull).
 func cmdRepoUpdate(args []string) {
-	updated, _ := runRepoUpdate(args)
+	updated, _, _ := runRepoUpdate(args)
 	if updated > 0 {
 		fmt.Println()
 		fmt.Printf("%sℹ%s  Run %scaddie scan --force%s to sync updated skills into the store.\n",
@@ -479,10 +479,16 @@ func cmdRepoUpdate(args []string) {
 	}
 }
 
-// runRepoUpdate is the worker behind cmdRepoUpdate. Returns (successes, attempted).
+// runRepoUpdate is the worker behind cmdRepoUpdate. Returns (changed,
+// attempted, failed) — changed counts repos whose content actually moved
+// (what cmdRepoUpdate's "run scan --force" hint keys off), failed counts
+// repos where the clone/pull attempt itself errored (what activateSyncRepos
+// keys off, to decide whether the hourly cache is safe to mark fresh: a
+// fully successful "everything already up to date" run must still count as
+// safe, not as "0 updated therefore retry sooner").
 // Output is buffered per-repo and flushed in registration order, so concurrent
 // pulls don't interleave on stdout.
-func runRepoUpdate(args []string) (updated, attempted int) {
+func runRepoUpdate(args []string) (updated, attempted, failed int) {
 	target := ""
 	if len(args) > 0 {
 		target = args[0]
@@ -517,8 +523,8 @@ func runRepoUpdate(args []string) (updated, attempted int) {
 
 	const maxParallel = 4
 	type result struct {
-		out string
-		ok  bool
+		out              string
+		success, changed bool
 	}
 	results := make([]result, len(todo))
 	sem := make(chan struct{}, maxParallel)
@@ -529,28 +535,36 @@ func runRepoUpdate(args []string) (updated, attempted int) {
 		go func(i int, e repos.Entry) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			results[i].out, results[i].ok = updateOneRepo(e)
+			results[i].out, results[i].success, results[i].changed = updateOneRepo(e)
 		}(i, e)
 	}
 	wg.Wait()
 
 	for _, r := range results {
 		fmt.Print(r.out)
-		if r.ok {
+		if r.changed {
 			updated++
 		}
+		if !r.success {
+			failed++
+		}
 	}
-	return updated, len(todo)
+	return updated, len(todo), failed
 }
 
 // updateOneRepo pulls (or clones) a single repo and returns its rendered
-// status block plus whether anything actually changed.
-func updateOneRepo(e repos.Entry) (string, bool) {
+// status block, whether the attempt itself succeeded (clone/pull completed
+// without error, regardless of whether anything changed), and whether
+// content actually changed. The two are tracked separately so a caller can
+// tell "nothing to do" apart from "this failed" — collapsing them into one
+// bool previously made a clean, fully-successful "already up to date" run
+// indistinguishable from a real failure (see activateSyncRepos).
+func updateOneRepo(e repos.Entry) (out string, success, changed bool) {
 	var b strings.Builder
 	repoDir, err := repos.CheckoutDir(e.Name)
 	if err != nil {
 		fmt.Fprintf(&b, "%s⚠%s  Skipped: %s\n", ansiYellow, ansiReset, err)
-		return b.String(), false
+		return b.String(), false, false
 	}
 	gitDir := filepath.Join(repoDir, ".git")
 
@@ -558,10 +572,10 @@ func updateOneRepo(e repos.Entry) (string, bool) {
 		fmt.Fprintf(&b, "%sℹ%s  Repo '%s' not cloned yet. Cloning...\n", ansiBlue, ansiReset, e.Name)
 		if err := gitClone(e.URL, repoDir); err == nil {
 			fmt.Fprintf(&b, "%s✓%s  Cloned: %s\n", ansiGreen, ansiReset, e.Name)
-			return b.String(), true
+			return b.String(), true, true
 		}
 		fmt.Fprintf(&b, "%s⚠%s  Failed to clone: %s\n", ansiYellow, ansiReset, e.Name)
-		return b.String(), false
+		return b.String(), false, false
 	}
 
 	beforeHash := repos.GitOutput(repoDir, "rev-parse", "HEAD")
@@ -573,17 +587,17 @@ func updateOneRepo(e repos.Entry) (string, bool) {
 	if pullErr != nil {
 		fmt.Fprintf(&b, "%s⚠%s  Update failed for '%s'. Try: cd %s && git pull\n",
 			ansiYellow, ansiReset, e.Name, repoDir)
-		return b.String(), false
+		return b.String(), false, false
 	}
 	afterHash := repos.GitOutput(repoDir, "rev-parse", "HEAD")
 	if beforeHash == afterHash {
 		fmt.Fprintf(&b, "  %s%s: already up to date%s\n", ansiDim, e.Name, ansiReset)
-		return b.String(), false
+		return b.String(), true, false
 	}
 	commitCount := cmp.Or(repos.GitOutput(repoDir, "rev-list", beforeHash+".."+afterHash, "--count"), "?")
 	fmt.Fprintf(&b, "%s✓%s  Updated: %s%s%s (%s new commit(s))\n",
 		ansiGreen, ansiReset, ansiBold, e.Name, ansiReset, commitCount)
-	return b.String(), true
+	return b.String(), true, true
 }
 
 // gitClone shallow-clones url into dir. Uses GitCloneTimeout (longer than
@@ -1196,9 +1210,17 @@ func resolveMatchedWithSummary(patterns []string) ([]string, string) {
 // activateSyncRepos pulls registered git repos at most once per hour (or
 // every call when force is true), then runs scan to refresh the skill store.
 // Repo-update output stays visible; scan output is suppressed to keep
-// activate's summary clean. The .last-pull mtime is only refreshed when at
-// least one repo successfully updated, so a transient network failure does
-// not suppress retries for an hour.
+// activate's summary clean. The .last-pull mtime is refreshed whenever every
+// attempted repo's clone/pull completed without error — including the
+// ordinary, extremely common "everything already up to date" outcome — so a
+// transient network failure (a real error) still forces a retry within the
+// hour, but a clean no-op run does not. Get this backwards (as a previous
+// version did, keying off "did anything change" instead of "did the attempt
+// succeed") and the cache never engages in practice: a healthy set of repos
+// rarely has new commits to pull, so almost every activate falls through to
+// a full parallel pull sweep regardless of how recently the last one ran —
+// confirmed empirically (0.03s on a real cache hit vs. multiple seconds
+// re-pulling ~15 repos every time).
 func activateSyncRepos(force bool) {
 	pullPath := filepath.Join(config.Dir(), ".last-pull")
 	shouldPull := force
@@ -1211,10 +1233,12 @@ func activateSyncRepos(force bool) {
 	pulled := false
 	if shouldPull {
 		if has, err := repos.HasReposSection(); err == nil && has {
-			updated, attempted := runRepoUpdate(nil)
-			// Only mark fresh when at least one pull made progress, or we had
-			// nothing to do (no repos found in the file).
-			if attempted == 0 || updated > 0 {
+			_, attempted, failed := runRepoUpdate(nil)
+			// Mark fresh when every attempted repo's clone/pull completed
+			// without error, or we had nothing to do (no repos found in the
+			// file). Withhold only on a genuine failure, so that case alone
+			// keeps retrying inside the hour.
+			if attempted == 0 || failed == 0 {
 				touch(pullPath)
 			}
 			pulled = attempted > 0

@@ -1384,6 +1384,34 @@ func TestActivateContract(t *testing.T) {
 		}
 	})
 
+	t.Run("pull_cache_engages_after_a_clean_no_op_pull", func(t *testing.T) {
+		// Regression test: a repo with nothing new to pull ("already up to
+		// date") is the overwhelmingly common case, and updateOneRepo used to
+		// report that outcome as "not updated" — indistinguishable from a
+		// real failure. activateSyncRepos only touched .last-pull when at
+		// least one repo was "updated", so on a healthy set of repos the
+		// cache file was in practice never written, and every single
+		// activate fell through to a full pull sweep regardless of how
+		// recently the previous one ran. Confirmed on a real machine: ~7s
+		// per activate, unconditionally, every time.
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		first := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate")
+		if first.exitCode != 0 {
+			t.Fatalf("first activate: exit=%d stderr=%q stdout=%q", first.exitCode, first.stderr, first.stdout)
+		}
+		if _, err := os.Stat(filepath.Join(aiEnvDir, ".last-pull")); err != nil {
+			t.Fatalf(".last-pull should exist after a fully successful activate (even with nothing to pull): %v", err)
+		}
+
+		second := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate")
+		if second.exitCode != 0 {
+			t.Fatalf("second activate: exit=%d stderr=%q stdout=%q", second.exitCode, second.stderr, second.stdout)
+		}
+		if strings.Contains(second.stdout, "Updating '") {
+			t.Errorf("second activate re-pulled within the hourly cache window, stdout=%q", second.stdout)
+		}
+	})
+
 	t.Run("refuses_to_manage_the_home_directory", func(t *testing.T) {
 		// $HOME holds the USER-SCOPED skill directories: ~/.claude/skills is
 		// what Claude Code reads for every project, ~/.agents/skills the same
