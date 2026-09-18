@@ -1230,10 +1230,11 @@ func activateSyncRepos(force bool) {
 			shouldPull = true
 		}
 	}
-	pulled := false
+	attempted := 0
 	if shouldPull {
 		if has, err := repos.HasReposSection(); err == nil && has {
-			_, attempted, failed := runRepoUpdate(nil)
+			var failed int
+			_, attempted, failed = runRepoUpdate(nil)
 			// Mark fresh when every attempted repo's clone/pull completed
 			// without error, or we had nothing to do (no repos found in the
 			// file). Withhold only on a genuine failure, so that case alone
@@ -1241,14 +1242,27 @@ func activateSyncRepos(force bool) {
 			if attempted == 0 || failed == 0 {
 				touch(pullPath)
 			}
-			pulled = attempted > 0
 		} else {
 			touch(pullPath)
 		}
 	}
 
-	// Run scan with output discarded — keep activate's summary clean.
-	runScan(scanOpts{force: force, skipFetch: pulled, out: io.Discard})
+	runScan(scanOpts{force: force, skipFetch: scanShouldSkipFetch(attempted, shouldPull), out: io.Discard})
+}
+
+// scanShouldSkipFetch decides scan's skipFetch flag, which controls a
+// *second*, independent network probe: SyncRepos runs `git fetch --dry-run`
+// per repo (silently, no visible output unless it finds something) purely to
+// populate the optional "Repo updates available" hint. Skip it whenever we
+// already trust the remote state — either because we just checked it this
+// call (attempted > 0), or because the pull cache itself is still fresh
+// (!shouldPull, meaning some earlier call checked within the hour). Keying
+// this only off "did we pull this call" (as a previous version did) meant
+// every pull-cache *hit* still paid a full silent `fetch --dry-run` sweep —
+// confirmed empirically: shouldPull=false, zero pull output, and scan alone
+// still took ~10s across ~16 repos.
+func scanShouldSkipFetch(attempted int, shouldPull bool) bool {
+	return attempted > 0 || !shouldPull
 }
 
 // symlinksHealthy checks two things: (1) every expected skill is a symlink
