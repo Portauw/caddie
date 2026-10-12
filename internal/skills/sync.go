@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,13 +28,161 @@ type Shadow struct {
 	RepoName  string
 }
 
-// PerRepoSync describes one repo's scan outcome. Warning is set when the repo
-// was skipped entirely; Count is the number of (new or updated) skills synced.
+// PerRepoSync describes one repo's sync outcome. Warning is set when the repo
+// was skipped entirely; Removed counts obsolete links pruned by reconciliation.
 type PerRepoSync struct {
 	Name       string
 	SkillsPath string
 	Count      int
+	Removed    int
 	Warning    string
+}
+
+// ReconcileRepo syncs a single checkout without fetching remote changes, then
+// removes obsolete links owned by that checkout. Missing checkouts retain links
+// until the repository can be walked successfully.
+func ReconcileRepo(e repos.Entry) (PerRepoSync, []Shadow, error) {
+	result := PerRepoSync{Name: e.Name, SkillsPath: e.SkillsPath}
+	repoDir, err := repos.CheckoutDir(e.Name)
+	if err != nil {
+		return result, nil, err
+	}
+	if e.Prefix != "" {
+		if err := repos.ValidPrefix(e.Prefix); err != nil {
+			return result, nil, err
+		}
+	}
+	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
+		result.Warning = "not cloned"
+		return result, nil, nil
+	} else if err != nil {
+		return result, nil, err
+	}
+	root := repoDir
+	if e.SkillsPath != "" && e.SkillsPath != "." {
+		root = filepath.Join(repoDir, e.SkillsPath)
+	}
+	if info, err := os.Stat(root); err != nil {
+		return result, nil, fmt.Errorf("skills_path %q: %w", e.SkillsPath, err)
+	} else if !info.IsDir() {
+		return result, nil, fmt.Errorf("skills_path %q is not a directory", e.SkillsPath)
+	}
+	walked, err := walkRepoSkills(repoDir, e.SkillsPath, true)
+	if err != nil {
+		return result, nil, err
+	}
+	store := Store()
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		return result, nil, err
+	}
+	// Resolve filesystem aliases before checking ownership; a matching repo name
+	// anywhere else on disk is not sufficient authority to delete a link.
+	checkout, err := filepath.EvalSymlinks(repoDir)
+	if err != nil {
+		return result, nil, err
+	}
+	owned := func(target string) bool {
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(store, target)
+		}
+		// Resolve the existing parent of broken targets as well. This handles
+		// filesystem aliases without trusting an unresolved symlink ancestor.
+		candidate := filepath.Clean(target)
+		var missing []string
+		for {
+			resolved, err := filepath.EvalSymlinks(candidate)
+			if err == nil {
+				target = resolved
+				for i := len(missing) - 1; i >= 0; i-- {
+					target = filepath.Join(target, missing[i])
+				}
+				break
+			}
+			if !os.IsNotExist(err) || filepath.Dir(candidate) == candidate {
+				return false
+			}
+			if info, err := os.Lstat(candidate); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				return false
+			}
+			missing = append(missing, filepath.Base(candidate))
+			candidate = filepath.Dir(candidate)
+		}
+		rel, err := filepath.Rel(checkout, target)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+	}
+	desired := make(map[string]RepoSkill, len(walked))
+	var shadowed []Shadow
+	for _, rs := range walked {
+		name := prefixSkillName(e, rs.Name)
+		if existing, ok := desired[name]; ok && existing.AbsPath != rs.AbsPath {
+			return result, nil, fmt.Errorf("skill name collision at %s", name)
+		}
+		desired[name] = rs
+		full := filepath.Join(store, name)
+		info, err := os.Lstat(full)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return result, nil, err
+		}
+		if info.IsDir() {
+			shadowed = append(shadowed, Shadow{SkillName: name, RepoName: e.Name})
+			continue
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return result, nil, fmt.Errorf("store collision at %s: existing file", name)
+		}
+		target, err := os.Readlink(full)
+		if err != nil {
+			return result, nil, err
+		}
+		if !owned(target) {
+			return result, nil, fmt.Errorf("store collision at %s: symlink belongs to another source", name)
+		}
+	}
+	// Create every destination before pruning stale names. A collision or write
+	// failure must not remove the previous store links.
+	for name, rs := range desired {
+		full := filepath.Join(store, name)
+		if info, err := os.Lstat(full); err == nil {
+			if info.IsDir() {
+				continue
+			}
+			if target, err := os.Readlink(full); err == nil && target == rs.AbsPath {
+				result.Count++
+				continue
+			}
+			if err := os.Remove(full); err != nil {
+				return result, shadowed, err
+			}
+		}
+		if err := os.Symlink(rs.AbsPath, full); err != nil {
+			return result, shadowed, err
+		}
+		result.Count++
+	}
+	entries, err := os.ReadDir(store)
+	if err != nil {
+		return result, shadowed, err
+	}
+	for _, item := range entries {
+		if _, keep := desired[item.Name()]; keep || item.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		full := filepath.Join(store, item.Name())
+		target, err := os.Readlink(full)
+		if err != nil {
+			return result, shadowed, err
+		}
+		if owned(target) {
+			if err := os.Remove(full); err != nil {
+				return result, shadowed, err
+			}
+			result.Removed++
+		}
+	}
+	return result, shadowed, nil
 }
 
 // LogFn is an optional verbose-logger. nil means silent.

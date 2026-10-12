@@ -84,6 +84,21 @@ func ValidName(name string) error {
 	return nil
 }
 
+// ValidPrefix accepts the existing true/false sentinels and safe literal
+// namespace identifiers. Prefixes become store filenames and profile IDs.
+func ValidPrefix(prefix string) error {
+	if prefix == "" {
+		return fmt.Errorf("prefix must not be empty; use 'false' to disable it")
+	}
+	for i, r := range prefix {
+		alnum := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+		if !alnum && (i == 0 || r != '-' && r != '_' && r != '.') {
+			return fmt.Errorf("invalid prefix %q: start with a letter or digit and use only letters, digits, '.', '_' or '-'", prefix)
+		}
+	}
+	return nil
+}
+
 // CheckoutDir returns the checkout directory for repo `name`, after checking
 // that the name is usable and that the result really is a direct child of
 // Dir(). The containment check is belt and braces — ValidName already rejects
@@ -217,6 +232,11 @@ func Exists(name string) (bool, error) {
 // Append adds a new repo entry to sources.yaml, creating the file and the
 // `repos:` section if needed.
 func Append(e Entry) error {
+	if e.Prefix != "" {
+		if err := ValidPrefix(e.Prefix); err != nil {
+			return err
+		}
+	}
 	path := File()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -242,7 +262,73 @@ func Append(e Entry) error {
 	}
 	_, err = fmt.Fprintf(f, "  - name: %s\n    url: %s\n    skills_path: %s\n",
 		config.YAMLQuote(e.Name), config.YAMLQuote(e.URL), config.YAMLQuote(e.SkillsPath))
+	if err == nil && e.Prefix != "" {
+		_, err = fmt.Fprintf(f, "    prefix: %s\n", config.YAMLQuote(e.Prefix))
+	}
 	return err
+}
+
+// SetPrefix updates only the selected repo's prefix, retaining unrelated
+// configuration, comments, and fields verbatim.
+func SetPrefix(name, prefix string) error {
+	if err := ValidName(name); err != nil {
+		return err
+	}
+	if err := ValidPrefix(prefix); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(File())
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	inRepos := false
+	start := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "repos:") {
+			inRepos = true
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && line[0] != ' ' {
+			inRepos = false
+		}
+		if inRepos && isRepoNameLine(line, name) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return fmt.Errorf("repo %q not registered", name)
+	}
+	newLine := "    prefix: " + config.YAMLQuote(prefix)
+	insert := start + 1
+	found := false
+	out := append([]string{}, lines[:start+1]...)
+	end := start + 1
+	for ; end < len(lines); end++ {
+		line := lines[end]
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(line, "  - ") || (trimmed != "" && !strings.HasPrefix(trimmed, "#") && line[0] != ' ') {
+			break
+		}
+		if strings.HasPrefix(line, "    prefix:") {
+			if !found {
+				out = append(out, newLine)
+				found = true
+			}
+			continue
+		}
+		out = append(out, line)
+		if strings.HasPrefix(line, "    url:") || strings.HasPrefix(line, "    skills_path:") {
+			insert = len(out)
+		}
+	}
+	if !found {
+		out = append(out[:insert], append([]string{newLine}, out[insert:]...)...)
+	}
+	out = append(out, lines[end:]...)
+	return os.WriteFile(File(), []byte(strings.Join(out, "\n")), 0o644)
 }
 
 // Remove deletes the block for `name` under `repos:` from sources.yaml.
