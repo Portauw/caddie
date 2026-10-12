@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -1326,9 +1327,8 @@ func TestScanContract(t *testing.T) {
 	})
 }
 
-// setupActivateFixture creates a ready-to-activate env: caddie dir with a
-// cloned repo + sources.yaml + env YAML binding `directory:` to projectDir.
-// Returns (goBin, aiEnvDir, home, projectDir).
+// setupActivateFixture creates an isolated caddie store with a cloned repo,
+// sources.yaml, and a project profile containing the supplied skill patterns.
 func setupActivateFixture(t *testing.T, profileName string, skillPatterns []string) (aiEnvDir, home, projectDir string) {
 	t.Helper()
 	aiEnvDir = setupEnvDir(t)
@@ -1364,6 +1364,71 @@ func assertFileContains(t *testing.T, path, want string) {
 
 func TestActivateContract(t *testing.T) {
 	goBin := buildGoBinary(t)
+
+	t.Run("exclusion_dry_run", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"!mine:a*", "mine:*"})
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate", "--dry-run")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
+		}
+		if !strings.Contains(r.stdout, "Skills:  0 ()") {
+			t.Errorf("dry run must count the final selected set, got %q", r.stdout)
+		}
+		if strings.Contains(r.stdout, "matches 0 skills") {
+			t.Errorf("valid exclusion must not produce an orphan warning, got %q", r.stdout)
+		}
+		if _, err := os.Lstat(filepath.Join(projectDir, ".agents", "skills", "alpha")); !os.IsNotExist(err) {
+			t.Errorf("dry run must not create skill links: %v", err)
+		}
+	})
+
+	t.Run("exclusion_prunes_then_fast_path", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
+		makeExportStore(t, aiEnvDir, "other-beta")
+		opts := runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}
+		r := runWith(t, goBin, opts, "activate")
+		if r.exitCode != 0 {
+			t.Fatalf("first exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		skillsDir := filepath.Join(projectDir, ".agents", "skills")
+		if _, err := os.Readlink(filepath.Join(skillsDir, "alpha")); err != nil {
+			t.Fatal(err)
+		}
+		mustWrite(t, filepath.Join(skillsDir, "hand-placed", "SKILL.md"), "# custom\n")
+		mustWrite(t, filepath.Join(projectDir, ".caddie.yaml"), "skills:\n  - \"*\"\n  - \"!mine:alpha\"\n")
+		r = runWith(t, goBin, opts, "activate")
+		if r.exitCode != 0 {
+			t.Fatalf("second exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if !strings.Contains(r.stdout, "1 skills (-1 removed)") || strings.Contains(r.stdout, "matches 0 skills") {
+			t.Errorf("expected exclusion removal without a warning, got %q", r.stdout)
+		}
+		if _, err := os.Lstat(filepath.Join(skillsDir, "alpha")); !os.IsNotExist(err) {
+			t.Errorf("excluded alpha must be pruned: %v", err)
+		}
+		if _, err := os.Readlink(filepath.Join(skillsDir, "other-beta")); err != nil {
+			t.Errorf("included skill must survive: %v", err)
+		}
+		assertFileContains(t, filepath.Join(skillsDir, "hand-placed", "SKILL.md"), "# custom")
+		if _, err := os.Stat(filepath.Join(aiEnvDir, "skills", "alpha", "SKILL.md")); err != nil {
+			t.Errorf("excluded skill must remain in the shared store: %v", err)
+		}
+		r = runWith(t, goBin, opts, "activate")
+		if r.exitCode != 0 || !strings.Contains(r.stdout, "1 skills (unchanged)") {
+			t.Errorf("expected unchanged after exclusion settled, exit=%d stdout=%q stderr=%q", r.exitCode, r.stdout, r.stderr)
+		}
+	})
+
+	t.Run("exclusion_orphan_warning", func(t *testing.T) {
+		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"mine:*", "!missing:*"})
+		r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, home: home, cwd: projectDir}, "activate", "--dry-run")
+		if r.exitCode != 0 {
+			t.Fatalf("exit=%d stderr=%q", r.exitCode, r.stderr)
+		}
+		if !strings.Contains(r.stdout, `"!missing:*"`) || !strings.Contains(r.stdout, "matches 0 skills") || !strings.Contains(r.stdout, "Skills:  1 (mine: 1)") {
+			t.Errorf("expected missing exclusion warning and unchanged selection, got %q", r.stdout)
+		}
+	})
 
 	t.Run("first_run", func(t *testing.T) {
 		aiEnvDir, home, projectDir := setupActivateFixture(t, "proj", []string{"*"})
@@ -1984,6 +2049,50 @@ func TestExportContract(t *testing.T) {
 		mustWrite(t, filepath.Join(cwd, ".caddie.yaml"), "skills:\n  - \"foo:*\"\n")
 		return
 	}
+
+	t.Run("exclusion_profiles", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			patterns []string
+			want     []string
+			all      bool
+		}{
+			{"exact", []string{"foo:*", "!foo:one"}, []string{"foo-two"}, false},
+			{"wildcard", []string{"foo:*", "!foo:o*"}, []string{"foo-two"}, false},
+			{"exclusion_first", []string{"!foo:one", "foo:*", "foo:one"}, []string{"foo-two"}, false},
+			{"exclusion_only", []string{"!foo:one"}, nil, false},
+			{"exclude_all", []string{"*", "!*"}, nil, false},
+			{"all_overrides_profile", []string{"*", "!*"}, []string{"bar-three", "foo-one", "foo-two"}, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				aiEnvDir, cwd := setupStore(t)
+				makeExportStore(t, aiEnvDir, "bar-three")
+				body := "skills:\n"
+				for _, p := range tc.patterns {
+					body += "  - \"" + p + "\"\n"
+				}
+				mustWrite(t, filepath.Join(cwd, ".caddie.yaml"), body)
+				target := filepath.Join(t.TempDir(), "out")
+				args := []string{"export", "--to", target}
+				if tc.all {
+					args = append(args, "--all")
+				}
+				r := runWith(t, goBin, runOpts{aiEnvDir: aiEnvDir, cwd: cwd}, args...)
+				if r.exitCode != 0 {
+					t.Fatalf("exit=%d stderr=%q stdout=%q", r.exitCode, r.stderr, r.stdout)
+				}
+				for _, n := range []string{"bar-three", "foo-one", "foo-two"} {
+					want := slices.Contains(tc.want, n)
+					_, err := os.Stat(filepath.Join(target, n, "SKILL.md"))
+					if want && err != nil {
+						t.Errorf("%s must be exported: %v", n, err)
+					} else if !want && !os.IsNotExist(err) {
+						t.Errorf("%s must not be exported: %v", n, err)
+					}
+				}
+			})
+		}
+	})
 
 	t.Run("dir_skips_skill_escaping_its_own_directory", func(t *testing.T) {
 		// An export must not carry content from outside the skill it names.
