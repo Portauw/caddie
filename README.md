@@ -47,11 +47,15 @@ Run it once per machine. After that, register git repos with `caddie repo add <n
 ```bash
 caddie repo add lenny https://github.com/RefoundAI/lenny-skills    # register + clone
 caddie repo add my-team git@host:org/skills.git skills             # custom skills_path
+caddie repo add architecture git@host:org/architecture.git --prefix itp-architecture
+caddie repo edit architecture --prefix itp-architecture           # change an existing prefix
 caddie repo list                                                   # show registered repos + status
 caddie repo update                                                 # git pull every repo
 caddie repo update lenny                                           # pull a specific one
 caddie repo remove lenny                                           # unregister + clean store links
 ```
+
+`repo add` prints the exact entry to add under `skills` in each project's `.caddie.yaml`, followed by the `caddie activate` command. The selector uses the literal prefix when provided, otherwise the repo name, including for `true` and `false`.
 
 ### 2. Scan & discover skills
 ```bash
@@ -88,10 +92,11 @@ caddie reset --force                   # skip the confirmation prompt
 
 ## Skill Namespacing
 
-Skills are identified by `prefix:name`. The prefix comes from one of two places:
+Skills are identified by `prefix:name`. The prefix comes from the registered repo or, for local skills, the store directory name:
 
 1. **Repo `prefix:` setting in `sources.yaml`**: explicit, recommended. Skills land in the store as `<prefix>-<name>` and resolve as `<prefix>:<name>`. Set `prefix: "true"` to use the repo's own name as the prefix.
-2. **Repo with no `prefix:`**: skills land in the store under their bare directory name. The prefix is derived from the directory name's first hyphen-separated segment (e.g. `gws-gmail-send` → `gws:gmail-send`); a name with no hyphen falls under `local:*`.
+2. **Repo with no `prefix:` or `prefix: "false"`**: skills land in the store under their bare directory name, but their IDs use the repo name (e.g. `architecture:generate-mermaid-diagrams`).
+3. **Local skill without a registered repo match**: the prefix is derived from the directory name's first hyphen-separated segment (e.g. `my-skill` → `my:skill`); a name with no hyphen falls under `local:*`.
 
 | Directory in store | Prefix | Full ID |
 |---|---|---|
@@ -101,7 +106,21 @@ Skills are identified by `prefix:name`. The prefix comes from one of two places:
 | `my-skill/` (no source repo match) | `my` | `my:skill` |
 | `brainstorming/` (no dash, no repo) | `local` | `local:brainstorming` |
 
-> ⚠️ Repos without a `prefix:` share the global store namespace. If two repos contain a skill with the same directory name, **one will silently overwrite the other** at scan time. Setting `prefix: "true"` (or a literal prefix string) on every repo eliminates this risk.
+> ⚠️ Repos without a `prefix:` share the global store namespace. If two repos contain a skill with the same directory name, **one will silently overwrite the other** at scan time. Use distinct prefixes to avoid these collisions.
+
+### Set or change a repo prefix
+
+```bash
+caddie repo edit architecture --prefix itp-architecture
+caddie repo edit architecture --prefix true    # use the repo name
+caddie repo edit architecture --prefix false   # use bare skill filenames
+```
+
+Literal prefixes must start with an ASCII letter or digit and contain only letters, digits, `.`, `_`, or `-`. `true` and `false` are reserved settings. Both `--prefix value` and `--prefix=value` work. Registration accepts the same flag, plus `--skills-path <path>` as an alternative to the positional path.
+
+Editing saves the prefix in `sources.yaml`, syncs that repo's local checkout into the canonical store, and removes obsolete store links owned by the checkout. It does not fetch remote changes. Real directories remain local overrides, with a warning when they shadow a repo skill. Destination files or symlinks belonging to other sources cause an error; the prefix remains saved and the old links are retained until the collision is resolved and the edit is retried. Missing checkouts receive a clone hint; failed walks retain existing links.
+
+The command prints the new project selector. For this example, replace `architecture:*` with `itp-architecture:*` in the relevant `.caddie.yaml` files, update any individual skill patterns, then run `caddie activate` in each project to rebuild its links.
 
 ### Single-skill repos ("one repo = one skill")
 
@@ -272,7 +291,9 @@ caddie reset [--force|-f]          # remove managed symlinks + state files
 # Repo registry
 caddie repo list                   # show registered repos + clone status
 caddie repo add <name> <url> [path]   # register + shallow-clone a repo (name must be a plain
-                                   #   directory name — no "/", "..", leading "-" or "~")
+                                   #   directory name, no "/", "..", leading "-" or "~")
+                                   #   flags: --prefix <prefix>, --skills-path <path>
+caddie repo edit <name> --prefix <prefix>  # save prefix + reconcile store links
 caddie repo remove <name>          # unregister + clean store links + rm checkout
 caddie repo update [name]          # git pull (all, or one)
 

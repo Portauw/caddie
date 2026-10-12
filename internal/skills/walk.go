@@ -42,6 +42,12 @@ type RepoSkill struct {
 // SKILL.md at the repo top level) counts as a single skill named after the
 // repo directory.
 func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
+	return walkRepoSkills(repoDir, skillsPath, false)
+}
+
+// Prefix reconciliation must distinguish an incomplete walk from an empty
+// checkout before it removes old links. Ordinary scans remain best-effort.
+func walkRepoSkills(repoDir, skillsPath string, strict bool) ([]RepoSkill, error) {
 	root := repoDir
 	if skillsPath != "" && skillsPath != "." {
 		root = filepath.Join(repoDir, skillsPath)
@@ -117,6 +123,7 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 	}
 
 	var out []RepoSkill
+	var walkErr error
 	var walk func(dir, real string, parts []string)
 	walk = func(dir, real string, parts []string) {
 		// os.Stat (not Lstat) so a symlinked SKILL.md still counts — but the
@@ -125,7 +132,12 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 		// that's a symlink to an arbitrary local file, which `caddie export`
 		// would then preserve and copy/upload verbatim.
 		skillMD := filepath.Join(dir, "SKILL.md")
-		if fi, err := os.Stat(skillMD); err == nil && fi.Mode().IsRegular() {
+		fi, err := os.Stat(skillMD)
+		if strict && err != nil && !os.IsNotExist(err) {
+			walkErr = err
+			return
+		}
+		if err == nil && fi.Mode().IsRegular() {
 			// SKILL.md itself is fine, but the whole directory — every file
 			// in it — gets adopted: AbsPath is symlinked wholesale into the
 			// store and from there into every project on a "*"-style
@@ -153,6 +165,9 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 		visited[real] = true
 		entries, err := os.ReadDir(dir)
 		if err != nil {
+			if strict {
+				walkErr = err
+			}
 			return
 		}
 		for _, e := range entries {
@@ -198,6 +213,9 @@ func WalkRepoSkills(repoDir, skillsPath string) ([]RepoSkill, error) {
 		}
 	}
 	walk(root, rootReal, nil)
+	if walkErr != nil {
+		return nil, walkErr
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }

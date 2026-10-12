@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"cmp"
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -171,7 +172,7 @@ func cmdEdit(args []string) {
 
 func cmdRepo(args []string) {
 	if len(args) == 0 {
-		die("Usage: caddie repo <list|add|remove|update>")
+		die("Usage: caddie repo <list|add|edit|remove|update>")
 	}
 	sub := args[0]
 	switch sub {
@@ -179,6 +180,8 @@ func cmdRepo(args []string) {
 		cmdRepoList(args[1:])
 	case "add":
 		cmdRepoAdd(args[1:])
+	case "edit":
+		cmdRepoEdit(args[1:])
 	case "remove", "rm":
 		cmdRepoRemove(args[1:])
 	case "update":
@@ -219,7 +222,7 @@ func cmdRepoList(_ []string) {
 			prefixDisplay = e.EffectivePrefix() + "-*"
 		}
 		fmt.Printf("    %sskills_path: %s, prefix: %s%s\n", ansiDim, e.SkillsPath, prefixDisplay, ansiReset)
-		fmt.Println("")
+		fmt.Println()
 	}
 }
 
@@ -239,8 +242,28 @@ func cmdRepoAdd(args []string) {
 		die(err.Error())
 	}
 	skillsPath := "skills"
-	if len(args) >= 3 && args[2] != "" {
-		skillsPath = args[2]
+	remaining := args[2:]
+	positionalPath := false
+	if len(remaining) > 0 && !strings.HasPrefix(remaining[0], "-") {
+		positionalPath = true
+		if remaining[0] != "" {
+			skillsPath = remaining[0]
+		}
+		remaining = remaining[1:]
+	}
+	flags := flag.NewFlagSet("repo add", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&skillsPath, "skills-path", skillsPath, "skill directory within the repo")
+	prefix := flags.String("prefix", "", "skill namespace, true, or false")
+	if err := parseRepoFlags(flags, remaining); err != nil {
+		die(err.Error())
+	}
+	if positionalPath {
+		flags.Visit(func(f *flag.Flag) {
+			if f.Name == "skills-path" {
+				die("Specify the skills path either positionally or with --skills-path")
+			}
+		})
 	}
 
 	exists, err := repos.Exists(name)
@@ -251,7 +274,8 @@ func cmdRepoAdd(args []string) {
 		die(fmt.Sprintf("Repo '%s' already registered. Remove it first with: caddie repo remove %s", name, name))
 	}
 
-	if err := repos.Append(repos.Entry{Name: name, URL: url, SkillsPath: skillsPath}); err != nil {
+	entry := repos.Entry{Name: name, URL: url, SkillsPath: skillsPath, Prefix: *prefix}
+	if err := repos.Append(entry); err != nil {
 		die(err.Error())
 	}
 
@@ -279,6 +303,98 @@ func cmdRepoAdd(args []string) {
 
 	fmt.Printf("%s✓%s  Registered repo: %s%s%s\n", ansiGreen, ansiReset, ansiBold, name, ansiReset)
 	fmt.Printf("%sℹ%s  Run %scaddie scan --force%s to sync skills into the store.\n", ansiBlue, ansiReset, ansiCyan, ansiReset)
+	fmt.Printf("%sℹ%s  To use this repo's skills, add this entry under skills in each project's .caddie.yaml:\n\n", ansiBlue, ansiReset)
+	fmt.Printf("    skills:\n      - %s\n\n", config.YAMLQuote(entry.EffectivePrefix()+":*"))
+	fmt.Printf("   Then run %scaddie activate%s in each project.\n", ansiCyan, ansiReset)
+}
+
+// parseRepoFlags keeps malformed repo commands from writing configuration.
+// Positional identifiers have already been consumed before the flag parser runs.
+func parseRepoFlags(flags *flag.FlagSet, args []string) error {
+	seen := make(map[string]bool)
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			name, _, _ := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+			if seen[name] {
+				return fmt.Errorf("flag --%s specified more than once", name)
+			}
+			seen[name] = true
+		}
+	}
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected argument: %s", flags.Arg(0))
+	}
+	var validationErr error
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "prefix" {
+			validationErr = repos.ValidPrefix(f.Value.String())
+		}
+	})
+	return validationErr
+}
+
+func cmdRepoEdit(args []string) {
+	if len(args) < 2 {
+		die("Usage: caddie repo edit <name> --prefix <prefix>")
+	}
+	name := args[0]
+	if err := repos.ValidName(name); err != nil {
+		die(err.Error())
+	}
+	flags := flag.NewFlagSet("repo edit", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	prefix := flags.String("prefix", "", "skill namespace, true, or false")
+	if err := parseRepoFlags(flags, args[1:]); err != nil {
+		die(err.Error())
+	}
+	if flags.NFlag() == 0 {
+		die("Usage: caddie repo edit <name> --prefix <prefix>")
+	}
+	entries, err := repos.Parse()
+	if err != nil {
+		die(err.Error())
+	}
+	var entry repos.Entry
+	for _, e := range entries {
+		if e.Name == name {
+			entry = e
+			break
+		}
+	}
+	if entry.Name == "" {
+		die(fmt.Sprintf("Repo '%s' not registered", name))
+	}
+	oldSelector := entry.EffectivePrefix() + ":*"
+	entry.Prefix = *prefix
+	if err := repos.SetPrefix(name, *prefix); err != nil {
+		die(err.Error())
+	}
+	cachePath := filepath.Join(config.Dir(), ".last-scan")
+	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
+		die("Prefix saved, but could not invalidate scan cache: " + err.Error())
+	}
+	result, shadowed, err := skills.ReconcileRepo(entry)
+	if err != nil {
+		die("Prefix saved, but store sync failed: " + err.Error())
+	}
+	fmt.Printf("%s✓%s  Updated repo: %s%s%s (prefix: %s)\n", ansiGreen, ansiReset, ansiBold, name, ansiReset, *prefix)
+	if result.Warning != "" {
+		fmt.Printf("%s⚠%s  Repo '%s': %s. Run %scaddie repo update %s%s, then %scaddie scan -f%s.\n",
+			ansiYellow, ansiReset, name, result.Warning, ansiCyan, name, ansiReset, ansiCyan, ansiReset)
+	} else {
+		fmt.Printf("%sℹ%s  Synced %d skills; removed %d stale store links.\n", ansiBlue, ansiReset, result.Count, result.Removed)
+	}
+	for _, s := range shadowed {
+		fmt.Printf("%s⚠%s  Local override '%s' shadows the repo skill.\n", ansiYellow, ansiReset, s.SkillName)
+	}
+	fmt.Printf("%sℹ%s  Project selector: %s%s:*%s", ansiBlue, ansiReset, ansiCyan, entry.EffectivePrefix(), ansiReset)
+	if oldSelector != entry.EffectivePrefix()+":*" {
+		fmt.Printf(" (replaces %s)", oldSelector)
+	}
+	fmt.Printf("\n   Update matching patterns in your .caddie.yaml files, then run %scaddie activate%s in each project.\n", ansiCyan, ansiReset)
 }
 
 // cmdRepoRemove unregisters a repo, removes store symlinks pointing into its
@@ -401,8 +517,12 @@ func cmdHelp(_ []string) {
 			B + "GIT REPOS" + R + "\n" +
 			"  " + C + "repo" + R + " list                    Show registered git repos + status\n" +
 			"  " + C + "repo" + R + " add <name> <url> [path] Register + clone a git skill repo\n" +
+			"                              Flags: --prefix <prefix>, --skills-path <path>\n" +
 			"                              (path defaults to \"skills\"; use \".\" or \"\" if SKILL.md files\n" +
 			"                              live at the repo root. Nested category dirs are walked.)\n" +
+			"  " + C + "repo" + R + " edit <name> --prefix <prefix>  Update namespace + reconcile store links\n" +
+			"                              Prefix: true = repo name; false = bare skill names\n" +
+			"                              Update profile selectors, then run caddie activate.\n" +
 			"  " + C + "repo" + R + " remove <name>           Unregister repo + clean up symlinks\n" +
 			"  " + C + "repo" + R + " update [name]           Pull latest changes (all or specific)\n" +
 			"\n" +
@@ -439,6 +559,7 @@ func cmdHelp(_ []string) {
 			"  caddie activate --dry-run                 # Preview what would change\n" +
 			"  caddie activate --force                   # Pull all repos now (bypass hourly cache)\n" +
 			"  caddie repo add lenny https://github.com/RefoundAI/lenny-skills  # Add git repo\n" +
+			"  caddie repo edit architecture --prefix itp-architecture  # Change namespace\n" +
 			"  caddie inventory                          # See all available skills\n" +
 			"\n" +
 			B + "SHELL INTEGRATION" + R + "\n" +
