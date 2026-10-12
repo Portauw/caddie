@@ -14,3 +14,6 @@
 
 # git worktrees created by tooling
 .claude/worktrees/
+
+# Local implementation plans
+/docs/plans/
