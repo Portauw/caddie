@@ -140,20 +140,31 @@ The skill resolves as `<repo>:<repo>` (e.g. `show-your-work:show-your-work`). Co
 name: "My Project"
 description: "Backend services"
 
-# Skill patterns (include-only, supports wildcards)
+# Skill patterns (inclusions and exclusions, supports wildcards)
 skills:
-  - "superpowers:*"           # all superpowers skills
-  - "gws:gmail*"              # gws-gmail, gws-gmail-send, etc.
-  - "local:*"                 # hand-written skills
+  # All superpowers skills except writing-skills
+  - "superpowers:*"
+  - "!superpowers:writing-skills"
+  # gws-gmail, gws-gmail-send, etc.
+  - "gws:gmail*"
+  # Hand-written skills
+  - "local:*"
 ```
 
 **Skill patterns:**
 - Use glob wildcards: `*` matches any characters
-- Include-only model, no exclude mechanism
-- Empty `skills:` section means no skills activated
-- Patterns union (order doesn't matter)
+- Positive patterns form the included set; patterns prefixed with `!` subtract from it
+- Exclusions support the same globs, for example `"!itp-engineering:writing-*"`
+- Exclusions always win, even over an exact inclusion; list order doesn't matter
+- Empty or exclusion-only `skills:` sections select nothing; use `"*"` plus exclusions for everything except the excluded matches
+- Quote patterns, especially those beginning with `!`, which has special meaning in YAML
 
-There is no other schema. `name` and `description` are just labels; only `skills` is resolved against the store. See [`examples/profile.yaml`](examples/profile.yaml).
+Activation and profile-based export use the same selection rules. Adding an exclusion
+removes the corresponding managed project links on the next activation. An exclusion
+matching an available skill does not warn, even if that skill is outside the included
+set. Patterns matching no available skills retain the existing warning behavior.
+
+`name` and `description` are just labels; only `skills` is resolved against the store. See [`examples/profile.yaml`](examples/profile.yaml).
 
 **Not in your home directory.** `caddie init` and `caddie activate` refuse to run when the resolved profile is `$HOME` itself. `~/.claude/skills` and `~/.agents/skills` are your *user-scoped* skills, shared by every project — managing them from a profile would replace one with a symlink and prune the other against the profile's pattern list. Keep profiles in project folders.
 

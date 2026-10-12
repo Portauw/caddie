@@ -7,8 +7,14 @@ name: "Backend API"
 description: "Skills for the backend-api service"
 
 # Skill patterns matched against the canonical store (~/.config/caddie/skills/).
-# Include-only, glob wildcards, order doesn't matter, empty list activates nothing.
+# Inclusion globs form a union; !-prefixed globs subtract from that set.
+# Exclusions always win, regardless of order. Empty or exclusion-only lists
+# activate nothing. Quote patterns and keep comments on separate lines.
 skills:
-  - "superpowers:*"     # all superpowers skills
-  - "gws:gmail-*"       # gws-gmail-send, gws-gmail-search, etc.
-  - "local:*"           # hand-written, repo-less skills
+  # All superpowers skills except writing-skills
+  - "superpowers:*"
+  - "!superpowers:writing-skills"
+  # gws-gmail-send, gws-gmail-search, etc.
+  - "gws:gmail-*"
+  # Hand-written, repo-less skills
+  - "local:*"

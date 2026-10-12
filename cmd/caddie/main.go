@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -1299,14 +1298,8 @@ func resolveMatchedWithSummary(patterns []string) ([]string, string) {
 		return nil, ""
 	}
 	dirToPrefix := map[string]string{}
-	for _, it := range items {
-		id := it.SkillID()
-		for _, p := range patterns {
-			if ok, _ := path.Match(p, id); ok {
-				dirToPrefix[it.DirName] = it.Prefix
-				break
-			}
-		}
+	for _, it := range skills.FilterByPatterns(items, patterns) {
+		dirToPrefix[it.DirName] = it.Prefix
 	}
 	dirs := make([]string, 0, len(dirToPrefix))
 	counts := map[string]int{}

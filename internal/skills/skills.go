@@ -184,8 +184,8 @@ func matchPattern(id, pattern string) bool {
 // user-supplied patterns.
 func (i Item) SkillID() string { return i.Prefix + ":" + i.Remainder }
 
-// matchItems returns the store items whose SkillID matches at least one
-// pattern. Empty patterns → no matches.
+// matchItems returns the store items selected by inclusion and exclusion
+// patterns. Empty patterns select nothing.
 func matchItems(patterns []string) ([]Item, error) {
 	if len(patterns) == 0 {
 		return nil, nil
@@ -194,24 +194,35 @@ func matchItems(patterns []string) ([]Item, error) {
 	if err != nil {
 		return nil, err
 	}
-	return filterByPatterns(items, patterns), nil
+	return FilterByPatterns(items, patterns), nil
 }
 
-func filterByPatterns(items []Item, patterns []string) []Item {
+// FilterByPatterns selects the union of inclusion globs, minus all globs
+// prefixed with '!'. Exclusions win regardless of order; without an inclusion,
+// nothing is selected. The result preserves item order.
+func FilterByPatterns(items []Item, patterns []string) []Item {
 	var out []Item
 	for _, it := range items {
 		id := it.SkillID()
+		included, excluded := false, false
 		for _, p := range patterns {
-			if matchPattern(id, p) {
-				out = append(out, it)
-				break
+			if exclusion, ok := strings.CutPrefix(p, "!"); ok {
+				if matchPattern(id, exclusion) {
+					excluded = true
+					break
+				}
+			} else if matchPattern(id, p) {
+				included = true
 			}
+		}
+		if included && !excluded {
+			out = append(out, it)
 		}
 	}
 	return out
 }
 
-// Resolve returns the sorted dirnames of store items matching any pattern.
+// Resolve returns the sorted dirnames selected by inclusion and exclusion patterns.
 func Resolve(patterns []string) ([]string, error) {
 	matched, err := matchItems(patterns)
 	if err != nil {
@@ -225,9 +236,11 @@ func Resolve(patterns []string) ([]string, error) {
 	return out, nil
 }
 
-// PatternMatchesIn returns the number of items whose SkillID matches pattern.
+// PatternMatchesIn counts available items matching an inclusion or exclusion
+// pattern's glob, regardless of whether those items are selected.
 // Caller is expected to share one Scan() result across many patterns.
 func PatternMatchesIn(items []Item, pattern string) int {
+	pattern = strings.TrimPrefix(pattern, "!")
 	count := 0
 	for _, it := range items {
 		if matchPattern(it.SkillID(), pattern) {
